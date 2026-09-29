@@ -1,6 +1,6 @@
 # T00 — Repository Foundation
 
-Status: `IN_EXECUTION`; Codex implementation and publication are in progress.
+Status: `PUBLISHED_PENDING_INDEPENDENT_ACCEPTANCE`.
 
 This task creates the independent Git-backed Risk Advisor repository and the task-centric documentation structure, preserves the already-completed local Static Preflight evidence, corrects one obsolete Test Matrix API reference, and publishes the first fully verified remote checkpoint.
 
