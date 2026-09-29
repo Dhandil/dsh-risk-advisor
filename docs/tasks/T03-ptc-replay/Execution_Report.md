@@ -9,10 +9,10 @@ review. It is not an Acceptance Report and does not declare `ACCEPTED`.
 
 - Authority read and followed: `T03_Architecture_Freeze.md` and
   `T03_Implementation_Instructions.md`.
-- Plugin starting SHA: `697db64bab9dd20821864cca1b6fd830a12cda21`.
-- At preflight, local `HEAD`, `origin/main`, and
+- Plugin repair starting SHA: `e27920777275d1e66cc0a7d505b897cb7b4cf164`.
+- At repair preflight, local `HEAD`, `origin/main`, and
   `git ls-remote origin refs/heads/main` matched that SHA; no synchronization
-  write was needed before implementation.
+  write was needed before repair implementation.
 - Harness read-only reference: `D:\Harness\deepseek-harness`, `master @
   ddefc45fbc7f8e46dd73185e68295696d1297887`; Harness was not modified.
 - Harness drift was retained: `build.log`, `install.log`, `t0-model.txt`,
@@ -25,22 +25,49 @@ review. It is not an Acceptance Report and does not declare `ACCEPTED`.
 - Harness Core and `src/client/**` were not modified. T01/T02 accepted product
   behavior was not changed. R4/R5 were not entered.
 
+## Repair result
+
+Only the three findings named by `T03_Repair_Instructions.md` were repaired;
+the existing R3 implementation, T01/T02 behavior, runtime integration and
+prior evidence were retained.
+
+### F1 — causal START/SETTLE order: PASS
+
+Unique full-tuple pairing now requires `start.seq < settle.seq`. A reversed
+unique pair records bounded `PTC_SETTLEMENT_BEFORE_START` degradation, returns
+`UNRESOLVED` settlement provenance, retains the reversed settlement as an
+unresolved orphan, and never exposes its `isError`. The normal START-then-
+SETTLE R3-01 positive control remains passing.
+
+### F2 — injective composite keys: PASS
+
+Scope, top-call, sub-call and full structural tuple indexes now use nested
+`JSON.stringify` field encoding rather than delimiter concatenation. Delimiter-
+containing root/parent identifiers are tested both for non-pairing across
+distinct tuples and for legitimate top-level parent/root recovery.
+
+### F3 — bounded degraded provenance: PASS
+
+The R3 tests cross `maxPtcEvidence` and assert `DEGRADED/LIMIT_EXCEEDED` with
+no recovered/paired edges. Malformed sequence and overlapping turn boundaries
+also mechanically suppress `RECOVERED`/`PAIRED` edges while preserving bounded
+issues and sanitized output. The valid prefix is never reported as `COMPLETE`.
+
 ## Changed-file manifest
 
-Implementation commit `bb9d41c3a7a145222ec6eff53b0c49c356a4937c` contains:
+Repair implementation commit `aa00f968f8e8f4fca6d1514162cd8a7089971d4c` contains:
 
-- `src/host/ptc-replay.ts` — bounded, read-only Host replay projection over an
-  exact Session snapshot or source-shaped test snapshot.
-- `src/index.ts` — public Host exports for the replay projection and frozen
-  limits; existing T02 exports remain unchanged.
-- `tests/r3-ptc-replay.unit.spec.ts` — R3-01 through R3-12 bounded structural
-  matrix and fail-closed cases.
-- `tests/r3-runtime.integration.spec.ts` — real `Context`, `SessionStore`,
-  `Session.append`, and `snapshotEvents()` integration.
-- `package.json` — R3 test scripts and inclusion in the existing full test
-  command.
-- The exact frozen T03 Architecture Freeze and Implementation Instructions
-  files, preserved as task history and authority.
+- `src/host/ptc-replay.ts` — F1 causal pairing, F2 injective indexes, and F3
+  degraded-edge suppression.
+- `tests/r3-ptc-replay.unit.spec.ts` — focused F1/F2/F3 regressions plus the
+  retained R3-01 through R3-12 matrix.
+- `docs/tasks/T03-ptc-replay/T03_Repair_Instructions.md` — exact repair
+  authority preserved as task history.
+
+The prior T03 implementation commit remains in history at
+`bb9d41c3a7a145222ec6eff53b0c49c356a4937c`; `src/index.ts`,
+`tests/r3-runtime.integration.spec.ts`, `package.json`, and the frozen
+Architecture/Implementation documents were not changed in this repair.
 
 No T01/T02 source behavior, Browser route, ledger, verdict, provider, LLM,
 filesystem, or UI path was added.
@@ -103,7 +130,7 @@ when the producer prerequisite is unavailable.
 ## Commands and results
 
 - `pnpm test`: PASS — T01 9/9, T02 16/16, R3 13/13; 38/38 total.
-- `pnpm run test:r3`: PASS — 2 files, 13 tests.
+- `pnpm run test:r3`: PASS — 2 files, 17 tests, including F1/F2/F3.
 - `pnpm run typecheck`: PASS.
 - `pnpm run build`: PASS — Host `lib/index.js`, Client `lib/client.js`, and
   declarations emitted.
@@ -117,24 +144,28 @@ when the producer prerequisite is unavailable.
 - Harness publint: completed with inherited package warnings for
   `exports["./src/*"]` matching no packaged files and CJS `./client` being
   interpreted under package `type: module`.
-- Implementation source/test diff-check: PASS. The exact supplied frozen
-  Architecture Freeze retains its original five Markdown hard-break trailing
-  spaces and was not normalized.
+- Implementation source/test `git diff --check`: PASS. Staged filename audit
+  contains only the repair source, R3 tests and exact Repair Instructions; no
+  user drift or build output was staged. The exact supplied Repair Instructions
+  retains its original five Markdown hard-break trailing spaces and was not
+  normalized; the earlier frozen Architecture Freeze remains byte-preserved.
+- Staged secret audit: PASS — no credential/token material or raw projection
+  payload was added; test sentinels and instruction prose are non-secret.
 - T01 live Browser: `NOT_RUN`, preserved from prior evidence.
 - Canonical Full: `NOT_APPLICABLE` for T03.
 - R4/R5: `NOT_RUN`.
 
 The T01 fixture-fault tests intentionally print React diagnostic stacks while
 their assertions pass; the final regression command exited successfully with
-all 38 tests passing.
+all 42 tests passing.
 
 ## Publication handoff
 
-- Executable Tested SHA: `bb9d41c3a7a145222ec6eff53b0c49c356a4937c`.
-- Implementation push: normal `git push origin main` completed.
+- Executable Tested SHA: `aa00f968f8e8f4fca6d1514162cd8a7089971d4c`.
+- Repair implementation push: normal `git push origin main` completed.
 - Immediately after implementation push, local `HEAD`, `origin/main`, and
   `git ls-remote origin refs/heads/main` all matched
-  `bb9d41c3a7a145222ec6eff53b0c49c356a4937c`.
+  `aa00f968f8e8f4fca6d1514162cd8a7089971d4c`.
 - The report-only commit is separate; its exact SHA and the final remote SHA
   are supplied in the terminal handoff after that commit is pushed.
 
