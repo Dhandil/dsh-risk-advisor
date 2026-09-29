@@ -2,15 +2,16 @@
 
 ## Execution outcome
 
-**Outcome: `T01_R1_REPAIR_PUBLISHED`**
+**Outcome: `T01_R1_PARTIAL`**
 
-The requested T01 repair scope is implemented and published for independent
-ChatGPT review. F1 and F2 are repaired. The bounded public owner/child slot path,
-session switch, native coexistence, and dispose/restore path pass in jsdom. Live
-Browser smoke remains `NOT_RUN`; package loadability remains `UNVERIFIED` because
-the available multi-entry build emits `client/index.js` while `package.json`
-declares `dist/client.js`. That existing packaging mismatch was recorded rather
-than expanded into this repair.
+The remaining package gate is complete: the plugin now follows the Harness
+`lib/index.js` / `lib/client.js` / `lib/types/**` convention, its package-local
+build emits the declared paths, and self-reference import plus loader-factory
+smoke pass. The bounded public owner/child slot path, session switch, native
+coexistence, and dispose/restore path remain passing in jsdom. Live Browser smoke
+is `LIVE_BROWSER_NOT_RUN`; no safe supported disposable Browser runner/profile was
+available without writing the read-only Harness tree or changing production/user
+settings. Codex therefore leaves the task partial.
 
 Codex did not generate an `Acceptance_Report.md` and does not declare
 `ACCEPTED`.
@@ -22,7 +23,7 @@ Codex did not generate an `Acceptance_Report.md` and does not declare
 | Repair instructions | `docs/tasks/T01-approval-ui/Repair_Instructions.md` read and followed |
 | Plugin remote | `https://github.com/Dhandil/dsh-risk-advisor.git` |
 | Plugin branch | `main` |
-| Pre-repair sync | `git fetch origin main` passed; local `HEAD == origin/main == 4c24c70fceb1633f51e5930174ab312ba311f5c9` |
+| Continuation sync | `git fetch origin main` passed; local `HEAD == origin/main == 96488ecc0348615b2f775998396406e39d75059f` |
 | Harness reference | `D:\Harness\deepseek-harness`, `master @ ddefc45fbc7f8e46dd73185e68295696d1297887` |
 | Harness mutation | None; working tree and diff remained read-only |
 | Reset / clean / rebase / force push | Not used |
@@ -75,10 +76,46 @@ PASS in the supported test harness**. Live Browser smoke and a real deployed
 Harness session rebind are **`NOT_RUN`** because no disposable Browser runner was
 available without plugin installation or production-setting changes.
 
-The package build check compiled both source entries successfully with tsdown,
-but emitted `index.js` and `client/index.js` (plus declarations), not the
-declared `dist/client.js`. Therefore package export/loadability is recorded as
-**`UNVERIFIED`**, and no out-of-scope packaging change was made.
+The package correction is limited to `package.json`, `tsconfig.json`, and the new
+package-local `tsdown.config.ts`. It adopts the pinned Harness package shape:
+Host `lib/index.js`, Browser loader-factory `lib/client.js`, and declarations
+under `lib/types/**`. The Host entry remains inert and the Browser factory
+registers `@dhandil/dsh-risk-advisor` with `window.__ModuleLoader__`, exporting
+`apply` and `inject` when invoked with the loader's `require` function.
+
+### Package / live runtime gate
+
+- `npm run build` emitted `lib/index.js`, `lib/client.js`, their source maps, and
+  `lib/types/**` with exit code 0. The command used the pinned Harness toolchain
+  already present on the machine; no dependency installation was performed.
+- A package self-reference import resolved `@dhandil/dsh-risk-advisor` to
+  `lib/index.js` and `@dhandil/dsh-risk-advisor/client` to `lib/client.js`.
+  Host `apply`, Client loader id/factory, Client `apply`, and `inject` were
+  verified in Node with a disposable `window.__ModuleLoader__` capture and real
+  React module resolution.
+- `npm pack --dry-run --json` listed exactly the intended README, Host/Client
+  runtime files, `package.json`, and declaration files; no source or temporary
+  build files were included.
+- `LIVE_BROWSER_NOT_RUN`: the documented Harness `test:web` route rebuilds the
+  Harness/Web tree and the current machine had no disposable live Harness
+  server/profile or supported runner available. No provider, privileged Tool
+  call, permanent profile, or Harness write was attempted.
+
+### Final R1 matrix by evidence level
+
+| Case | Status | Evidence level |
+|---|---|---|
+| R1-01 native baseline | PASS | Slot integration / jsdom real Native ApprovalPanel |
+| R1-02 composite detail | PASS | Slot integration / jsdom real SlotRegistry + Native panel |
+| R1-03 PENDING → READY_SAMPLE | PASS | Unit + slot integration / jsdom |
+| R1-04 invalid/missing/unrelated/settled command | PASS | Unit / pure command parity |
+| R1-05 resolve/unmount/late update | PASS | Slot integration / jsdom lifecycle |
+| R1-06 disable during pending | PASS | Slot integration / jsdom dispose/restore |
+| R1-07 fixture render fault | PASS | Slot integration / jsdom deliberate throwing fixture |
+| R1-08 Session switch/rebind | PASS | Bounded public owner/child slot integration / jsdom |
+| R1-09 absent `callId` | PASS | Slot integration / jsdom seam limitation preserved |
+| R1-10 native choice behavior | PASS | Slot integration / jsdom native Reject/Allow paths |
+| Live Browser R1 smoke | `LIVE_BROWSER_NOT_RUN` | No safe supported disposable runner/profile |
 
 ### F4 — frozen documents and history
 
@@ -108,21 +145,27 @@ The prior implementation and test evidence remains valid and was retained:
 
 ## Executed checks
 
-All checks below ran against the implementation commit before the report-only
-commit:
+All executable checks below ran against the package-correction implementation
+commit before the report-only commit:
 
 ```text
-D:\Harness\deepseek-harness\node_modules\.bin\vitest.cmd run --config vitest.config.ts
+npm run build
+=> PASS — tsc emit plus tsdown; lib/index.js and lib/client.js produced
+
+npm test
 => PASS — 2 test files, 9 tests
 
-D:\Harness\deepseek-harness\node_modules\.bin\tsc.cmd --noEmit -p tsconfig.json
+npm run typecheck
 => PASS (TS_EXIT=0)
 
 D:\Harness\deepseek-harness\node_modules\.bin\oxlint.cmd --config D:\Harness\deepseek-harness\.oxlintrc.staged.json src tests
 => PASS (OXLINT_EXIT=0)
 
-D:\Harness\deepseek-harness\node_modules\.bin\tsdown.cmd src/index.ts src/client/index.ts --out-dir .t01-build-check --format esm --platform neutral --no-config
-=> PASS compilation; output paths were index.js and client/index.js, so declared dist/client.js remains UNVERIFIED
+npm pack --dry-run --json
+=> PASS — 10 intended package files; no source or temporary build files
+
+node --input-type=module -e "<package self-reference Host/Client loader-factory smoke>"
+=> PASS — declared root/client exports resolve; Host apply and Client apply/inject load
 
 git diff --check
 => PASS
@@ -145,11 +188,13 @@ final integration run reported no unhandled test failure.
 
 | Deliverable | SHA / result |
 |---|---|
-| Tested SHA | `ae5d737e5a8316b097700903aa06983a5af8bd4e` (`fix(t01): repair R1 review findings`) |
-| Implementation commit | `ae5d737e5a8316b097700903aa06983a5af8bd4e` |
+| Tested SHA | `e2802490d895979cb14e1b7e27c4d8ba075b3189` (`fix(t01): align package runtime exports`) |
+| Implementation commits | `ae5d737e5a8316b097700903aa06983a5af8bd4e`, `e2802490d895979cb14e1b7e27c4d8ba075b3189` |
 | Evidence/report commit | Printed by the final `git rev-parse HEAD` verification below; report content is otherwise final before that report-only commit |
 | Push | Normal `git push origin main` required after evidence commit |
 | Final local/remote SHA | Printed by final `git rev-parse HEAD`, `git rev-parse origin/main`, and `git ls-remote origin refs/heads/main`; all must match |
 
-No STOP condition was encountered. Codex stops after publication and leaves final
-T01 acceptance to the independent ChatGPT review.
+No architecture STOP condition was encountered. The live Browser gate remains
+`LIVE_BROWSER_NOT_RUN` for the documented read-only safety reason. Codex stops
+after publication and leaves final T01 acceptance to the independent ChatGPT
+review.
