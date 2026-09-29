@@ -4,6 +4,26 @@ import { defineConfig } from 'vitest/config'
 
 const root = fileURLToPath(new URL('.', import.meta.url))
 const harness = fileURLToPath(new URL('../../deepseek-harness/', import.meta.url))
+const singleReact = resolve(root, 'node_modules/react')
+const singleReactDom = resolve(root, 'node_modules/react-dom')
+const singleSyncStore = resolve(root, 'node_modules/use-sync-external-store')
+
+// The R1 Slot tests intentionally import Harness browser source. Pin every
+// React entry point to the same physical runtime used by the test runner;
+// dedupe alone does not prevent Vite from resolving a linked source import
+// through a nested Harness package dependency.
+const singleReactRuntime = [
+  { find: /^react$/, replacement: singleReact },
+  { find: /^react\/jsx-runtime$/, replacement: resolve(singleReact, 'jsx-runtime.js') },
+  { find: /^react\/jsx-dev-runtime$/, replacement: resolve(singleReact, 'jsx-dev-runtime.js') },
+  { find: /^react-dom$/, replacement: singleReactDom },
+  { find: /^react-dom\/client$/, replacement: resolve(singleReactDom, 'client.js') },
+  { find: /^react-dom\/test-utils$/, replacement: resolve(singleReactDom, 'test-utils.js') },
+  { find: /^react-dom\/server$/, replacement: resolve(singleReactDom, 'server.js') },
+  { find: /^use-sync-external-store$/, replacement: singleSyncStore },
+  { find: /^use-sync-external-store\/shim$/, replacement: resolve(singleSyncStore, 'shim/index.js') },
+  { find: /^use-sync-external-store\/shim\/with-selector(?:\.js)?$/, replacement: resolve(singleSyncStore, 'shim/with-selector.js') },
+]
 
 const harnessSourceAliases = {
   '@deepseek-ai/cordis': resolve(harness, 'vendor/cordis/src'),
@@ -32,7 +52,14 @@ const harnessSourceAliases = {
 export default defineConfig({
   root,
   cacheDir: `${root}/.vitest-cache`,
-  resolve: { alias: harnessSourceAliases, dedupe: ['react', 'react-dom'], tsconfigPaths: false },
+  resolve: {
+    alias: [
+      ...singleReactRuntime,
+      ...Object.entries(harnessSourceAliases).map(([find, replacement]) => ({ find, replacement })),
+    ],
+    dedupe: ['react', 'react-dom'],
+    tsconfigPaths: false,
+  },
   server: { deps: { inline: ['use-sync-external-store'] } },
   test: {
     environment: 'jsdom',

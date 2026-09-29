@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type {
   PreToolDecision,
@@ -22,12 +23,20 @@ export type ActiveExecutionLookup =
   | { readonly status: 'NOT_FOUND'; readonly reason: NotFoundReason }
   | { readonly status: 'AMBIGUOUS'; readonly executionIds: readonly ExecutionId[] }
 
+/** Read-only diagnostic surface exposed through the Host Context. */
+export interface CorrelationDiagnostics {
+  readonly lookup: (session: Session | undefined, callId: string | undefined) => ActiveExecutionLookup
+  readonly snapshotObservations: () => readonly CorrelationObservation[]
+}
+
 export interface CorrelationObservation {
   readonly approvalId: string
   readonly sessionId: string
   readonly toolName: string
   readonly callId?: string
   readonly lookup: ActiveExecutionLookup
+  /** The original lookup retained when a later contradiction fail-closes `lookup`. */
+  readonly recordedLookup?: ActiveExecutionLookup
   readonly decidedOutcome?: ApprovalOutcome
   readonly closed: boolean
   /** True when a repeated approval id carried contradictory data. */
@@ -59,6 +68,31 @@ interface ObservationState {
 
 const MAX_RETAINED_OBSERVATIONS = 256
 
+function found(executionId: ExecutionId): ActiveExecutionLookup {
+  return Object.freeze({ status: 'FOUND', executionId })
+}
+
+function notFound(reason: NotFoundReason): ActiveExecutionLookup {
+  return Object.freeze({ status: 'NOT_FOUND', reason })
+}
+
+function ambiguous(executionIds: readonly ExecutionId[]): ActiveExecutionLookup {
+  return Object.freeze({
+    status: 'AMBIGUOUS',
+    executionIds: Object.freeze([...executionIds]),
+  })
+}
+
+function copyLookup(lookup: ActiveExecutionLookup): ActiveExecutionLookup {
+  switch (lookup.status) {
+    case 'FOUND': return found(lookup.executionId)
+    case 'NOT_FOUND': return notFound(lookup.reason)
+    case 'AMBIGUOUS': return ambiguous(lookup.executionIds)
+  }
+}
+
+const OBSERVATION_CONFLICT_LOOKUP = notFound('OBSERVATION_UNAVAILABLE')
+
 function idOf(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
 }
@@ -80,7 +114,6 @@ export class ActiveExecutionIndex {
   private activeRecords = new Set<ActiveRecord>()
   private observationsBySession = new WeakMap<Session, Map<string, ObservationState>>()
   private observations = new Set<ObservationState>()
-  private sequence = 0
   private active = true
 
   /** Capture one actual pre-execute traversal before delegating. */
@@ -91,7 +124,9 @@ export class ActiveExecutionIndex {
 
     try {
       const session = exec.agent?.session
-      const executionId = `ra-execution-${++this.sequence}`
+      // UUID makes the public identity opaque and prevents reuse across
+      // independently mounted generations (including HMR/disposal boundaries).
+      const executionId = `ra-execution-${randomUUID()}`
       const parentExecutionId = exec.parent === undefined
         ? undefined
         : this.executionByToken.get(exec.parent)
@@ -162,18 +197,18 @@ export class ActiveExecutionIndex {
 
   /** Resolve only the currently active exact Session/callId bucket. */
   lookup(session: Session | undefined, callId: string | undefined): ActiveExecutionLookup {
-    if (callId === undefined) return { status: 'NOT_FOUND', reason: 'MISSING_CALL_ID' }
-    if (session === undefined) return { status: 'NOT_FOUND', reason: 'MISSING_SCOPE_IDENTITY' }
-    if (!this.active) return { status: 'NOT_FOUND', reason: 'RUNTIME_STATE_LOST' }
+    if (callId === undefined) return notFound('MISSING_CALL_ID')
+    if (session === undefined) return notFound('MISSING_SCOPE_IDENTITY')
+    if (!this.active) return notFound('RUNTIME_STATE_LOST')
     const members = this.activeBySession.get(session)?.get(callId)
     if (members === undefined || members.size === 0) {
-      return { status: 'NOT_FOUND', reason: 'NO_ACTIVE_EXECUTION' }
+      return notFound('NO_ACTIVE_EXECUTION')
     }
     const executionIds = [...members].map(member => member.executionId)
     if (executionIds.length !== 1) {
-      return { status: 'AMBIGUOUS', executionIds: Object.freeze(executionIds) }
+      return ambiguous(executionIds)
     }
-    return { status: 'FOUND', executionId: executionIds[0]! }
+    return found(executionIds[0]!)
   }
 
   /** Consume a committed Session event without appending or throwing. */
@@ -192,16 +227,23 @@ export class ActiveExecutionIndex {
 
   /** Read sanitized observations only; Session objects and arguments never escape. */
   snapshotObservations(): readonly CorrelationObservation[] {
-    return Object.freeze([...this.observations].map(observation => Object.freeze({
-      approvalId: observation.approvalId,
-      sessionId: observation.sessionId,
-      toolName: observation.toolName,
-      ...observation.callId === undefined ? {} : { callId: observation.callId },
-      lookup: observation.lookup,
-      ...observation.decidedOutcome === undefined ? {} : { decidedOutcome: observation.decidedOutcome },
-      closed: observation.closed,
-      conflict: observation.conflict,
-    })))
+    return Object.freeze([...this.observations].map((observation) => {
+      const recordedLookup = copyLookup(observation.lookup)
+      const lookup = observation.conflict
+        ? copyLookup(OBSERVATION_CONFLICT_LOOKUP)
+        : copyLookup(observation.lookup)
+      return Object.freeze({
+        approvalId: observation.approvalId,
+        sessionId: observation.sessionId,
+        toolName: observation.toolName,
+        ...observation.callId === undefined ? {} : { callId: observation.callId },
+        lookup,
+        ...observation.conflict ? { recordedLookup } : {},
+        ...observation.decidedOutcome === undefined ? {} : { decidedOutcome: observation.decidedOutcome },
+        closed: observation.closed,
+        conflict: observation.conflict,
+      })
+    }))
   }
 
   /** Drop all runtime state and deactivate this generation. */
@@ -265,4 +307,12 @@ export class ActiveExecutionIndex {
       this.observationsBySession.get(oldest.session)?.delete(oldest.approvalId)
     }
   }
+}
+
+/** Bind only immutable/sanitized reads; mutation and lifecycle stay private. */
+export function createCorrelationDiagnostics(index: ActiveExecutionIndex): CorrelationDiagnostics {
+  return Object.freeze({
+    lookup: index.lookup.bind(index),
+    snapshotObservations: index.snapshotObservations.bind(index),
+  })
 }

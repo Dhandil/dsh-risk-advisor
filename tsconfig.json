@@ -3,6 +3,12 @@
   "compilerOptions": {
     "rootDir": "src",
     "outDir": "lib/types",
+    "typeRoots": [
+      "./node_modules/@types",
+      "../../deepseek-harness/scripts/types",
+      "../../deepseek-harness/node_modules/@types"
+    ],
+    "types": ["client-build-environment", "node"],
     "paths": {
       "@deepseek-ai/cordis": ["../../deepseek-harness/vendor/cordis/lib/types/index.d.ts"],
       "react": ["../../deepseek-harness/packages/client/ui-renderer/node_modules/@types/react/index.d.ts"],
