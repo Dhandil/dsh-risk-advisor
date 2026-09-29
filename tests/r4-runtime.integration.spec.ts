@@ -64,12 +64,17 @@ describe('T04 R4 pinned Harness integration', () => {
 
       const snapshot = ledger.snapshot(session)
       expect(snapshot.sourceComplete).toBe(true)
-      expect(snapshot.executions).toHaveLength(1)
-      expect(snapshot.executions[0]).toMatchObject({
+      expect(snapshot.executions).toHaveLength(2)
+      expect(snapshot.executions.find(item => item.occurrence.kind === 'LIVE')).toMatchObject({
         lifecycle: 'SETTLED',
         provenance: 'LIVE_FINAL',
         terminal: { isError: false },
-        confirmations: [{ type: 'tool/result' }],
+        confirmations: [],
+      })
+      expect(snapshot.executions.find(item => item.occurrence.kind === 'DURABLE')).toMatchObject({
+        lifecycle: 'SETTLED',
+        provenance: 'DURABLE_SOURCE',
+        terminal: { isError: false },
       })
       expect(snapshot.approvals).toMatchObject([{
         lifecycle: 'DECIDED',

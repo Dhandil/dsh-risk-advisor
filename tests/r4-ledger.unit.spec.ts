@@ -161,7 +161,7 @@ describe('T04 R4 bounded ledger fault folding', () => {
     expect(JSON.stringify(colliding)).not.toContain('private-reason')
   })
 
-  it('F-006 folds live final plus unique durable confirmation into one execution', () => {
+  it('F-006 refuses unproven live/durable confirmation and preserves both facts', () => {
     const source = bracket([call('confirm'), result('confirm')])
     const { session } = sessionWith(source)
     const controller = new LedgerController()
@@ -169,14 +169,18 @@ describe('T04 R4 bounded ledger fault folding', () => {
     controller.observePreExecute(exec)
     controller.observeResult(exec, liveResult(false))
     const snapshot = controller.snapshot(session)
-    expect(snapshot.executions).toHaveLength(1)
-    expect(snapshot.executions[0]).toMatchObject({
+    expect(snapshot.executions).toHaveLength(2)
+    expect(snapshot.executions.find(item => item.occurrence.kind === 'LIVE')).toMatchObject({
       lifecycle: 'SETTLED',
       provenance: 'LIVE_FINAL',
       terminal: { provenance: 'LIVE_FINAL', isError: false },
-      terminalClaims: [{ provenance: 'LIVE_FINAL', isError: false }],
+      confirmations: [],
     })
-    expect(snapshot.executions[0]!.confirmations).toHaveLength(1)
+    expect(snapshot.executions.find(item => item.occurrence.kind === 'DURABLE')).toMatchObject({
+      lifecycle: 'SETTLED',
+      provenance: 'DURABLE_SOURCE',
+      terminal: { provenance: 'DURABLE_SOURCE', isError: false },
+    })
   })
 
   it('F-007 reports live/durable terminal disagreement as a bounded conflict', () => {
@@ -187,12 +191,14 @@ describe('T04 R4 bounded ledger fault folding', () => {
     controller.observePreExecute(exec)
     controller.observeResult(exec, liveResult(false))
     const snapshot = controller.snapshot(session)
-    expect(snapshot.executions).toHaveLength(1)
-    expect(snapshot.executions[0]).toMatchObject({
-      health: 'DEGRADED',
+    expect(snapshot.executions).toHaveLength(2)
+    expect(snapshot.executions.find(item => item.occurrence.kind === 'LIVE')).toMatchObject({
+      health: 'HEALTHY',
       terminal: { provenance: 'LIVE_FINAL', isError: false },
-      issueCodes: expect.arrayContaining(['TERMINAL_CONFLICT']),
-      terminalClaims: [{ provenance: 'LIVE_FINAL', isError: false }, { provenance: 'DURABLE_SOURCE', isError: true }],
+    })
+    expect(snapshot.executions.find(item => item.occurrence.kind === 'DURABLE')).toMatchObject({
+      health: 'HEALTHY',
+      terminal: { provenance: 'DURABLE_SOURCE', isError: true },
     })
   })
 
@@ -280,5 +286,107 @@ describe('T04 R4 bounded ledger fault folding', () => {
     const snapshot = foldLedgerSnapshot('r4-session', source)
     expect(snapshot.ptc?.occurrences[0]?.root).toMatchObject({ status: 'UNRESOLVED' })
     expect(snapshot.ptc?.occurrences[0]?.root).not.toMatchObject({ target: { seq: 2 } })
+  })
+
+  it('F-001/F-013 never adopts an old durable occurrence into a later live traversal', () => {
+    const source = bracket([call('reused'), result('reused')])
+    const { session } = sessionWith(source)
+    const controller = new LedgerController()
+    const later = execution(session, 'reused')
+    controller.observePreExecute(later)
+    controller.observeResult(later, liveResult(false))
+    const snapshot = controller.snapshot(session)
+    expect(snapshot.executions).toHaveLength(2)
+    expect(snapshot.executions.filter(item => item.occurrence.kind === 'LIVE')).toHaveLength(1)
+    expect(snapshot.executions.filter(item => item.occurrence.kind === 'DURABLE')).toHaveLength(1)
+    expect(snapshot.executions.every(item => item.confirmations.length === 0)).toBe(true)
+  })
+
+  it('F-001 keeps two distinct live traversals separate when a callId is reused', () => {
+    const { session } = sessionWith()
+    const controller = new LedgerController()
+    const first = execution(session, 'reused-live')
+    const second = execution(session, 'reused-live')
+    controller.observePreExecute(first)
+    controller.observeResult(first, liveResult(false))
+    controller.observePreExecute(second)
+    controller.observeResult(second, liveResult(true))
+    const live = controller.snapshot(session).executions.filter(item => item.occurrence.kind === 'LIVE')
+    expect(live).toHaveLength(2)
+    expect(live.map(item => item.terminalClaims.map(claim => claim.isError))).toEqual([[false], [true]])
+    expect(live.every(item => item.confirmations.length === 0)).toBe(true)
+  })
+
+  it('F-002/F-004 retains reverse durable and contradictory live terminal claims', () => {
+    const durable = durableSnapshot([call('reverse'), result('reverse', true), result('reverse', false)])
+    expect(durable.executions[0]).toMatchObject({
+      lifecycle: 'UNRESOLVED',
+      health: 'DEGRADED',
+      terminalClaims: [{ isError: true }, { isError: false }],
+    })
+    const { session } = sessionWith()
+    const controller = new LedgerController()
+    const exec = execution(session, 'live-conflict')
+    controller.observePreExecute(exec)
+    controller.observeResult(exec, liveResult(false))
+    controller.observeResult(exec, liveResult(true))
+    const live = controller.snapshot(session).executions[0]
+    expect(live).toMatchObject({
+      lifecycle: 'SETTLED',
+      health: 'DEGRADED',
+      terminalClaims: [{ isError: false }, { isError: true }],
+    })
+    expect(live).not.toHaveProperty('terminal')
+  })
+
+  it('F-003 fails closed on invalid or causally reordered source scope', () => {
+    const invalidBracket = events(
+      { type: 'turn/start', data: { turn: 1 } },
+      call('no-step'),
+      result('no-step'),
+      { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+    )
+    const invalid = foldLedgerSnapshot('invalid-scope', invalidBracket)
+    expect(invalid).toMatchObject({ health: 'DEGRADED', sourceComplete: false })
+    expect(invalid.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'INVALID_SOURCE_SCOPE' })]))
+    expect(invalid.executions.some(item => item.lifecycle === 'SETTLED' && item.health === 'HEALTHY')).toBe(false)
+
+    const earlyResult = events(
+      { type: 'turn/start', data: { turn: 1 } },
+      { type: 'step/start', data: { turn: 1, step: 1 } },
+      result('early'),
+      call('early'),
+      { type: 'step/end', data: { turn: 1, step: 1 } },
+      { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+    )
+    const reordered = foldLedgerSnapshot('reordered-scope', earlyResult)
+    expect(reordered.sourceComplete).toBe(false)
+    expect(reordered.executions.every(item => item.health === 'DEGRADED')).toBe(true)
+
+    const mismatchedEnd = events(
+      { type: 'turn/start', data: { turn: 1 } },
+      { type: 'step/start', data: { turn: 1, step: 1 } },
+      call('bad-end'),
+      { type: 'step/end', data: { turn: 2, step: 1 } },
+      { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+    )
+    const mismatched = foldLedgerSnapshot('mismatched-end', mismatchedEnd)
+    expect(mismatched.sourceComplete).toBe(false)
+    expect(mismatched.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'INVALID_SOURCE_SCOPE' })]))
+  })
+
+  it('F-004 marks truncation from the exact combined execution/approval candidates', () => {
+    const source = bracket([call('limited'), result('limited'), asked('limited-approval')])
+    const { session } = sessionWith(source)
+    const controller = new LedgerController()
+    const exec = execution(session, 'live-limited')
+    controller.observePreExecute(exec)
+    controller.observeResult(exec, liveResult(false))
+    const limited = controller.snapshot(session, { limit: 1 })
+    expect(limited.truncated).toBe(true)
+    expect(limited.health).toBe('DEGRADED')
+    expect(limited.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'QUERY_LIMIT_CLAMPED' })]))
+    expect(controller.snapshot(session, { limit: 0 })).toMatchObject({ truncated: true, executions: [], approvals: [] })
+    expect(durableSnapshot([call('within')], { limit: 1 }).truncated).toBe(false)
   })
 })

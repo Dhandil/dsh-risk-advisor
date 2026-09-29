@@ -133,7 +133,22 @@ interface SourceApprovalDecided {
   readonly outcome: ApprovalOutcome
 }
 
-type SourceFact = SourceCall | SourceResult | SourceApprovalAsked | SourceApprovalDecided
+type BoundaryType = 'turn/start' | 'turn/end' | 'step/start' | 'step/end'
+
+interface SourceBoundary {
+  readonly kind: 'boundary'
+  readonly seq: number
+  readonly type: BoundaryType
+  readonly turn: number
+  readonly step?: number
+}
+
+type SourceFact = SourceCall | SourceResult | SourceApprovalAsked | SourceApprovalDecided | SourceBoundary
+
+interface SourceScopeAudit {
+  readonly invalidSeqs: ReadonlySet<number>
+  readonly issues: readonly LedgerIssue[]
+}
 
 interface SourceEntry {
   readonly seq: number
@@ -247,9 +262,29 @@ function parseResultMessage(data: Record<string, unknown>): ParsedResult | undef
   return { scope, callId, isError, ...error === undefined ? {} : { error } }
 }
 
+function parseBoundary(event: SessionEvent): SourceBoundary | undefined {
+  if (!record(event.data)) return undefined
+  if (event.type === 'turn/start' || event.type === 'turn/end') {
+    const turn = safeInteger(event.data.turn)
+    return turn === undefined ? undefined : { kind: 'boundary', seq: Number(event.seq), type: event.type, turn }
+  }
+  if (event.type === 'step/start' || event.type === 'step/end') {
+    const scope = scopeOf(event.data)
+    return scope === undefined
+      ? undefined
+      : { kind: 'boundary', seq: Number(event.seq), type: event.type, turn: scope.turn, step: scope.step }
+  }
+  return undefined
+}
+
 function parseFact(event: SessionEvent): SourceFact | undefined {
   if (!record(event.data)) return undefined
   switch (event.type) {
+    case 'turn/start':
+    case 'turn/end':
+    case 'step/start':
+    case 'step/end':
+      return parseBoundary(event)
     case 'tool/call': {
       const scope = scopeOf(event.data)
       const callId = safeString(event.data.callId)
@@ -391,7 +426,10 @@ function ingestEvent(state: LedgerState, event: SessionEvent): void {
   }
   state.sourceEntries.set(key, freezeObject({ seq, type, fingerprint, ...fact === undefined ? {} : { fact } }))
   state.sourceWatermark = Math.max(state.sourceWatermark, seq)
-  if (fact === undefined && ['tool/call', 'tool/result', 'approval/asked', 'approval/decided'].includes(type)) {
+  if (fact === undefined && [
+    'turn/start', 'turn/end', 'step/start', 'step/end',
+    'tool/call', 'tool/result', 'approval/asked', 'approval/decided',
+  ].includes(type)) {
     addIssue(state, 'INVALID_SOURCE_FACT', seq, 'DURABLE_SOURCE')
   }
 }
@@ -403,6 +441,100 @@ function sourceFacts(state: LedgerState): SourceFact[] {
     .sort((a, b) => a.seq - b.seq)
 }
 
+function auditSourceScope(state: LedgerState): SourceScopeAudit {
+  const invalidSeqs = new Set<number>()
+  const issues: LedgerIssue[] = []
+  const pendingCalls = new Map<string, number>()
+  const completedCalls = new Set<string>()
+  const askedApprovals = new Set<string>()
+  let openTurn: number | undefined
+  let openStep: number | undefined
+  let nextTurn = 1
+  let nextStep = 1
+
+  const fail = (seq: number, code = 'INVALID_SOURCE_SCOPE'): void => {
+    invalidSeqs.add(seq)
+    if (!issues.some(existing => existing.code === code && existing.seq === seq)) {
+      issues.push(issue(code, seq, 'DURABLE_SOURCE'))
+    }
+  }
+  const callKey = (turn: number, step: number, callId: string): string => compositeKey([turn, step, callId])
+  const clearStepCalls = (turn: number | undefined, step: number | undefined): void => {
+    if (turn === undefined || step === undefined) return
+    const prefix = JSON.stringify([turn, step]).slice(0, -1)
+    for (const key of pendingCalls.keys()) if (key.startsWith(`${prefix},`)) pendingCalls.delete(key)
+    for (const key of completedCalls) if (key.startsWith(`${prefix},`)) completedCalls.delete(key)
+  }
+
+  for (const fact of sourceFacts(state)) {
+    switch (fact.kind) {
+      case 'boundary':
+        switch (fact.type) {
+          case 'turn/start':
+            if (openTurn !== undefined || fact.turn !== nextTurn) fail(fact.seq)
+            openTurn = fact.turn
+            openStep = undefined
+            nextStep = 1
+            break
+          case 'turn/end':
+            if (openTurn !== fact.turn || openStep !== undefined) fail(fact.seq)
+            clearStepCalls(openTurn, openStep)
+            if (openTurn === fact.turn) openTurn = undefined
+            openStep = undefined
+            nextTurn = Math.max(nextTurn, fact.turn + 1)
+            break
+          case 'step/start':
+            if (openTurn !== fact.turn || openStep !== undefined || fact.step !== nextStep) fail(fact.seq)
+            if (openTurn === fact.turn && openStep === undefined) openStep = fact.step
+            break
+          case 'step/end':
+            if (openTurn !== fact.turn || openStep !== fact.step) fail(fact.seq)
+            if (openTurn === fact.turn && openStep === fact.step) {
+              clearStepCalls(openTurn, openStep)
+              openStep = undefined
+              nextStep += 1
+            }
+            break
+        }
+        break
+      case 'call':
+        if (openTurn !== fact.scope.turn || openStep !== fact.scope.step) {
+          fail(fact.seq)
+        } else {
+          const key = callKey(fact.scope.turn, fact.scope.step, fact.callId)
+          pendingCalls.set(key, (pendingCalls.get(key) ?? 0) + 1)
+        }
+        break
+      case 'result': {
+        if (openTurn !== fact.scope.turn || openStep !== fact.scope.step) {
+          fail(fact.seq)
+          break
+        }
+        const key = callKey(fact.scope.turn, fact.scope.step, fact.callId)
+        const pending = pendingCalls.get(key) ?? 0
+        if (pending > 0) {
+          if (pending === 1) pendingCalls.delete(key)
+          else pendingCalls.set(key, pending - 1)
+          completedCalls.add(key)
+        } else if (completedCalls.has(key) || fact.error?.code === 'TOOL_NOT_STARTED') {
+          // A second result after a committed result is retained as a
+          // bounded terminal-conflict candidate by the reducer below.
+        } else {
+          fail(fact.seq)
+        }
+        break
+      }
+      case 'approval-asked':
+        askedApprovals.add(fact.id)
+        break
+      case 'approval-decided':
+        if (!askedApprovals.has(fact.id)) fail(fact.seq, 'INVALID_APPROVAL_ORDER')
+        break
+    }
+  }
+  return { invalidSeqs, issues: freezeArray(issues) }
+}
+
 function buildDurableClaim(result: SourceResult, provenance: 'DURABLE_SOURCE' | 'CONFIRMATION'): LedgerTerminalClaim {
   return terminalClaim(
     result.isError,
@@ -410,10 +542,6 @@ function buildDurableClaim(result: SourceResult, provenance: 'DURABLE_SOURCE' | 
     sourceRef(result.seq, 'tool/result', provenance),
     result.error,
   )
-}
-
-function issueCodes(...values: readonly (readonly string[])[]): readonly string[] {
-  return freezeArray([...new Set(values.flat())])
 }
 
 function sourceRefs(...refs: readonly (LedgerEvidenceRef | undefined)[]): readonly LedgerEvidenceRef[] {
@@ -446,57 +574,14 @@ function executionFact(input: {
   })
 }
 
-function mergeLiveIntoDurable(
-  durable: LedgerExecutionFact,
-  live: LiveRecord,
-): LedgerExecutionFact {
-  if (live.finalClaims.length === 0) return durable
-  const liveClaim = live.finalClaims[0]!
-  const durableClaims = durable.terminalClaims
-  const issueList = [...durable.issueCodes, ...live.issueCodes]
-  if (durableClaims.length === 0) {
-    return executionFact({
-      ...durable,
-      lifecycle: 'SETTLED',
-      health: issueList.length === 0 ? 'HEALTHY' : 'DEGRADED',
-      provenance: 'LIVE_FINAL',
-      source: sourceRefs(...durable.source, sourceRef(live.ordinal, 'tools/result', 'LIVE_FINAL')),
-      terminal: liveClaim,
-      terminalClaims: [liveClaim],
-      issueCodes: issueList,
-    })
-  }
-  const matching = durableClaims.some(claim => sameClaim(claim, liveClaim))
-  const confirmation = durableClaims[0]!.evidence
-  if (matching) {
-    return executionFact({
-      ...durable,
-      health: issueList.length === 0 ? 'HEALTHY' : 'DEGRADED',
-      provenance: 'LIVE_FINAL',
-      source: sourceRefs(...durable.source, sourceRef(live.ordinal, 'tools/result', 'LIVE_FINAL')),
-      terminal: liveClaim,
-      terminalClaims: [liveClaim],
-      confirmations: confirmation === undefined ? [] : [confirmation],
-      issueCodes: issueList,
-    })
-  }
-  return executionFact({
-    ...durable,
-    health: 'DEGRADED',
-    provenance: 'LIVE_FINAL',
-    source: sourceRefs(...durable.source, sourceRef(live.ordinal, 'tools/result', 'LIVE_FINAL')),
-    terminal: liveClaim,
-    terminalClaims: [liveClaim, ...durableClaims],
-    issueCodes: issueCodes(issueList, ['TERMINAL_CONFLICT']),
-  })
-}
-
 function buildSnapshot(state: LedgerState, options: LedgerQueryOptions = {}): LedgerSnapshot {
   const requestedLimit = options.limit ?? LEDGER_LIMITS.defaultQueryLimit
   const limit = Number.isSafeInteger(requestedLimit) && requestedLimit >= 0
     ? Math.min(requestedLimit, LEDGER_LIMITS.maxRetainedFacts)
     : LEDGER_LIMITS.defaultQueryLimit
   const facts = sourceFacts(state)
+  const scopeAudit = auditSourceScope(state)
+  const invalidSourceSeqs = scopeAudit.invalidSeqs
   const calls = facts.filter((fact): fact is SourceCall => fact.kind === 'call')
   const results = facts.filter((fact): fact is SourceResult => fact.kind === 'result')
   const asked = facts.filter((fact): fact is SourceApprovalAsked => fact.kind === 'approval-asked')
@@ -516,16 +601,26 @@ function buildSnapshot(state: LedgerState, options: LedgerQueryOptions = {}): Le
     resultsByIdentity.set(key, values)
   }
 
-  const durableByCallSeq = new Map<number, LedgerExecutionFact>()
   const claimedResultSeqs = new Set<number>()
   const durableFacts: LedgerExecutionFact[] = []
   for (const call of calls) {
     const identity = compositeKey([call.scope.turn, call.scope.step, call.callId])
     const sameCalls = callsByIdentity.get(identity) ?? []
-    const candidates = (resultsByIdentity.get(identity) ?? []).filter(result => result.seq > call.seq)
+    const candidates = (resultsByIdentity.get(identity) ?? []).filter(result =>
+      result.seq > call.seq && !invalidSourceSeqs.has(result.seq))
     const callSource = sourceRef(call.seq, 'tool/call', 'DURABLE_SOURCE')
     let fact: LedgerExecutionFact
-    if (sameCalls.length !== 1) {
+    if (invalidSourceSeqs.has(call.seq)) {
+      fact = executionFact({
+        sessionId: state.sessionId,
+        occurrence: { kind: 'DURABLE', callSeq: call.seq, turn: call.scope.turn, step: call.scope.step, callId: call.callId, toolName: call.name },
+        lifecycle: 'UNRESOLVED',
+        health: 'DEGRADED',
+        provenance: 'DURABLE_SOURCE',
+        source: [callSource],
+        issueCodes: ['INVALID_SOURCE_SCOPE'],
+      })
+    } else if (sameCalls.length !== 1) {
       fact = executionFact({
         sessionId: state.sessionId,
         occurrence: { kind: 'DURABLE', callSeq: call.seq, turn: call.scope.turn, step: call.scope.step, callId: call.callId, toolName: call.name },
@@ -572,15 +667,15 @@ function buildSnapshot(state: LedgerState, options: LedgerQueryOptions = {}): Le
       })
       for (const result of candidates) claimedResultSeqs.add(result.seq)
     }
-    durableByCallSeq.set(call.seq, fact)
     durableFacts.push(fact)
   }
 
   for (const result of results) {
     const identity = compositeKey([result.scope.turn, result.scope.step, result.callId])
-    const candidates = callsByIdentity.get(identity) ?? []
+    const candidates = (callsByIdentity.get(identity) ?? []).filter(call => !invalidSourceSeqs.has(call.seq))
     if (claimedResultSeqs.has(result.seq)) continue
     const claim = buildDurableClaim(result, 'DURABLE_SOURCE')
+    const invalidScope = invalidSourceSeqs.has(result.seq)
     durableFacts.push(executionFact({
       sessionId: state.sessionId,
       occurrence: { kind: 'DURABLE', turn: result.scope.turn, step: result.scope.step, callId: result.callId },
@@ -589,27 +684,18 @@ function buildSnapshot(state: LedgerState, options: LedgerQueryOptions = {}): Le
       provenance: 'DURABLE_SOURCE',
       source: [claim.evidence!],
       terminalClaims: [claim],
-      issueCodes: [candidates.length === 0 ? 'ORPHAN_DURABLE_RESULT' : 'AMBIGUOUS_RESULT_BINDING'],
+      issueCodes: [invalidScope
+        ? 'INVALID_SOURCE_SCOPE'
+        : candidates.length === 0 ? 'ORPHAN_DURABLE_RESULT' : 'AMBIGUOUS_RESULT_BINDING'],
     }))
   }
 
-  const mergedDurableCallSeqs = new Set<number>()
-  const mergedFacts: LedgerExecutionFact[] = []
+  const liveFacts: LedgerExecutionFact[] = []
   for (const live of [...state.liveRecords].sort((a, b) => a.ordinal - b.ordinal)) {
-    const candidates = calls.filter(call => call.callId === live.callId && call.name === live.toolName)
-    if (candidates.length === 1) {
-      const durable = durableByCallSeq.get(candidates[0]!.seq)
-      if (durable !== undefined) {
-        mergedDurableCallSeqs.add(candidates[0]!.seq)
-        mergedFacts.push(mergeLiveIntoDurable(durable, live))
-        continue
-      }
-    }
     const issues = [...live.issueCodes]
-    if (candidates.length > 1) issues.push('AMBIGUOUS_LIVE_DURABLE_BINDING')
     const claims = [...live.finalClaims]
     const hasFinal = claims.length > 0
-    mergedFacts.push(executionFact({
+    liveFacts.push(executionFact({
       sessionId: state.sessionId,
       occurrence: {
         kind: 'LIVE',
@@ -620,7 +706,7 @@ function buildSnapshot(state: LedgerState, options: LedgerQueryOptions = {}): Le
       lifecycle: hasFinal ? 'SETTLED' : live.dispatchObserved ? 'DISPATCHING' : 'INCOMPLETE',
       health: issues.includes('RECOVERED_FROM_FULL_EXEC')
         ? 'RECOVERED'
-        : !hasFinal || issues.length > 0 || candidates.length > 1 ? 'DEGRADED' : 'HEALTHY',
+        : !hasFinal || issues.length > 0 ? 'DEGRADED' : 'HEALTHY',
       provenance: hasFinal ? 'LIVE_FINAL' : 'LIVE_START',
       source: [sourceRef(live.ordinal, 'tools/pre-execute', 'LIVE_START'),
         ...claims.length === 0 ? [] : [sourceRef(live.ordinal, 'tools/result', 'LIVE_FINAL')]],
@@ -648,6 +734,9 @@ function buildSnapshot(state: LedgerState, options: LedgerQueryOptions = {}): Le
     if (duplicateAsked) issues.push('AMBIGUOUS_APPROVAL')
     if (conflictingDecisions) issues.push('APPROVAL_CONFLICT')
     if (askedForId.length === 0) issues.push('ORPHAN_APPROVAL_DECISION')
+    if (askedForId.some(item => invalidSourceSeqs.has(item.seq)) || decidedForId.some(item => invalidSourceSeqs.has(item.seq))) {
+      issues.push('INVALID_SOURCE_SCOPE')
+    }
     const liveAsked = state.liveApprovalIds.has(id)
     const lifecycle: ApprovalLifecycle = duplicateAsked || conflictingDecisions
       ? 'AMBIGUOUS'
@@ -672,17 +761,19 @@ function buildSnapshot(state: LedgerState, options: LedgerQueryOptions = {}): Le
     }))
   }
 
-  const truncated = durableFacts.length + approvalFacts.length > limit
-  const executions = freezeArray(mergedFacts.concat(durableFacts.filter(fact =>
-    fact.occurrence.callSeq === undefined || !mergedDurableCallSeqs.has(fact.occurrence.callSeq))).slice(0, limit))
-  const remaining = Math.max(0, limit - executions.length)
-  const approvals = freezeArray(approvalFacts.slice(0, remaining))
+  const executionCandidates = liveFacts.concat(durableFacts)
+  const allCandidates: readonly (LedgerExecutionFact | LedgerApprovalFact)[] = [...executionCandidates, ...approvalFacts]
+  const truncated = allCandidates.length > limit
+  const selected = allCandidates.slice(0, limit)
+  const executions = freezeArray(selected.filter((fact): fact is LedgerExecutionFact => 'occurrence' in fact))
+  const approvals = freezeArray(selected.filter((fact): fact is LedgerApprovalFact => 'approvalId' in fact))
   const localIssues = truncated ? [issue('QUERY_LIMIT_CLAMPED', undefined, 'UNKNOWN')] : []
-  const allIssues = [...state.issues, ...localIssues]
+  const allIssues = [...state.issues, ...scopeAudit.issues, ...localIssues]
   const hasDegradedFact = [...executions, ...approvals].some(fact => fact.health === 'DEGRADED')
   const hasRecoveredFact = [...executions, ...approvals].some(fact => fact.health === 'RECOVERED')
   const unresolvedGap = state.sawRecoverableGap && !state.recovered
-  const health: LedgerHealth = state.hardDegraded || unresolvedGap || hasDegradedFact
+  const sourceScopeDegraded = scopeAudit.invalidSeqs.size > 0
+  const health: LedgerHealth = state.hardDegraded || unresolvedGap || sourceScopeDegraded || truncated || hasDegradedFact
     ? 'DEGRADED'
     : state.recovered || hasRecoveredFact
       ? 'RECOVERED'
@@ -691,7 +782,7 @@ function buildSnapshot(state: LedgerState, options: LedgerQueryOptions = {}): Le
     sessionId: state.sessionId,
     health,
     sourceWatermark: state.sourceWatermark,
-    sourceComplete: state.snapshotComplete && !state.hardDegraded,
+    sourceComplete: state.snapshotComplete && !state.hardDegraded && !sourceScopeDegraded,
     truncated,
     issues: freezeArray(allIssues.slice(0, LEDGER_LIMITS.maxIssues)),
     executions,
