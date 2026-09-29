@@ -85,6 +85,24 @@ describe('T03 R3 durable PTC replay projection', () => {
     })
   })
 
+  it('F1 rejects a unique settlement that precedes its START', () => {
+    const projection = validProjection([
+      call('root'),
+      settle('root', 'root', 'reversed', 'echo', true),
+      start('root', 'root', 'reversed'),
+    ])
+    expect(projection.status).toBe('DEGRADED')
+    expect(projection.degradation).toMatchObject({ reason: 'PTC_SETTLEMENT_BEFORE_START' })
+    expect(projection.issues).toContainEqual({ reason: 'PTC_SETTLEMENT_BEFORE_START', seq: 3 })
+    expect(projection.occurrences[0]!.settlement).toMatchObject({
+      status: 'UNRESOLVED', reason: 'SETTLEMENT_BEFORE_START',
+    })
+    expect(projection.occurrences[0]!.settlement).not.toHaveProperty('isError')
+    expect(projection.orphanSettlements[0]!.resolution).toMatchObject({
+      status: 'UNRESOLVED', reason: 'SETTLEMENT_BEFORE_START',
+    })
+  })
+
   it('R3-02 keeps siblings on one root without making either the other parent', () => {
     const projection = validProjection([
       call('root'),
@@ -154,6 +172,32 @@ describe('T03 R3 durable PTC replay projection', () => {
     expect(projection.occurrences[0]!.root).toMatchObject({ status: 'AMBIGUOUS' })
   })
 
+  it('F2 keeps delimiter-containing root/parent fields injective', () => {
+    const aliased = validProjection([
+      call('root'),
+      start('r\u0000p', 'q', 'same-sub'),
+      settle('r', 'p\u0000q', 'same-sub', 'echo', true),
+    ])
+    expect(aliased.occurrences[0]!.settlement).toMatchObject({
+      status: 'UNRESOLVED', reason: 'CONTRADICTORY_STRUCTURAL_TUPLE',
+    })
+    expect(aliased.occurrences[0]!.settlement).not.toHaveProperty('isError')
+    expect(aliased.orphanSettlements[0]!.resolution).toMatchObject({
+      status: 'UNRESOLVED', reason: 'CONTRADICTORY_STRUCTURAL_TUPLE',
+    })
+
+    const delimiterRoot = validProjection([
+      call('root\u0000call'),
+      start('root\u0000call', 'root\u0000call', 'delimited-child'),
+      settle('root\u0000call', 'root\u0000call', 'delimited-child'),
+    ])
+    expect(delimiterRoot.occurrences[0]).toMatchObject({
+      parent: { status: 'RECOVERED', target: { callId: 'root\u0000call' } },
+      root: { status: 'RECOVERED', target: { callId: 'root\u0000call' } },
+      settlement: { status: 'PAIRED' },
+    })
+  })
+
   it('R3-07 refuses to pair duplicate starts and duplicate settles', () => {
     const projection = validProjection([
       call('root'),
@@ -207,6 +251,55 @@ describe('T03 R3 durable PTC replay projection', () => {
     expect(replayPtcSnapshot('session-r3', duplicateSeq).status).toBe('DEGRADED')
     expect(replayPtcSnapshot('session-r3', Array.from({ length: PTC_REPLAY_LIMITS.maxSourceEvents + 1 }, () => source[0]!)).degradation)
       .toMatchObject({ reason: 'LIMIT_EXCEEDED' })
+  })
+
+  it('F3 degrades and suppresses edges at the PTC evidence cap', () => {
+    const projection = validProjection([
+      call('root'),
+      ...Array.from({ length: PTC_REPLAY_LIMITS.maxPtcEvidence + 1 }, (_, index) =>
+        start('root', 'root', `bounded-${index}`)),
+    ])
+    expect(projection.status).toBe('DEGRADED')
+    expect(projection.degradation).toMatchObject({ reason: 'LIMIT_EXCEEDED' })
+    expect(projection.ptcStartCount).toBe(PTC_REPLAY_LIMITS.maxPtcEvidence)
+    expect(projection.occurrences.every(item =>
+      item.parent.status === 'UNRESOLVED'
+      && item.root.status === 'UNRESOLVED'
+      && item.settlement.status === 'UNRESOLVED')).toBe(true)
+    expect(JSON.stringify(projection)).not.toContain('do-not-export')
+  })
+
+  it('F3 suppresses recovered/paired edges from an invalid bracket', () => {
+    const malformed = bracket([call('root'), start('root', 'root', 'child'), settle('root', 'root', 'child')])
+      .map(event => ({ ...event }))
+    const stepEnd = malformed.find(event => event.type === 'step/end')!
+    ;(stepEnd as { seq: number }).seq = 2
+    const projection = replayPtcSnapshot('session-r3', malformed)
+    expect(projection.status).toBe('DEGRADED')
+    expect(projection.issues.map(issue => issue.reason)).toContain('NON_CONTIGUOUS_SEQUENCE')
+    expect(projection.occurrences.every(item =>
+      item.parent.status !== 'RECOVERED'
+      && item.root.status !== 'RECOVERED'
+      && item.settlement.status !== 'PAIRED')).toBe(true)
+
+    const overlapping = events(
+      { type: 'turn/start', data: { turn: 1 } },
+      { type: 'step/start', data: { turn: 1, step: 1 } },
+      call('root'), start('root', 'root', 'child'), settle('root', 'root', 'child'),
+      { type: 'turn/start', data: { turn: 2 } },
+      { type: 'step/start', data: { turn: 2, step: 1 } },
+      { type: 'tool/call', data: { turn: 2, step: 1, callId: 'root-2', name: 'run_code', arguments: '{}' } },
+      start('root-2', 'root-2', 'child-2'), settle('root-2', 'root-2', 'child-2'),
+      { type: 'step/end', data: { turn: 2, step: 1 } },
+      { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } },
+    )
+    const overlapProjection = replayPtcSnapshot('session-r3', overlapping)
+    expect(overlapProjection.status).toBe('DEGRADED')
+    expect(overlapProjection.issues.map(issue => issue.reason)).toContain('TURN_START_OVERLAP')
+    expect(overlapProjection.occurrences.every(item =>
+      item.parent.status === 'UNRESOLVED'
+      && item.root.status === 'UNRESOLVED'
+      && item.settlement.status === 'UNRESOLVED')).toBe(true)
   })
 
   it('R3-11 exposes structural edges only and never semantic retry/escalation links', () => {

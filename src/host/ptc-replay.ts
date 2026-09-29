@@ -122,16 +122,24 @@ function integer(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
 }
 
+function compositeKey(fields: readonly (number | string)[]): string {
+  return JSON.stringify(fields)
+}
+
 function scopeKey(scope: Scope): string {
-  return `${scope.turn}\u0000${scope.step}`
+  return compositeKey([scope.turn, scope.step])
+}
+
+function topCallKey(scope: Scope, callId: string): string {
+  return compositeKey([scopeKey(scope), callId])
 }
 
 function tupleKey(scope: Scope, rootCallId: string, parentCallId: string, subCallId: string, name: string): string {
-  return `${scopeKey(scope)}\u0000${rootCallId}\u0000${parentCallId}\u0000${subCallId}\u0000${name}`
+  return compositeKey([scopeKey(scope), rootCallId, parentCallId, subCallId, name])
 }
 
 function subKey(scope: Scope, subCallId: string): string {
-  return `${scopeKey(scope)}\u0000${subCallId}`
+  return compositeKey([scopeKey(scope), subCallId])
 }
 
 function evidence(seq: number, type: EvidenceRef['type']): EvidenceRef {
@@ -385,7 +393,7 @@ export function replayPtcSnapshot(sessionIdValue: string, events: readonly Sessi
 
   const topByCall = new Map<string, ToolCallOccurrence[]>()
   for (const call of topCalls) {
-    const key = `${call.ref.turn}\u0000${call.ref.step}\u0000${call.ref.callId}`
+    const key = topCallKey({ turn: call.ref.turn, step: call.ref.step }, call.ref.callId)
     const entries = topByCall.get(key) ?? []
     entries.push(call)
     topByCall.set(key, entries)
@@ -422,7 +430,7 @@ export function replayPtcSnapshot(sessionIdValue: string, events: readonly Sessi
   const rootByStart = new Map<PtcStartOccurrence, EdgeResolution>()
 
   const parentFor = (start: PtcStartOccurrence): EdgeResolution => {
-    const topKey = `${scopeKey(start.scope)}\u0000${start.parentCallId}`
+    const topKey = topCallKey(start.scope, start.parentCallId)
     const allTop = topByCall.get(topKey) ?? []
     const priorTop = allTop.filter(candidate => candidate.ref.seq < start.ref.seq)
     if (start.parentCallId === start.rootCallId) {
@@ -454,7 +462,7 @@ export function replayPtcSnapshot(sessionIdValue: string, events: readonly Sessi
       return cycle
     }
     resolvingRoots.add(start)
-    const rootKey = `${scopeKey(start.scope)}\u0000${start.rootCallId}`
+    const rootKey = topCallKey(start.scope, start.rootCallId)
     const rootCandidates = (topByCall.get(rootKey) ?? []).filter(candidate => candidate.ref.seq < start.ref.seq)
     let result: EdgeResolution
     if (rootCandidates.length === 0) {
@@ -490,6 +498,13 @@ export function replayPtcSnapshot(sessionIdValue: string, events: readonly Sessi
     return result
   }
 
+  const invalidSettlementSeqs = new Set<number>()
+  const recordInvalidSettlementOrder = (settle: PtcSettleOccurrence): void => {
+    if (invalidSettlementSeqs.has(settle.seq)) return
+    invalidSettlementSeqs.add(settle.seq)
+    addIssue('PTC_SETTLEMENT_BEFORE_START', settle.seq)
+  }
+
   const settlementFor = (start: PtcStartOccurrence): SettlementResolution => {
     const key = tupleKey(start.scope, start.rootCallId, start.parentCallId, start.subCallId, start.name)
     const startsForTuple = startsByTuple.get(key) ?? []
@@ -501,7 +516,12 @@ export function replayPtcSnapshot(sessionIdValue: string, events: readonly Sessi
     }
     if (settlesForTuple.length === 0) return startOnly('NO_SETTLEMENT')
     if (settlesForTuple.length > 1) return ambiguousSettlement(settlesForTuple.map(settle => settle.seq), 'MULTIPLE_SETTLEMENTS')
-    return paired(settlesForTuple[0]!, [start.evidence, settlesForTuple[0]!.evidence])
+    const settle = settlesForTuple[0]!
+    if (start.ref.seq >= settle.seq) {
+      recordInvalidSettlementOrder(settle)
+      return unresolvedSettlement('SETTLEMENT_BEFORE_START')
+    }
+    return paired(settle, [start.evidence, settle.evidence])
   }
 
   const occurrenceResults: PtcReplayOccurrence[] = starts.map((start) => Object.freeze({
@@ -528,12 +548,27 @@ export function replayPtcSnapshot(sessionIdValue: string, events: readonly Sessi
       }))
       continue
     }
-    if (startsForTuple.length === 1 && (settlesByTuple.get(key)?.length ?? 0) === 1) continue
+    const settlesForTuple = settlesByTuple.get(key) ?? []
+    if (startsForTuple.length === 1 && settlesForTuple.length === 1) {
+      const start = startsForTuple[0]!
+      if (start.ref.seq < settle.seq) continue
+      recordInvalidSettlementOrder(settle)
+      orphanResults.push(Object.freeze({
+        sessionId,
+        turn: settle.scope.turn,
+        step: settle.scope.step,
+        seq: settle.seq,
+        subCallId: settle.subCallId,
+        name: settle.name,
+        resolution: unresolvedSettlement('SETTLEMENT_BEFORE_START'),
+      }))
+      continue
+    }
     const resolution = startsForTuple.length === 0
       ? settleOnly(settle, 'NO_START_OCCURRENCE')
       : startsForTuple.length > 1
         ? ambiguousSettlement(startsForTuple.map(start => start.ref.seq), 'MULTIPLE_START_OCCURRENCES')
-        : ambiguousSettlement((settlesByTuple.get(key) ?? []).map(candidate => candidate.seq), 'MULTIPLE_SETTLEMENTS')
+        : ambiguousSettlement(settlesForTuple.map(candidate => candidate.seq), 'MULTIPLE_SETTLEMENTS')
     orphanResults.push(Object.freeze({
       sessionId,
       turn: settle.scope.turn,
@@ -545,16 +580,39 @@ export function replayPtcSnapshot(sessionIdValue: string, events: readonly Sessi
     }))
   }
 
-  const frozenIssues = freezeArray(issues)
   const status: ReplayStatus = degradationReason === undefined ? 'COMPLETE' : 'DEGRADED'
+  const suppressEdge = (edge: EdgeResolution): EdgeResolution =>
+    edge.status === 'UNRESOLVED' ? edge : unresolvedEdge('SOURCE_DEGRADED')
+  const suppressSettlement = (settlement: SettlementResolution): SettlementResolution =>
+    settlement.status === 'UNRESOLVED' ? settlement : unresolvedSettlement('SOURCE_DEGRADED')
+  const finalOccurrences = degradationReason === undefined
+    ? occurrenceResults
+    : occurrenceResults.map(item => Object.freeze({
+      occurrence: item.occurrence,
+      parent: suppressEdge(item.parent),
+      root: suppressEdge(item.root),
+      settlement: suppressSettlement(item.settlement),
+    }))
+  const finalOrphans = degradationReason === undefined
+    ? orphanResults
+    : orphanResults.map(item => Object.freeze({
+      sessionId: item.sessionId,
+      turn: item.turn,
+      step: item.step,
+      seq: item.seq,
+      subCallId: item.subCallId,
+      name: item.name,
+      resolution: suppressSettlement(item.resolution),
+    }))
+  const frozenIssues = freezeArray(issues)
   return Object.freeze({
     sessionId,
     status,
     sourceEventCount: events.length,
     ptcStartCount: starts.length,
     ptcSettleCount: settles.length,
-    occurrences: freezeArray(occurrenceResults),
-    orphanSettlements: freezeArray(orphanResults),
+    occurrences: freezeArray(finalOccurrences),
+    orphanSettlements: freezeArray(finalOrphans),
     issues: frozenIssues,
     ...degradationReason === undefined ? {} : {
       degradation: Object.freeze({ status: 'DEGRADED' as const, reason: degradationReason }),
