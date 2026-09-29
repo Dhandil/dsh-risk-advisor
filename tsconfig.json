@@ -1,9 +1,8 @@
 {
   "extends": "../../deepseek-harness/tsconfig.base.client.json",
   "compilerOptions": {
-    "rootDir": ".",
-    "outDir": "dist",
-    "noEmit": true,
+    "rootDir": "src",
+    "outDir": "lib/types",
     "paths": {
       "@deepseek-ai/cordis": ["../../deepseek-harness/vendor/cordis/lib/types/index.d.ts"],
       "@deepseek-ai/dsh-client-locale/client": ["../../deepseek-harness/packages/client/locale/lib/types/client/index.d.ts"],
