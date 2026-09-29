@@ -2,9 +2,20 @@
 
 ## Outcome
 
-`T04_R4_PUBLISHED_READY_FOR_REVIEW`
+`T04_R4_REPAIR_PUBLISHED`
 
 This is a Codex implementation and evidence report only. Final acceptance belongs to ChatGPT Web. No `Acceptance_Report.md` was created and no `ACCEPTED` status is asserted.
+
+## Repair update — F1–F4
+
+Repair starting remote: `b405e5b99e4c3731fb135fcda401c91f714e2869`.
+
+- F1: PASS for the required safety behavior. Historical `callId`/tool-name uniqueness no longer merges Live and Durable facts. Because the pinned public seams do not furnish an exact cross-plane invocation witness, positive F-006/F-013 confirmation remains `PARTIAL`, not an inferred PASS.
+- F2: PASS. Durable and live contradictory terminal claims remain bounded, source-qualified, and visible; matching claims are never used to hide contrary evidence and no last-writer-wins terminal is exported.
+- F3: PASS. The reducer audits turn/step brackets, call/result causal order, and approval decision order. Affected invalid source facts become degraded/unresolved and `sourceComplete=false`; valid complete source remains a positive control.
+- F4: PASS. Truncation is computed from the exact combined Live + Durable + Approval candidate list before selection. `limit=0`, omitted mixed facts, and query-cap omission report `QUERY_LIMIT_CLAMPED` and degraded query health.
+
+Repair implementation/Tested SHA: `2dfb7c28dddead0eb84b7d2da662b7abca4a4690`.
 
 ## Baselines and upstream decision
 
@@ -40,11 +51,13 @@ Implementation commit `a6f51c15190c063e83e8bae09d591db4feddb01b` contains only:
 
 This report is intentionally a later report-only change.
 
+Repair commit `2dfb7c28dddead0eb84b7d2da662b7abca4a4690` adds the F1–F4 reducer/test repair and preserves the supplied `T04_Repair_Instructions.md`.
+
 ## Implementation decisions and safety boundary
 
 - State is owned by exact `Session` objects through `WeakMap<Session, ...>`; exact live `ToolExecution` and its token are kept only in private runtime state. No replay path creates or restores a T02 `ExecutionId`.
 - Durable source identity is validated Session-local `(seq,type)` plus turn/step occurrence. Duplicate source delivery is idempotent; distinct sequence numbers remain distinct; conflicting terminal evidence is retained as bounded sanitized claims.
-- `tools/result` is the authoritative live terminal. A unique same-Session durable result is represented only as confirmation of that live fact; a disagreement is `DEGRADED/TERMINAL_CONFLICT` without last-writer-wins.
+- `tools/result` is the authoritative live terminal. A durable result is promoted to confirmation only when an exact invocation witness exists; none is available on the pinned public seams, so current Live and Durable facts remain separate. A disagreement is `DEGRADED/TERMINAL_CONFLICT` without last-writer-wins.
 - Approval facts are independent and keyed by approval id. Replay-only pending approvals become `STALE/DEGRADED`; orphan, missing-callId, and colliding records remain `UNBOUND` or `AMBIGUOUS`. The native `approval/request` answerer is not intercepted or changed.
 - `tools/pre-execute`, `tools/execute`, `tools/result`, and post-commit `session/event` observers are transparent and effect-owned. Observer failures are contained. Live retention is capped at 128 records per Session; source replay is capped at 10,000 events; query output is capped at 128 facts; R3 PTC replay retains its existing cap of 512 evidence items.
 - DTOs are detached and frozen. Raw arguments, result content, approval reason, prompts, credentials, whole events, and detailed error text are not exported or persisted by the plugin. Only minimal tool/call identifiers, source references, `isError`, and sanitized error name/code are exposed.
@@ -52,7 +65,7 @@ This report is intentionally a later report-only change.
 
 ## R4 fault matrix
 
-All cases below passed in `tests/r4-ledger.unit.spec.ts`; F-006 also has genuine pinned-runtime coverage in the integration test.
+All cases below have regression evidence in `tests/r4-ledger.unit.spec.ts`; F-006/F-013 are deliberately `PARTIAL` for positive cross-plane confirmation because no exact invocation witness is available on the pinned public seams.
 
 | Case | Result | Evidence level |
 |---|---|---|
@@ -61,14 +74,14 @@ All cases below passed in `tests/r4-ledger.unit.spec.ts`; F-006 also has genuine
 | F-003 duplicate source/live fact and equal payload at distinct seq | PASS | pure/component |
 | F-004 conflicting terminal claims | PASS | pure/component |
 | F-005 orphan, missing-callId, and colliding approval | PASS | pure/component |
-| F-006 live final plus unique durable confirmation | PASS | pure/component + genuine pinned runtime |
+| F-006 live final plus unique durable confirmation | PARTIAL | pure/component + genuine pinned runtime; exact invocation witness unavailable, facts remain separate |
 | F-007 live/durable terminal disagreement | PASS | pure/component |
 | F-008 idle disposal/HMR generation isolation | PASS | pure/component |
 | F-009 disposed active execution is not historically revived | PASS | pure/component |
 | F-010 trusted Session snapshot reconstruction | PASS | in-memory committed snapshot / simulated restart |
 | F-011 repeated replay determinism | PASS | pure/component |
 | F-012 gapped feed reconciled by complete trusted snapshot | PASS | pure/component |
-| F-013 snapshot/live overlap deduplication | PASS | pure/component |
+| F-013 snapshot/live overlap deduplication | PARTIAL | pure/component + genuine pinned runtime; no unproven cross-plane confirmation |
 | F-014 stale pending approval | PASS | pure/component |
 | F-015 unresolved T03 parent/root | PASS | pure/component using accepted T03 projector |
 
@@ -81,14 +94,14 @@ Negative assertions covered zero fabricated ExecutionId, zero result double coun
 - E-003 exact final: PASS, real `tools/result` observed from ToolRuntime.
 - E-004 independent approvals: PASS, real ApprovalService emits committed `approval/asked` and `approval/decided`; projection remains independent.
 - E-005 verification unknown: NOT_IMPLEMENTED; T04 does not infer verification or FAILED from absence of it.
-- E-006 confirmation-only: PASS, F-006.
+- E-006 confirmation-only: PARTIAL, exact cross-plane witness unavailable; F-006 preserves separate facts.
 - E-007 bounded query: PASS, enforced query limit, frozen detached DTO, source watermark and issue reporting.
 - E-008/E-009 semantic similarity/retry/escalation: NOT_IMPLEMENTED by frozen scope.
 - E-010 full context building and Primary Failure Analyzer: NOT_IMPLEMENTED by frozen scope.
 
 ## Genuine integration and restart evidence
 
-`tests/r4-runtime.integration.spec.ts` mounts a real pinned Harness `Context`, `SessionStore`, `SystemPrompt`, `ToolRuntime`, and `ApprovalService`, registers a harmless deterministic fixture tool, executes it through the real ToolRuntime, observes the real approval pair and `tools/result`, and reconciles real `Session.append()` plus `snapshotEvents()` data. The pinned ToolRuntime does not itself append the canonical `tool/call`/`tool/result` history in this direct fixture, so those committed Session events are appended explicitly with the real Session API and valid surface metadata.
+`tests/r4-runtime.integration.spec.ts` mounts a real pinned Harness `Context`, `SessionStore`, `SystemPrompt`, `ToolRuntime`, and `ApprovalService`, registers a harmless deterministic fixture tool, executes it through the real ToolRuntime, observes the real approval pair and `tools/result`, and reconciles real `Session.append()` plus `snapshotEvents()` data. The pinned ToolRuntime does not itself append the canonical `tool/call`/`tool/result` history in this direct fixture, so those committed Session events are appended explicitly with the real Session API and valid surface metadata. Repair F1 deliberately leaves the resulting Live and Durable facts separate: this is genuine integration evidence for safety and observation, not proof of exact cross-plane invocation identity.
 
 Restart proof is an in-process new-controller reconstruction from an immutable committed Session snapshot, including repeat replay and disposed-generation isolation. True persistent disk/process restart is `NOT_RUN`; no plugin-owned persistence exists. The native PTC producer is `NOT_RUN`; only the accepted T03 source-backed projector is reused.
 
@@ -98,13 +111,13 @@ No provider, model, browser, privileged operation, or runtime network call was u
 
 Final executable state was tested before the implementation commit and was unchanged by the commit.
 
-- `pnpm run test:r4`: 16/16 PASS.
-- `pnpm run test`: T01 9/9, T02 16/16, T03 17/17, R4 16/16 — all PASS.
+- `pnpm run test:r4`: 21/21 PASS.
+- `pnpm run test`: T01 9/9, T02 16/16, T03 17/17, R4 21/21 — all PASS.
 - `pnpm run typecheck`: PASS.
 - `pnpm run build`: PASS for Host and Client bundles.
 - Host export smoke import: PASS (`apply`, `installLedger`, and `replayPtcSnapshot`).
 - `pnpm pack --dry-run --json`: PASS; expected package manifest contains Host/Client bundles, declarations, `package.json`, and README.
-- Staged scope audit: PASS; only the intended T04 manifest was staged.
+- Staged scope audit: PASS for the implementation repair manifest; the later report-only commit contains only this report.
 - Secret-pattern audit: PASS; no credential/private-key patterns. Fixture literals containing `secret`/`private` are negative privacy assertions, not credentials.
 - Lint and publint: NOT_CONFIGURED in this repository; no corresponding script or binary exists.
 - `git diff --check`: implementation files are clean. The supplied exact Markdown documents retain their intentional Markdown hard-break trailing spaces; these are reported as warnings and were not rewritten.
@@ -113,7 +126,7 @@ Expected T01 fixture-fault stack traces appear in the passing T01 tests and are 
 
 ## Publication handoff
 
-- Executable Tested SHA / implementation commit: `a6f51c15190c063e83e8bae09d591db4feddb01b`.
+- Executable Tested SHA / repair implementation commit: `2dfb7c28dddead0eb84b7d2da662b7abca4a4690`.
 - Report-only commit and final local/remote SHA are recorded in the final Codex handoff after normal push verification.
 - Required final equality: `HEAD == origin/main == git ls-remote origin refs/heads/main`.
 
