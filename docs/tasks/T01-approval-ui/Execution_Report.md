@@ -107,8 +107,8 @@ settings. No provider or privileged operation was started.
 | Tested SHA | `6f3a46c62438ac60d0724b70268d7a552fc55250` |
 | Implementation commits | `0f2ec2a729628dac9d1b049a19dcebb786349259`, `6f3a46c62438ac60d0724b70268d7a552fc55250` |
 | Implementation push | PASS; normal `git push origin main` |
-| Report commit | Filled after this docs-only commit |
-| Final remote verification | Filled after this docs-only commit |
+| Report introduction commit | `968adff1fbf979c5d65c7e608861ed134e299fd7` |
+| Final report revision / remote SHA | Printed by the final `git rev-parse HEAD` and `git ls-remote origin refs/heads/main` verification in the handoff; no executable files changed after the Tested SHA |
 
 No STOP condition was encountered. Remaining limitations are the unavailable
 live Browser smoke and R1-08 live Session rebind; these are left for independent
