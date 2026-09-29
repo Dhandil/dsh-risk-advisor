@@ -14,13 +14,13 @@ interface ErrorBoundaryState { readonly failed: boolean }
 
 // React's class boundary is written explicitly to keep a fixture render fault local to this cell.
 class LocalErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
-  state: ErrorBoundaryState = { failed: false }
+  override state: ErrorBoundaryState = { failed: false }
 
   static getDerivedStateFromError(): ErrorBoundaryState {
     return { failed: true }
   }
 
-  render(): ReactNode {
+  override render(): ReactNode {
     if (this.state.failed) {
       return <div data-testid="risk-advisor-r1-detail" data-ra-fixture-state="UNAVAILABLE">
         <strong>{this.props.t('title')}</strong>

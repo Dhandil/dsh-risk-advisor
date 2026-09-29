@@ -88,11 +88,12 @@ describe('R1 real SlotCore + Native ApprovalPanel integration', () => {
         {...injected}
       />
     }
-    const NativeHost = (): ReactNode => <ApprovalPanel
-      matched={pending}
-      renderSlot={renderDetail}
-      t={panelCopy(pending)}
-    />
+    let visible = true
+    const NativeHost = (): ReactNode => visible ? <ApprovalPanel
+        matched={pending}
+        renderSlot={renderDetail}
+        t={panelCopy(pending)}
+      /> : null
 
     expect(commandForSnapshot(chatSnapshot, callId)).toBe('echo native')
     const direct = render(<ApprovalCommand
@@ -111,12 +112,10 @@ describe('R1 real SlotCore + Native ApprovalPanel integration', () => {
     expect(slots.entriesOfSlot('conversation.approval.detail')[0].component).not.toBe(ApprovalCommand)
     view.rerender(<NativeHost />)
     expect(screen.getByTestId('risk-advisor-r1-detail')).toBeTruthy()
+    expect(screen.getByText('echo native')).toBeTruthy()
     expect(screen.getByTestId('risk-advisor-r1-fixture').getAttribute('data-ra-fixture-state')).toBe('PENDING')
     expect((screen.getByRole('button', { name: 'Reject' }) as HTMLButtonElement).disabled).toBe(false)
     expect((screen.getByRole('button', { name: 'Allow once' }) as HTMLButtonElement).disabled).toBe(false)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Allow once' }))
-    await expect(pending.result).resolves.toBe('allowed-once')
 
     const detail = slots.entriesOfSlot('conversation.approval.detail')[0]
     const fixture = (detail.inject as unknown as (id: SessionId) => {
@@ -130,10 +129,17 @@ describe('R1 real SlotCore + Native ApprovalPanel integration', () => {
     expect(slots.entriesOfSlot('conversation.approval.detail')[0].options.priority).toBe(0)
     view.rerender(<NativeHost />)
     expect(screen.getByText('echo native')).toBeTruthy()
+    expect((screen.getByRole('button', { name: 'Allow once' }) as HTMLButtonElement).disabled).toBe(false)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Allow once' }))
+    await expect(pending.result).resolves.toBe('allowed-once')
+
+    visible = false
+    view.rerender(<NativeHost />)
+    expect(screen.queryByTestId('risk-advisor-r1-detail')).toBeNull()
     act(() => { fixture.setState('UNAVAILABLE') })
     view.rerender(<NativeHost />)
     expect(screen.queryByTestId('risk-advisor-r1-detail')).toBeNull()
-    expect(screen.getByText('echo native')).toBeTruthy()
 
     nativeEntry()
     declareRoot()
