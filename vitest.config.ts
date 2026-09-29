@@ -19,10 +19,14 @@ const harnessSourceAliases = {
   '@deepseek-ai/dsh-client-ui-renderer': resolve(harness, 'packages/client/ui-renderer/src'),
   '@deepseek-ai/dsh-client-ui-session': resolve(harness, 'packages/client/ui-session/src'),
   '@deepseek-ai/dsh-client-ui-slots': resolve(harness, 'packages/client/ui-slots/src'),
+  '@deepseek-ai/dsh-agent': resolve(harness, 'packages/core/agent/lib/index.js'),
+  '@deepseek-ai/dsh-tools': resolve(harness, 'packages/core/tools/lib/index.js'),
+  '@deepseek-ai/dsh-user-approval': resolve(harness, 'packages/interaction/user-approval/lib/index.js'),
+  '@deepseek-ai/dsh-system-prompt': resolve(harness, 'packages/core/system-prompt/lib/index.js'),
   '@deepseek-ai/dsh-client-store': resolve(harness, 'packages/client/store/src'),
   '@deepseek-ai/dsh-typert-protocol': resolve(harness, 'packages/typert/protocol/src/index.ts'),
-  '@deepseek-ai/dsh-llm': resolve(harness, 'packages/llm/llm/src'),
-  '@deepseek-ai/dsh-session': resolve(harness, 'packages/core/session/src'),
+  '@deepseek-ai/dsh-llm': resolve(harness, 'packages/llm/llm/lib/index.js'),
+  '@deepseek-ai/dsh-session': resolve(harness, 'packages/core/session/lib/index.js'),
 }
 
 export default defineConfig({
