@@ -91,5 +91,6 @@ The R1 live deployed browser gate remains `NOT_RUN`; this task does not convert 
 
 - Tested executable implementation SHA: `4404ef2d2cfcc1d9384b27ba43720a8e0708e96b`
 - Implementation commit: `4404ef2d2cfcc1d9384b27ba43720a8e0708e96b`
-- Final remote SHA: to be filled by the normal push verification and reported in the final handoff; no executable changes follow the Tested SHA.
+- Published remote SHA verified after the normal implementation+report push: `a7c7722a8fa6436668f0fda006a5ec0a699c9a19`.
+- A final report-only metadata commit follows this verification so the handoff can also include the current report commit SHA; no executable changes follow the Tested SHA.
 - STOP after normal push and exact `HEAD == origin/main == git ls-remote` verification. Await ChatGPT Web independent review.
