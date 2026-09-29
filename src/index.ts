@@ -30,6 +30,11 @@ export function apply(ctx: Context): void {
 }
 
 export { ActiveExecutionIndex }
+export {
+  PTC_REPLAY_LIMITS,
+  replayPtcSession,
+  replayPtcSnapshot,
+} from './host/ptc-replay.ts'
 export type {
   ActiveExecutionLookup,
   CorrelationObservation,
@@ -37,3 +42,14 @@ export type {
   ExecutionId,
   NotFoundReason,
 } from './host/correlation.ts'
+export type {
+  DurableOccurrenceRef,
+  EdgeResolution,
+  EvidenceRef,
+  PtcOrphanSettlement,
+  PtcReplayOccurrence,
+  PtcReplayProjection,
+  ReplayIssue,
+  ReplayStatus,
+  SettlementResolution,
+} from './host/ptc-replay.ts'
