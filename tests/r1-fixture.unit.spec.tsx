@@ -18,12 +18,18 @@ const sid = 'session-1' as SessionId
 const callId = 'call-1' as ToolCallId
 const translate = (key: string): string => en[key as keyof typeof en] ?? key
 
-function snapshotWithRoot(root: ToolChatData['root']): ChatSnapshot {
+function snapshotWithRoots(roots: Array<ToolChatData['root'] | undefined>): ChatSnapshot {
   return {
     nodes: {
-      values: () => [{ kind: 'tool-call', data: { root }, key: 'node-1', nodeKey: 'node-1' }],
+      values: () => roots.map((root, index) => ({
+        kind: 'tool-call', data: { root }, key: `node-${index}`, nodeKey: `node-${index}`,
+      })),
     },
   } as unknown as ChatSnapshot
+}
+
+function snapshotWithRoot(root: ToolChatData['root']): ChatSnapshot {
+  return snapshotWithRoots([root])
 }
 
 function componentProps(store: R1FixtureStore): ComponentProps<typeof RiskAdvisorDetail> {
@@ -66,6 +72,35 @@ describe('R1 fixture store and public command projection', () => {
     }), callId)).toBeUndefined()
   })
 
+  it.each([
+    {
+      name: 'an undefined root before the matching running call',
+      roots: [
+        undefined,
+        {
+          callId,
+          name: 'bash',
+          argsRaw: JSON.stringify({ command: 'echo later' }),
+          turn: 1,
+          step: 2,
+          time: 2,
+          subCalls: [],
+        } as ToolChatData['root'],
+      ],
+    },
+  ])('skips $name in pure and composite projections', ({ roots }) => {
+    const snapshot = snapshotWithRoots(roots)
+    expect(() => commandForSnapshot(snapshot, callId)).not.toThrow()
+    expect(commandForSnapshot(snapshot, callId)).toBe('echo later')
+
+    const store = new R1FixtureStore()
+    render(<RiskAdvisorDetail
+      {...componentProps(store)}
+      useChat={selector => selector(snapshot)}
+    />)
+    expect(screen.getByTestId('risk-advisor-r1-command').textContent).toContain('echo later')
+  })
+
   it('renders command and TEST FIXTURE, transitions PENDING to READY_SAMPLE, and cannot revive after disposal', () => {
     const store = new R1FixtureStore()
     const session = store.forSession(sid)
@@ -99,6 +134,7 @@ describe('R1 fixture store and public command projection', () => {
       setState: () => {},
     }
     render(<RiskAdvisorDetail {...componentProps(new R1FixtureStore())} fixture={faulty} />)
+    expect(screen.getByTestId('risk-advisor-r1-command').textContent).toContain('echo safe')
     expect(screen.getByTestId('risk-advisor-r1-error').textContent).toContain('UNAVAILABLE')
     expect(errorSpy.mock.calls.length).toBeGreaterThan(0)
     errorSpy.mockRestore()

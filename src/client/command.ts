@@ -17,7 +17,7 @@ export function commandForSnapshot(snapshot: ChatSnapshot, callId: string): stri
   for (const node of snapshot.nodes.values()) {
     if (node.kind !== 'tool-call') continue
     const root = (node.data as ToolChatData).root
-    if (root.callId !== callId || 'kind' in root) continue
+    if (root === undefined || root.callId !== callId || 'kind' in root) continue
     return commandOf(root)
   }
   return undefined

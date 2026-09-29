@@ -21,12 +21,7 @@ class LocalErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryStat
   }
 
   override render(): ReactNode {
-    if (this.state.failed) {
-      return <div data-testid="risk-advisor-r1-detail" data-ra-fixture-state="UNAVAILABLE">
-        <strong>{this.props.t('title')}</strong>
-        <span data-testid="risk-advisor-r1-error">{this.props.t('disclaimer')} / {this.props.t('state.unavailable')}</span>
-      </div>
-    }
+    if (this.state.failed) return <UnavailableFixture t={this.props.t} />
     return this.props.children
   }
 }
@@ -44,25 +39,36 @@ function FixtureBody(props: RiskAdvisorDetailProps): ReactNode {
     props.fixture.getSnapshot,
     props.fixture.getSnapshot,
   )
+  return <div data-testid="risk-advisor-r1-fixture" data-ra-fixture-state={snapshot.state}>
+    <strong>{props.t('title')}</strong>
+    <span>{props.t('disclaimer')} / {stateLabel(props.t, snapshot.state)}</span>
+  </div>
+}
+
+function CommandPresentation(props: RiskAdvisorDetailProps): ReactNode {
   // A real Harness session always supplies useChat. Keeping the runtime guard
   // makes the isolated fixture safe in a minimal slot harness as well.
   const command = typeof props.useChat === 'function'
     ? props.useChat(snapshot => commandForSnapshot(snapshot, props.callId))
     : undefined
-  return <div data-testid="risk-advisor-r1-detail" data-session-id={String(props.sessionId)} data-call-id={props.callId}>
-    {command === undefined ? null : <div data-testid="risk-advisor-r1-command">
-      <span>{props.t('command.label')}</span>
-      <code>{command}</code>
-    </div>}
-    <div data-testid="risk-advisor-r1-fixture" data-ra-fixture-state={snapshot.state}>
-      <strong>{props.t('title')}</strong>
-      <span>{props.t('disclaimer')} / {stateLabel(props.t, snapshot.state)}</span>
-    </div>
+  return command === undefined ? null : <div data-testid="risk-advisor-r1-command">
+    <span>{props.t('command.label')}</span>
+    <code>{command}</code>
+  </div>
+}
+
+function UnavailableFixture(props: { readonly t: RiskAdvisorDetailProps['t'] }): ReactNode {
+  return <div data-testid="risk-advisor-r1-fixture" data-ra-fixture-state="UNAVAILABLE">
+    <strong>{props.t('title')}</strong>
+    <span data-testid="risk-advisor-r1-error">{props.t('disclaimer')} / {props.t('state.unavailable')}</span>
   </div>
 }
 
 export function RiskAdvisorDetail(props: RiskAdvisorDetailProps): ReactNode {
-  return <LocalErrorBoundary t={props.t}>
-    <FixtureBody {...props} />
-  </LocalErrorBoundary>
+  return <div data-testid="risk-advisor-r1-detail" data-session-id={String(props.sessionId)} data-call-id={props.callId}>
+    <CommandPresentation {...props} />
+    <LocalErrorBoundary t={props.t}>
+      <FixtureBody {...props} />
+    </LocalErrorBoundary>
+  </div>
 }

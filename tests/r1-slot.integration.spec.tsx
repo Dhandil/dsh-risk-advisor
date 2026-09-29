@@ -1,6 +1,6 @@
 import { Context } from '@deepseek-ai/cordis'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
 import type { ApprovalComposerProps, ApprovalDetailOwnerProps, PendingApproval } from '@deepseek-ai/dsh-client-ui-approval/client'
@@ -8,10 +8,15 @@ import { PendingApproval as PendingApprovalClass } from '../../../deepseek-harne
 import { ApprovalPanel } from '../../../deepseek-harness/packages/client/ui-approval/src/client/ApprovalPanel.tsx'
 import { ApprovalCommand } from '../../../deepseek-harness/packages/client/ui-chat/src/client/chat/ApprovalCommand.tsx'
 import { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
+import { createSlotRenderer } from '../../../deepseek-harness/packages/client/ui-renderer/src/client/scoped-slots.tsx'
 import type { ChatSnapshot } from '@deepseek-ai/dsh-client-ui-chat/client'
+import type { SlotScopeAdapter, StandardSourceBinding } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { commandForSnapshot } from '../src/client/command.ts'
+import type { R1FixtureSession } from '../src/client/fixture-store.ts'
+import { RiskAdvisorDetail } from '../src/client/RiskAdvisorDetail.tsx'
+import { NS } from '../src/client/locales.ts'
 import { apply, inject } from '../src/client/index.ts'
 
 let ctx: Context | undefined
@@ -143,6 +148,197 @@ describe('R1 real SlotCore + Native ApprovalPanel integration', () => {
 
     nativeEntry()
     declareRoot()
+  })
+
+  it('keeps the native command and controls when the fixture boundary fails', async () => {
+    ctx = new Context()
+    await ctx.plugin(SlotRegistry).await()
+    const slots = ctx.slots
+    const locale = new LocaleRuntime(ctx)
+    ctx.provide('locale', locale)
+
+    const sessionId = 'session-fault' as SessionId
+    const callId = 'call-fault' as ToolCallId
+    const pending = new PendingApprovalClass(sessionId, {
+      toolName: 'bash',
+      callId,
+      reason: 'fixture fault integration',
+    })
+    const faultyFixture = {
+      getSnapshot: () => { throw new Error('deliberate fixture fault') },
+      subscribe: () => () => {},
+      setState: () => {},
+    } as unknown as R1FixtureSession
+    const snapshot = {
+      nodes: {
+        values: () => [{
+          kind: 'tool-call',
+          data: { root: {
+            callId,
+            name: 'bash',
+            argsRaw: JSON.stringify({ command: 'echo native' }),
+            turn: 1,
+            step: 1,
+            time: 1,
+            subCalls: [],
+          } },
+        }],
+      },
+    } as unknown as ChatSnapshot
+
+    slots.register({
+      name: 'root',
+      children: { 'conversation.approval.detail': { kind: 'single', scope: 'session' } },
+    }, () => null)
+    slots.register({
+      name: 'conversation.approval.detail',
+      priority: -100,
+      locale: NS,
+      inject: () => ({ fixture: faultyFixture }),
+    }, RiskAdvisorDetail)
+
+    const renderDetail = (_key: string, owner: ApprovalDetailOwnerProps): ReactNode => {
+      const entry = slots.entriesOfSlot('conversation.approval.detail')[0]
+      if (entry === undefined) return null
+      const injected = entry.inject?.(sessionId as never) ?? {}
+      const Component = entry.component as (props: Record<string, unknown>) => ReactNode
+      return <Component
+        {...owner}
+        sessionId={sessionId}
+        useChat={(selector: (value: ChatSnapshot) => unknown) => selector(snapshot)}
+        t={locale.bind(NS)}
+        {...injected}
+      />
+    }
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    render(<ApprovalPanel matched={pending} renderSlot={renderDetail} t={panelCopy(pending)} />)
+
+    expect(screen.getByText('echo native')).toBeTruthy()
+    expect(screen.getByTestId('risk-advisor-r1-fixture').getAttribute('data-ra-fixture-state')).toBe('UNAVAILABLE')
+    expect(screen.getByTestId('risk-advisor-r1-error')).toBeTruthy()
+    expect((screen.getByRole('button', { name: 'Reject' }) as HTMLButtonElement).disabled).toBe(false)
+    expect((screen.getByRole('button', { name: 'Allow once' }) as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Reject' }))
+    await expect(pending.result).resolves.toBe('rejected')
+    errorSpy.mockRestore()
+  })
+
+  it('uses the public owner child path for two session bindings and restores native detail on dispose', async () => {
+    ctx = new Context()
+    await ctx.plugin(SlotRegistry).await()
+    const slots = ctx.slots
+    const locale = new LocaleRuntime(ctx)
+    ctx.provide('locale', locale)
+    slots.installLocale(locale)
+    slots.install(createSlotRenderer())
+
+    const makeObservable = <T,>(value: T) => ({
+      getSnapshot: () => value,
+      subscribe: () => () => {},
+    })
+    const absentBinding: StandardSourceBinding = {
+      key: undefined,
+      hooks: {},
+      keyedHooks: {},
+      props: {},
+    }
+    const absentSource = makeObservable(absentBinding)
+    const references = new Map<object, StandardSourceBinding>()
+    const makeReference = (id: string, snapshot: ChatSnapshot): object => {
+      const scopedContext = new Context()
+      const binding = {
+        key: id,
+        ctx: scopedContext,
+        hooks: { chat: makeObservable(snapshot) },
+        keyedHooks: {},
+        props: { sessionId: id },
+      } as unknown as StandardSourceBinding
+      const reference = {
+        sessionId: id,
+        binding: { sessionId: id, ctx: scopedContext },
+        ready: Promise.resolve({ sessionId: id, ctx: scopedContext }),
+        release: () => {},
+      }
+      references.set(reference, binding)
+      return reference
+    }
+
+    const snapshotFor = (command: string, id: ToolCallId): ChatSnapshot => ({
+      nodes: {
+        values: () => [{
+          kind: 'tool-call',
+          data: { root: {
+            callId: id,
+            name: 'bash',
+            argsRaw: JSON.stringify({ command }),
+            turn: 1,
+            step: 1,
+            time: 1,
+            subCalls: [],
+          } },
+        }],
+      },
+    } as unknown as ChatSnapshot)
+    const firstChat = snapshotFor('echo first', 'call-1' as ToolCallId)
+    const secondChat = snapshotFor('echo second', 'call-2' as ToolCallId)
+    const first = makeReference('session-1', firstChat)
+    const second = makeReference('session-2', secondChat)
+    const sessionAdapter: SlotScopeAdapter = {
+      current: absentSource,
+      bindingSource: target => references.get(target as object) === undefined
+        ? absentSource
+        : makeObservable(references.get(target as object)!),
+      renderArea: (_binding, props) => props.children,
+    }
+    slots.installScope('session', sessionAdapter)
+
+    const pendingFirst = new PendingApprovalClass('session-1' as SessionId, {
+      toolName: 'bash', callId: 'call-1' as ToolCallId, reason: 'first session',
+    })
+    const pendingSecond = new PendingApprovalClass('session-2' as SessionId, {
+      toolName: 'bash', callId: 'call-2' as ToolCallId, reason: 'second session',
+    })
+    let switchSession: ((reference: object) => void) | undefined
+    slots.register({
+      name: 'root',
+      children: {
+        'conversation.approval.detail': { kind: 'single', scope: 'session' },
+      },
+    } as never, props => {
+      const [reference, setReference] = useState(first)
+      switchSession = setReference
+      const pending = (reference as { sessionId: string }).sessionId === pendingFirst.sessionId ? pendingFirst : pendingSecond
+      return <props.SessionProvider session={reference as never}>
+        <ApprovalPanel matched={pending} renderSlot={props.renderSlot} t={panelCopy(pending)} />
+      </props.SessionProvider>
+    })
+
+    slots.register({ name: 'conversation.approval.detail', priority: 0 }, ApprovalCommand)
+    const view = render(<>{slots.renderSlot('root', {})}</>)
+    expect(view.getByText('echo first')).toBeTruthy()
+    expect(view.queryByTestId('risk-advisor-r1-detail')).toBeNull()
+
+    const feature = ctx.plugin({ inject: [...inject], apply })
+    await act(async () => { await feature.await() })
+    expect(view.getByTestId('risk-advisor-r1-detail').getAttribute('data-session-id')).toBe('session-1')
+    expect(view.getByText('echo first')).toBeTruthy()
+    expect(view.getByTestId('risk-advisor-r1-fixture').getAttribute('data-ra-fixture-state')).toBe('PENDING')
+    expect((view.getByRole('button', { name: 'Reject' }) as HTMLButtonElement).disabled).toBe(false)
+
+    if (switchSession === undefined) throw new Error('public owner frame did not expose session switch')
+    act(() => { switchSession!(second) })
+    expect(view.getByTestId('risk-advisor-r1-detail').getAttribute('data-session-id')).toBe('session-2')
+    expect(view.getByText('echo second')).toBeTruthy()
+    expect(view.getByTestId('risk-advisor-r1-fixture').getAttribute('data-ra-fixture-state')).toBe('PENDING')
+
+    await act(async () => { await feature.dispose() })
+    expect(slots.entriesOfSlot('conversation.approval.detail')[0]?.component).toBe(ApprovalCommand)
+    expect(view.queryByTestId('risk-advisor-r1-detail')).toBeNull()
+    expect(view.getByText('echo second')).toBeTruthy()
+    fireEvent.click(view.getByRole('button', { name: 'Reject' }))
+    await expect(pendingSecond.result).resolves.toBe('rejected')
+    await pendingFirst.answer('rejected')
   })
 
   it('keeps the native panel usable when callId is absent and does not invoke the detail slot', async () => {
