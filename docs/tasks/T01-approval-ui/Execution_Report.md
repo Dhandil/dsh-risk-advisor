@@ -145,8 +145,8 @@ final integration run reported no unhandled test failure.
 
 | Deliverable | SHA / result |
 |---|---|
-| Tested SHA | `ae5d737` (`fix(t01): repair R1 review findings`) |
-| Implementation commit | `ae5d737` |
+| Tested SHA | `ae5d737e5a8316b097700903aa06983a5af8bd4e` (`fix(t01): repair R1 review findings`) |
+| Implementation commit | `ae5d737e5a8316b097700903aa06983a5af8bd4e` |
 | Evidence/report commit | Printed by the final `git rev-parse HEAD` verification below; report content is otherwise final before that report-only commit |
 | Push | Normal `git push origin main` required after evidence commit |
 | Final local/remote SHA | Printed by final `git rev-parse HEAD`, `git rev-parse origin/main`, and `git ls-remote origin refs/heads/main`; all must match |
