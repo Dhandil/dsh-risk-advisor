@@ -1,6 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
-import type {} from '@deepseek-ai/dsh-tools'
+import type { ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-user-approval'
 import { ActiveExecutionIndex, createCorrelationDiagnostics } from './host/correlation.ts'
 import type { CorrelationDiagnostics } from './host/correlation.ts'
@@ -12,6 +12,8 @@ import { ApprovalAssessmentCoordinator } from './host/assessment-envelope.ts'
 import type { AssessmentDiagnostics } from './host/assessment-envelope.ts'
 import { installRiskAdvisorBrowserBridge } from './host/browser-bridge.ts'
 import type { HostConnectionLike } from './host/browser-bridge.ts'
+import { RetryEscalationAnalyzer } from './host/retry-escalation.ts'
+import type { FailureChainDiagnostics } from './host/retry-escalation.ts'
 
 export const inject = ['tools']
 
@@ -21,12 +23,13 @@ interface Context {
   riskAdvisorLedger: LedgerDiagnostics
   riskAdvisorFoundation: FoundationDiagnostics
   riskAdvisorAssessments: AssessmentDiagnostics
+  riskAdvisorFailureChain: FailureChainDiagnostics
 }
 }
 
 interface CorrelationHooks {
   readonly capture?: (exec: Parameters<ActiveExecutionIndex['observePreExecute']>[0], executionId: ReturnType<ActiveExecutionIndex['observePreExecute']>, parentExecutionId: string | undefined) => void
-  readonly retire?: (exec: Parameters<ActiveExecutionIndex['observeResult']>[0]) => void
+  readonly retire?: (exec: Parameters<ActiveExecutionIndex['observeResult']>[0], result: ToolExecutionResult) => void
   readonly sessionEvent?: (session: Session, event: SessionEvent, index: ActiveExecutionIndex) => void
   readonly sessionDisposed?: (session: Session) => void
 }
@@ -41,7 +44,7 @@ function installCorrelationInternal(ctx: Context, hooks: CorrelationHooks = {}):
     return next()
   })
   ctx.on('tools/result', (exec, result) => {
-    try { hooks.retire?.(exec) } catch { /* Foundation is observational. */ }
+    try { hooks.retire?.(exec, result) } catch { /* Foundation is observational. */ }
     index.observeResult(exec, result)
   })
   ctx.on('session/event', (session, event) => {
@@ -64,20 +67,29 @@ export function installCorrelation(ctx: Context): CorrelationDiagnostics {
 export function apply(ctx: Context): void {
   const foundation = new OperationFoundation()
   const assessments = new ApprovalAssessmentCoordinator(foundation.diagnostics)
+  const failureChain = new RetryEscalationAnalyzer()
   installCorrelationInternal(ctx, {
-    capture: (exec, executionId, parentExecutionId) => { foundation.capture(exec, executionId, parentExecutionId) },
-    retire: exec => { foundation.retire(exec) },
+    capture: (exec, executionId, parentExecutionId) => {
+      foundation.capture(exec, executionId, parentExecutionId)
+      failureChain.observePreExecute(exec, executionId)
+    },
+    retire: (exec, result) => {
+      foundation.retire(exec)
+      failureChain.observeResult(exec, result)
+    },
     sessionEvent: (session, event, index) => { assessments.observeSessionEvent(session, event, index) },
     sessionDisposed: session => { assessments.observeSessionDisposed(session) },
   })
   ctx.provide('riskAdvisorFoundation', foundation.diagnostics)
   ctx.provide('riskAdvisorAssessments', assessments.diagnostics)
+  ctx.provide('riskAdvisorFailureChain', failureChain.diagnostics)
   ctx.inject(['connection', 'sessions'], bridgeCtx => {
     const connection = bridgeCtx.get('connection', false) as HostConnectionLike | undefined
     if (connection !== undefined) installRiskAdvisorBrowserBridge(bridgeCtx, connection, assessments)
   })
   ctx.effect(() => () => { foundation.dispose() }, 'risk-advisor-operation-foundation-generation')
   ctx.effect(() => () => { assessments.dispose() }, 'risk-advisor-assessment-generation')
+  ctx.effect(() => () => { failureChain.dispose() }, 'risk-advisor-failure-chain-generation')
   installLedger(ctx)
 }
 
@@ -96,6 +108,7 @@ export type {
   NotFoundReason,
 } from './host/correlation.ts'
 export type { FoundationBoundaryDiagnostic, FoundationDiagnostic, FoundationDiagnostics, FoundationStatus, FoundationToolKind, FoundationUnknown } from './host/operation-foundation.ts'
+export type { FailureChainDiagnostics, FailureChainEntry, FailureChainFailureKind, FailureChainSummary, RelationSummaryStatus, RetryEscalationOptions } from './host/retry-escalation.ts'
 export type { AssessmentAssociation, AssessmentBridgeSnapshot, AssessmentDiagnostic, AssessmentDiagnostics, AssessmentIssueSummary, AssessmentReasonCode, AssessmentStage, AssessmentStatus, ApprovalAssessmentShell } from './host/assessment-envelope.ts'
 export type { BrowserBridgeClientResult, BrowserSafeReasonCode, RiskAdvisorBridgeRead, RiskAdvisorBridgeViewV1 } from './bridge-contract.ts'
 export type {
