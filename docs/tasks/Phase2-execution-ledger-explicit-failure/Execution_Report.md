@@ -2,7 +2,7 @@
 
 ## Outcome
 
-`PHASE2_REPAIR_PUBLISHED_READY_FOR_REVIEW`
+`PHASE2_FINAL_REPAIR_PUBLISHED_READY_FOR_REVIEW`
 
 Codex completed the bounded Phase 2 implementation and delivery handoff. Final acceptance remains the responsibility of ChatGPT Web. No Acceptance Report was generated and no acceptance decision was made.
 
@@ -10,9 +10,10 @@ Codex completed the bounded Phase 2 implementation and delivery handoff. Final a
 
 - Plugin repository: `https://github.com/Dhandil/dsh-risk-advisor`
 - Branch: `main`
-- Start HEAD / synchronized `origin/main`: `8785c21963116613500c8a51e06606a87f84a681`
-- Executable/tested SHA: `054a0496f41ff1d56ac5fc06b50a7287c4f81dd1`
-- Report publication: report-only commit created after the tested SHA; the final remote SHA is recorded by the post-push verification in the handoff.
+- Start HEAD / synchronized `origin/main`: `d429bad37be09f6676307c2dd788748004177901` (contains the required instruction commit)
+- Historical Phase 2 implementation SHA: `054a0496f41ff1d56ac5fc06b50a7287c4f81dd1`
+- Final executable/tested SHA: `a664f321c0d8e7ed9d619a8065c68ca24e2df0fa`
+- Report publication: report-only commit created after the final tested SHA; the final remote SHA is recorded by the post-push verification in the handoff.
 - Pinned Harness: `D:\Harness\deepseek-harness @ ddefc45fbc7f8e46dd73185e68295696d1297887`
 - Harness mutation count: `0`
 
@@ -20,14 +21,19 @@ The plugin was fetched and synchronized normally before implementation. No reset
 
 ## Changed-file manifest
 
-Executable/test commit (`054a0496...`):
+Historical executable Phase 2 implementation commit (`054a0496...`):
 
 - `package.json` — added `test:p2` and included it in the full `test` chain.
 - `src/host/explicit-failure.ts` — bounded typed Phase 2 terminal, explicit-failure, approval, shell DTO, guard-witness, and PTC projections.
 - `src/host/ledger.ts` — evolved the existing T04 Ledger in place; added `phase2()` diagnostics, structured `error.info` identity extraction, and live shell evidence capture.
-- `src/index.ts` — exported the Phase 2 Host types and pure projections.
+- `src/index.ts` — initially exported the Phase 2 Host types and pure projections.
 - `tests/p2-explicit-failure.unit.spec.ts` — focused classifier, conflict, lifecycle, PTC, privacy, and bounds evidence.
 - `tests/p2-runtime.integration.spec.ts` — real pinned `Context + SessionStore + ToolRuntime + ApprovalService` noninterference probe.
+
+Final public-surface repair executable commit (`a664f321...`):
+
+- `src/index.ts` — removed all seven authority-bearing pure projector exports from the package root while retaining required DTO types and unrelated services.
+- `tests/p2-explicit-failure.unit.spec.ts` — moved projector coverage to the internal module and added the complete root-export absence proof.
 
 Report-only publication file:
 
@@ -81,9 +87,9 @@ The shell adapter does not retain or inspect stdout, stderr, spill paths, comman
 
 ## Tests and quality gates
 
-Focused Phase 2:
+Final focused Phase 2:
 
-- `pnpm run test:p2`: 2 files, 12 tests passed.
+- `pnpm run test:p2`: 2 files, 15 tests passed.
 - Includes P2-01 through P2-23 coverage through parameterized/component evidence, including exact error.info extraction, pre-execute delegation, guard conservatism, shell/sandbox DTO privacy, approval independence, conflict/idempotence, Live/Durable separation, PTC nesting, dispose isolation, bounds, and frozen DTOs.
 - Real Host integration uses pinned `Context`, `SessionStore`, `ToolRuntime`, and `ApprovalService`; the tool is local and deterministic, and Native Approval policy remains unchanged.
 
@@ -96,16 +102,17 @@ Inherited direct gates passed during implementation:
 - `test:p1c`: 8 passed.
 - `pnpm run typecheck`: passed.
 
-Final fresh complete regression, run exactly once on the executable SHA above:
+Final fresh complete regression, run exactly once on the final executable SHA above:
 
-- `pnpm test`: 16 test files, 113 tests passed.
-- R1: 9; R2: 16; R3: 17; R4: 21; R5: 3; P1A: 13; P1B: 14; P1C: 8; P2: 12.
+- `pnpm test`: 16 test files, 116 tests passed on `a664f321c0d8e7ed9d619a8065c68ca24e2df0fa`.
+- R1: 9; R2: 16; R3: 17; R4: 21; R5: 3; P1A: 13; P1B: 14; P1C: 8; P2: 15.
 - The expected R1 fixture-fault console output occurred inside passing fault-containment tests.
 
 Additional gates:
 
 - `pnpm run build`: passed.
-- Host export smoke from built `lib/index.js`: passed for `installLedger`, `projectTerminalClaim`, and `projectShellResult`.
+- Host export smoke from built `lib/index.js`: required product exports remained present; all seven authority-bearing projector names were absent.
+- Declaration audit: all seven authority-bearing projector names were absent from the generated package declarations.
 - Client export smoke: passed; Phase 1C Client loader registration remained intact.
 - `pnpm pack --dry-run --json`: passed; package manifest included Phase 2 Host declarations.
 - `git diff --check`: passed.
@@ -182,3 +189,28 @@ Fix: the adapter now accepts only pinned producer vocabularies: modes `read-only
 F-006/F-013 remain `PARTIAL`; real native PTC producer and true disk/process restart remain `NOT_RUN`; Browser/profile, WebWorker, and newer Harness gates remain unchanged. Harness Core mutation remains zero. No provider/model/browser product calls were made. No Phase 3 or later behavior was implemented, and no Native Approval authority was changed.
 
 The final report-only publication SHA and the post-push equality `HEAD == origin/main == git ls-remote origin refs/heads/main` are recorded in the completion handoff after publication.
+
+## Final Public-Surface Repair
+
+### Repair state
+
+- Final repair starting SHA: `d429bad37be09f6676307c2dd788748004177901`.
+- Previous repair executable SHA retained as historical evidence: `67e4890429a72ec55da4dc21f766e7457ff6fd67`.
+- Final executable/tested SHA: `a664f321c0d8e7ed9d619a8065c68ca24e2df0fa`.
+- Scope: final Phase 2 public-surface closure and Execution Report consistency only.
+- Handoff: `PHASE2_FINAL_REPAIR_PUBLISHED_READY_FOR_REVIEW`.
+
+### Public-surface closure
+
+The package root no longer exports any of the seven authority-bearing pure projectors: `projectPreExecuteDecision`, `projectGuardReturnedDenial`, `projectApprovalOutcome`, `projectPtcProjection`, `projectShellResult`, `projectTerminalClaim`, and `projectTerminalClaims`. They remain internal implementation helpers only where focused component coverage requires direct testing. The supported public seam remains the frozen read-only `riskAdvisorLedger.phase2(session)` diagnostics. Built Host exports and generated declarations agree, while required product exports and the Phase 1C Client loader remain present.
+
+### Final evidence and consistency
+
+- Final focused Phase 2 suite: 2 files, 15 tests passed.
+- Directly affected R4 suite: 2 files, 21 tests passed.
+- `pnpm run typecheck`, build, Host export smoke, declaration audit, Client export smoke, `pnpm pack --dry-run --json`, `git diff --check`, scope audit, and privacy/secret checks: passed.
+- One fresh complete `pnpm test` run on `a664f321c0d8e7ed9d619a8065c68ca24e2df0fa`: 16 files, 116 tests passed.
+- F1 shell conflict handling and F3 sandbox enum closure remain unchanged from the previously repaired implementation and their passing evidence is retained above.
+- The tested SHA `a664f321c0d8e7ed9d619a8065c68ca24e2df0fa` differs from the final remote only by the report-only `Execution_Report.md` publication.
+- Harness Core remains fixed at `ddefc45fbc7f8e46dd73185e68295696d1297887` with zero mutations. No Phase 3 behavior, Native Approval authority, or unrelated product scope was entered.
+- The final remote SHA and the post-push equality `HEAD == origin/main == git ls-remote origin refs/heads/main` are recorded in the completion handoff after this report-only publication.
