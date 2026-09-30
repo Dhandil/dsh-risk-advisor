@@ -6,6 +6,8 @@
 
 This is Codex's implementation and execution record only. Final acceptance remains with ChatGPT Web independent review. No `Acceptance_Report.md` was created, Phase 1C was not started, and Codex does not declare `ACCEPTED`.
 
+Repair continuation outcome: `PHASE1B_REPAIR_PUBLISHED_READY_FOR_REVIEW`.
+
 ## Scope and baselines
 
 - Task authority: `Phase1B_Architecture_Freeze.md` and `Phase1B_Implementation_Instructions.md`.
@@ -78,3 +80,64 @@ The R1 suite prints expected fixture-fault stack traces while its assertions pas
 - Implementation/Tested SHA: `898751f0be56182a17ac04054682579c406869d8`.
 - Report-only publication commit and final remote SHA are verified after this report is committed and pushed.
 - Stop after publication for ChatGPT Web independent review. Codex does not generate an Acceptance Report or declare `ACCEPTED`.
+
+## Targeted F1–F4 repair continuation
+
+### Repair authority and protection
+
+- Repair authority: `Phase1B_Repair_Instructions.md`, independent review of the Phase 1B publication at `f8fcc291510d8e872bc02576c225e8797e072d82`.
+- Repair start: plugin `HEAD == origin/main == git ls-remote` at `f8fcc291510d8e872bc02576c225e8797e072d82`.
+- Frozen Harness remained `ddefc45fbc7f8e46dd73185e68295696d1297887`; no Harness fetch, build, install, checkout, reset, clean, or modification was performed.
+- Existing plugin drift remained untracked and unstaged, including `.vitest-cache/`, `docs/risk-advisor-current/`, `docs/tasks/Phase1A-operation-foundation/Phase1A_Repair_Instructions.md`, `docs/tasks/Phase1B-assessment-envelope/Phase1B_Repair_Instructions.md`, `docs/tasks/T01-approval-ui/T01_Final_Runtime_Gate_Instructions.md`, `lib/`, `node_modules/`, and `pnpm-lock.yaml`.
+- Existing Harness drift remained untouched: `build.log`, `install.log`, `t0-model.txt`, `t0-remote.txt`, `t0-session.txt`, `t0-storage.txt`, and `undefined/`.
+
+### F1 — contradictory asked is no longer publicly bindable
+
+An open same-ID `approval/asked` whose tool name or call ID conflicts with the first observation now replaces the public shell with `association: UNBOUND`, `status: unavailable`, `stage: not-started`, and `CORRELATION_CONFLICT`. The former `executionId` and `assessmentId` are removed from the current diagnostic; no rebind or new UUID occurs. A later genuine decision closes the same non-bindable shell and preserves only the observed native outcome. Closed shells remain immutable, identical asks remain idempotent, and a distinct approval ID can still bind independently.
+
+The real Host integration injects a contradictory event while the native approval is pending and verifies no candidate identifiers are exposed and the native answerer remains called exactly once.
+
+### F2 — orphan decisions are a bounded typed issue
+
+Valid `approval/decided` events without an exact open `(Session, approvalId)` now return `ORPHAN_DECISION` and increment a saturating aggregate counter. `riskAdvisorAssessments.getIssueSummary()` exposes only frozen schema/version, counters, and typed `ORPHAN_DECISION`/`CAPACITY_EXCEEDED` reason codes. It creates no assessment, stores no approval ID, appends no Session event, retains no Session reference, and does not reconstruct an evicted record. Disposal clears the generation summary.
+
+### F3 — capacity refusal is visible without per-ID state
+
+When all 256 bounded records are active, the incoming advisory remains fail-open and native approval remains untouched, while `getIssueSummary()` increments the bounded `capacityExceeded` counter and exposes `CAPACITY_EXCEEDED`. No active record is evicted, no shell is synthesized for the rejected approval, and closed records remain eligible for normal completed-first eviction.
+
+### F4 — completed timestamps remain coherent across clock faults
+
+The injectable clock now retains the last valid nondecreasing monotonic value when it throws or returns a non-finite value. A close cannot rewind `updatedAt` to zero; a query/sweep cannot use an injected clock fault as authoritative expiration evidence. The new deterministic test starts at a large monotonic value, closes under `NaN`, confirms native outcome immutability and `updatedAt >= startedAt`, then verifies survival before and expiry at the actual completed TTL.
+
+### Repair proof and quality gates
+
+| Finding / gate | Result | Evidence |
+|---|---|---|
+| F1 conflict projection | PASS | Unit and real Host integration: conflicting same-ID ask is `UNBOUND`, has no `executionId`/`assessmentId`, closes with observed outcome, and does not affect a distinct approval. |
+| F2 orphan issue | PASS | Unit injects one plus 1,000 more orphan decisions; one constant-space `ORPHAN_DECISION` summary is visible and no synthetic diagnostic is created. |
+| F3 capacity issue | PASS | Unit all-active cap refusal exposes `CAPACITY_EXCEEDED`, retains the active association, and keeps the overflow approval `not-found`; closed eviction remains covered. |
+| F4 clock fault | PASS | Unit injected-`NaN` clock close preserves timestamp and native outcome, survives at TTL minus one, and expires at TTL. |
+| Real pinned Host integration | PASS | Existing actual `Context + SessionStore + ToolRuntime + ApprovalService` tests plus injected contradictory committed event; policy-never and faulting-native-answerer parity remain green. |
+| Architecture/privacy audit | PASS | One shared `ActiveExecutionIndex`; no alternate ID mint, history fallback, Ledger join, raw reason/args/Session, assessor, Judge, Rule Engine, Browser Bridge, provider, or Phase 1C path. |
+| `pnpm run typecheck` | PASS | Final repair source. |
+| `pnpm run build` | PASS | Host and Client bundles. |
+| Host export smoke | PASS | `apply` and `installCorrelation` present from `lib/index.js`. |
+| `pnpm pack --dry-run` | PASS | Package allowlist includes updated assessment-envelope declarations. |
+| `git diff --check -- src tests package.json` | PASS | Only expected LF/CRLF normalization warnings. |
+| Production source scope/privacy scan | PASS | No forbidden Phase 1C or raw-data production path detected. |
+| lint / publint | `NOT_CONFIGURED` | No project scripts or binaries available. |
+| `pnpm run test:p1b` | PASS — 2 files, 14 tests | New and retained Phase 1B evidence. |
+| Final fresh `pnpm test` | PASS — **93 tests** | R1 9 + R2 16 + R3 17 + R4 21 + R5 3 + Phase 1A 13 + repaired Phase 1B 14. |
+
+The inherited R1 fixture-fault stack traces remain expected output from passing fault-path tests. R5 benchmark smoke/full was not rerun because this repair changes no benchmark policy or assessment-performance claim.
+
+### Remaining open and not-run gates
+
+T04 cross-plane F-006/F-007/F-013, Browser/live runner, real native PTC producer, disk/process restart, newer-upstream validation, and T05's previously recorded `T_sync`/undetermined latency fields remain open or not run. No Phase 1C work was started.
+
+### Repair SHA handoff
+
+- Repair implementation/Tested SHA: `4db5cd153a0d38a6bcf56711c6a5adc5a0118ed5`.
+- No executable changes were made after the final 93-test regression.
+- The report-only publication commit and final remote SHA are verified in the terminal handoff after this report is committed and pushed.
+- Stop after publication for ChatGPT Web independent review; Codex does not generate an Acceptance Report or declare `ACCEPTED`.
