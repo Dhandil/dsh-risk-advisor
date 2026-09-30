@@ -14,18 +14,28 @@ import type { ConnectionRpcHandler, ConnectionRpcResultLike, HostConnectionLike 
 class InMemoryAuthenticatedConnection {
   private handler: ConnectionRpcHandler | undefined
   private channel: string | undefined
+  private readonly routeRegistry: Set<string>
   registrations = 0
   disposals = 0
   readonly webRouteRegistrations = 0
+  constructor(routeRegistry = new Set<string>()) {
+    this.routeRegistry = routeRegistry
+  }
+
   readonly connection: HostConnectionLike = {
     rpc: {
       handle: (channel, handler) => {
         expect(this.handler).toBeUndefined()
+        expect(this.routeRegistry.has(channel)).toBe(false)
         this.channel = channel
         this.handler = handler
+        this.routeRegistry.add(channel)
         this.registrations += 1
         return async () => {
-          if (this.handler === handler) this.handler = undefined
+          if (this.handler === handler) {
+            this.handler = undefined
+            this.routeRegistry.delete(channel)
+          }
           this.disposals += 1
         }
       },
@@ -170,6 +180,50 @@ describe('Phase 1C authenticated read-only browser bridge', () => {
     } finally {
       if (!disposed) await ctx.fiber.dispose()
     }
+  })
+
+  it('P1C-F4 remounts the bridge across late Connection lifecycle changes', async () => {
+  const ctx = new Context()
+  await ctx.plugin(SessionStore)
+  await ctx.plugin(SystemPrompt)
+  await ctx.plugin(ToolRuntime)
+  await ctx.plugin(ApprovalService, { policy: 'ask' })
+  const routeRegistry = new Set<string>()
+  apply(ctx)
+  await new Promise<void>(resolve => setTimeout(resolve, 0))
+
+  // Sessions may be ready before Connection; the required dependency keeps
+  // the bridge sub-fiber pending instead of running a no-op callback.
+  expect(ctx.get('sessions')).toBeDefined()
+  expect(routeRegistry).toEqual(new Set())
+
+  const first = new InMemoryAuthenticatedConnection(routeRegistry)
+  const removeFirst = ctx.provide('connection', first.connection)
+  await new Promise<void>(resolve => setTimeout(resolve, 0))
+  expect(first.registrations).toBe(1)
+  expect(first.isRegistered()).toBe(true)
+  expect(routeRegistry).toEqual(new Set(['/risk-advisor']))
+
+  // Connection replacement first unloads the old dependency-owned bridge.
+  await removeFirst()
+  await new Promise<void>(resolve => setTimeout(resolve, 0))
+  expect(first.disposals).toBe(1)
+  expect(first.isRegistered()).toBe(false)
+  expect(routeRegistry).toEqual(new Set())
+
+  const replacement = new InMemoryAuthenticatedConnection(routeRegistry)
+  ctx.provide('connection', replacement.connection)
+  await new Promise<void>(resolve => setTimeout(resolve, 0))
+  expect(replacement.registrations).toBe(1)
+  expect(replacement.isRegistered()).toBe(true)
+  expect(routeRegistry).toEqual(new Set(['/risk-advisor']))
+  expect(first.registrations + replacement.registrations).toBe(2)
+
+  // Final tree disposal withdraws the replacement route as well.
+  await ctx.fiber.dispose()
+  expect(replacement.disposals).toBe(1)
+  expect(replacement.isRegistered()).toBe(false)
+  expect(routeRegistry).toEqual(new Set())
   })
 
   it('P1C-02 resolves only the current live Session and exact callId', async () => {

@@ -72,7 +72,7 @@ export function apply(ctx: Context): void {
   })
   ctx.provide('riskAdvisorFoundation', foundation.diagnostics)
   ctx.provide('riskAdvisorAssessments', assessments.diagnostics)
-  ctx.inject(['sessions'], bridgeCtx => {
+  ctx.inject(['connection', 'sessions'], bridgeCtx => {
     const connection = bridgeCtx.get('connection', false) as HostConnectionLike | undefined
     if (connection !== undefined) installRiskAdvisorBrowserBridge(bridgeCtx, connection, assessments)
   })
