@@ -40,17 +40,15 @@ export type ConnectionRpcHandler = (
   signal: AbortSignal,
 ) => Promise<ConnectionRpcResultLike>
 
-declare module '@deepseek-ai/cordis' {
-  interface Context {
-    connection: HostConnectionLike
-  }
-}
-
 const EMPTY_DETAILS = Object.freeze({})
 
-export function installRiskAdvisorBrowserBridge(ctx: Context, coordinator: ApprovalAssessmentCoordinator): void {
+export function installRiskAdvisorBrowserBridge(
+  ctx: Context,
+  connection: HostConnectionLike,
+  coordinator: ApprovalAssessmentCoordinator,
+): void {
   ctx.effect(
-    () => ctx.connection.rpc.handle(RISK_ADVISOR_RPC_CHANNEL, (endpoint, payload, signal) => handleRiskAdvisorRpc(ctx.sessions, coordinator, endpoint, payload, signal)),
+    () => connection.rpc.handle(RISK_ADVISOR_RPC_CHANNEL, (endpoint, payload, signal) => handleRiskAdvisorRpc(ctx.sessions, coordinator, endpoint, payload, signal)),
     'risk-advisor-browser-bridge-generation',
   )
 }

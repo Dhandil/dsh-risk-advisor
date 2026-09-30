@@ -11,6 +11,7 @@ import type { FoundationDiagnostics } from './host/operation-foundation.ts'
 import { ApprovalAssessmentCoordinator } from './host/assessment-envelope.ts'
 import type { AssessmentDiagnostics } from './host/assessment-envelope.ts'
 import { installRiskAdvisorBrowserBridge } from './host/browser-bridge.ts'
+import type { HostConnectionLike } from './host/browser-bridge.ts'
 
 export const inject = ['tools']
 
@@ -71,8 +72,9 @@ export function apply(ctx: Context): void {
   })
   ctx.provide('riskAdvisorFoundation', foundation.diagnostics)
   ctx.provide('riskAdvisorAssessments', assessments.diagnostics)
-  ctx.inject(['connection', 'sessions'], bridgeCtx => {
-    installRiskAdvisorBrowserBridge(bridgeCtx, assessments)
+  ctx.inject(['sessions'], bridgeCtx => {
+    const connection = bridgeCtx.get('connection', false) as HostConnectionLike | undefined
+    if (connection !== undefined) installRiskAdvisorBrowserBridge(bridgeCtx, connection, assessments)
   })
   ctx.effect(() => () => { foundation.dispose() }, 'risk-advisor-operation-foundation-generation')
   ctx.effect(() => () => { assessments.dispose() }, 'risk-advisor-assessment-generation')
