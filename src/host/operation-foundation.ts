@@ -195,7 +195,12 @@ function cloneBounded(value: unknown, budget: Budget, depth: number): CloneResul
       if (descriptor === undefined || !('value' in descriptor)) return failure('ARGUMENT_ACCESSOR_UNSUPPORTED')
       const child = cloneBounded(descriptor.value, budget, depth + 1)
       if (isFailure(child)) return child
-      result[key] = child
+      Object.defineProperty(result, key, {
+        value: child,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      })
       budget.bytes += 1
       if (budget.bytes > MAX_BYTES) return failure('ARGUMENT_BYTES_EXCEEDED')
     }

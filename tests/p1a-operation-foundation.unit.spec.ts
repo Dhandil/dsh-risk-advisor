@@ -92,11 +92,13 @@ describe('Phase 1A Operation Foundation', () => {
     }, { name: 'write' })
     const unknown = fakeExecution(fakeSession('s-04'), 'unknown', { file_path: 'a' }, { name: 'bash' })
     const invalid = fakeExecution(fakeSession('s-04'), 'invalid', { file_path: 'a', extra: true }, { name: 'read' })
+    const protoKey = JSON.parse('{"file_path":"a","__proto__":{"unexpected":true}}')
 
     expect(foundation.capture(read, 'ra-execution-read').status).toBe('CAPTURED')
     expect(foundation.capture(write, 'ra-execution-write').status).toBe('CAPTURED')
     expect(foundation.capture(unknown, 'ra-execution-unknown').status).toBe('DEGRADED')
     expect(foundation.capture(invalid, 'ra-execution-invalid').status).toBe('DEGRADED')
+    expect(foundation.capture(fakeExecution(fakeSession('s-04'), 'proto-key', protoKey, { name: 'read' }), 'ra-execution-proto-key').status).toBe('DEGRADED')
     const publicWrite = JSON.stringify(foundation.diagnostics.get('ra-execution-write'))
     expect(publicWrite).not.toContain('secret')
     expect(publicWrite).not.toContain('require_escalated')
