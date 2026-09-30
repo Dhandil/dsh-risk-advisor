@@ -2,9 +2,28 @@
 
 ## Outcome
 
-`PHASE1A_PUBLISHED_READY_FOR_REVIEW`
+`PHASE1A_REPAIR_PUBLISHED_READY_FOR_REVIEW`
 
 This is Codex's implementation and execution record only. Final acceptance remains with ChatGPT Web independent review. No `Acceptance_Report.md` was created, and Phase 1B/1C was not started.
+
+## Targeted repair continuation
+
+- Repair authority: `Phase1A_Repair_Instructions.md`, independent review of prior publication `cd10148f59d0761de4717f40036e7ad04a6568cd`.
+- Repair starting plugin `HEAD == origin/main == git ls-remote`: `cd10148f59d0761de4717f40036e7ad04a6568cd`.
+- Repair implementation commit: `08c3613af9919b19b15fafd4ce43a802b289554f`.
+- Scope was limited to F1–F3 in `src/host/operation-foundation.ts` and its exact focused unit tests; `src/index.ts`, `src/host/correlation.ts`, T01–T05 code, and prior reports were not changed.
+
+### F1 — settled SnapshotStore retention
+
+Root cause: `Entry.execution` strongly retained the original `ToolExecution` through the bounded Map after retirement, even after the detached raw copy was removed. Repair replaces that field with `WeakRef<ToolExecution>`. Settled eviction, expiry, disposal, and exact-object idempotence update the existing WeakMap only when the weak reference is still live; no settled entry has a strong execution, Agent, Session, token, signal, or native argument path. New structural coverage checks the retained entry shape and metadata-after-retirement/expiry behavior without relying on nondeterministic garbage collection.
+
+### F2 — own-property normalization
+
+Root cause: ordinary detached objects plus inherited property reads allowed ambient `Object.prototype.file_path` or `content` to satisfy missing required fields. Repair uses null-prototype detached dictionaries and `Object.hasOwn` for required and optional fields. New deterministic coverage temporarily installs prototype pollution, restores original descriptors in `finally`, and verifies degraded unknown operations with no hash or requested-target assertion. The earlier `__proto__` regression remains covered.
+
+### F3 — scope-before-admission
+
+Root cause: capacity sweep/eviction ran before exact Session/session-id/call-id validation. Repair validates the live scope first, returning `UNAVAILABLE` without eviction or capacity refusal; valid captures retain the prior bounded sweep/admission behavior. New coverage checks both a full settled store and an all-active store.
 
 ## Baselines and protection
 
@@ -12,14 +31,14 @@ This is Codex's implementation and execution record only. Final acceptance remai
 - Starting plugin `HEAD` / `origin/main`: `39b50d18514988de64997ad3de5569bf5c795c1c`.
 - Pinned Harness read-only reference: `ddefc45fbc7f8e46dd73185e68295696d1297887` (`HEAD == origin/master`). No Harness source, index, or worktree file was modified; no Harness fetch, install, build, reset, clean, or checkout was performed.
 - The separately observed Harness upstream `4878cdabd87d4041bdaff61d04c966883b9fd07a` remains unvalidated and was not used.
-- Existing plugin drift was preserved and not staged: `docs/risk-advisor-current/`, `docs/tasks/T01-approval-ui/T01_Final_Runtime_Gate_Instructions.md`, `.vitest-cache/`, generated `lib/`, `node_modules/`, and `pnpm-lock.yaml`.
+- Existing plugin drift was preserved and not staged: `docs/risk-advisor-current/`, `docs/tasks/Phase1A-operation-foundation/Phase1A_Repair_Instructions.md`, `docs/tasks/T01-approval-ui/T01_Final_Runtime_Gate_Instructions.md`, `.vitest-cache/`, generated `lib/`, `node_modules/`, and `pnpm-lock.yaml`.
 - Existing Harness drift was preserved: `build.log`, `install.log`, `t0-model.txt`, `t0-remote.txt`, `t0-session.txt`, `t0-storage.txt`, and `undefined/`.
 
 ## Implementation manifest
 
-The implementation commits `a0c543569d251905492319fb7821bb7f3767373f` and `ac36a48727c06f567a1fa8305fc2b627760964cb` contain only the Phase 1A scope:
+The implementation commits `a0c543569d251905492319fb7821bb7f3767373f`, `ac36a48727c06f567a1fa8305fc2b627760964cb`, and `08c3613af9919b19b15fafd4ce43a802b289554f` contain only the Phase 1A scope:
 
-- `src/host/operation-foundation.ts` — Host-private bounded snapshot, closed read/write shape normalizer, hostile-key-safe detached data properties, public-evidence boundary metadata, SHA-256 comparison hash, TTL/capacity store, retirement, disposal, and sanitized diagnostics.
+- `src/host/operation-foundation.ts` — Host-private bounded snapshot, weak settled-entry retention, closed read/write shape normalizer, null-prototype/own-property safety, hostile-key-safe detached data properties, public-evidence boundary metadata, SHA-256 comparison hash, TTL/capacity store, retirement, disposal, and sanitized diagnostics.
 - `src/host/correlation.ts` — private parent-token witness accessor; existing public `CorrelationDiagnostics` is unchanged.
 - `src/index.ts` — one shared private correlation observer for `installCorrelation` and `apply`; `apply` wires the exact returned T02 ID into Foundation capture synchronously and calls native `next()` once, while preserving the independent Ledger observer.
 - `tests/p1a-operation-foundation.unit.spec.ts` — bounded input, identity, normalization, privacy, hash, parent, capacity, TTL, retirement, and disposal proof.
@@ -53,12 +72,20 @@ The public Foundation facade exposes only `get(executionId)` with detached sanit
 | P1A-06 boundary provenance | PASS | Unit and runtime evidence keep all unproven fields independently `unknown`; session cwd is not public or promoted to workspace truth. |
 | P1A-07 complete-input private hash | PASS | Unit stable object-key ordering produces equal private hashes; invalid/unknown input has no hash. |
 | P1A-08 cap, settled eviction, all-active refusal, absolute TTL | PASS | Unit injected-clock and bounded-store cases. |
-| P1A-09 result retirement and disposal/HMR generation stop | PASS | Unit raw-copy purge and no revival; runtime disposal check. |
+| P1A-09 result retirement and disposal/HMR generation stop | PASS | Unit raw-copy purge, weak settled-entry structure, expiry/no revival; runtime disposal check. |
 | P1A-10 parent identity | PASS | Unit stores only the exact parent witness supplied by the T02 index; existing T02 parent-token coverage remains green. |
 | P1A-11 failure containment and native continuation | PASS | Shared observer catches observational Foundation failures and delegates `next()` once; inherited T02/native runtime parity tests remain green. |
 | P1A-12 detached frozen privacy facade | PASS | Unit/runtime JSON assertions and frozen diagnostic design. |
 | P1A-13 pinned real Host integration | PASS | `p1a-runtime.integration.spec.ts`, real Context/SessionStore/ToolRuntime/ApprovalService, native `allowed-once`, one correlation owner, disposal. |
-| P1A-14 inherited regression | PASS | Final `pnpm test`: 66 inherited tests plus 10 Phase 1A tests. |
+| P1A-14 inherited regression | PASS | Repair final `pnpm test`: 66 inherited tests plus 13 Phase 1A tests. |
+
+### New repair proof matrix
+
+| Finding | Result | Evidence |
+|---|---|---|
+| F1 settled entry has no strong original execution path | PASS | Structural settled-entry test: no `execution` field, only `WeakRef`, no raw/native identity fields; sanitized metadata survives until injected-clock expiry. |
+| F2 required and optional shape fields are own-only | PASS | Prototype-pollution unit regression, null-prototype detachment, own-key hash/`__proto__` coverage. |
+| F3 invalid scope cannot evict/refuse valid evidence | PASS | Full-settled and all-active admission tests return `UNAVAILABLE` before capacity mutation. |
 
 ## Commands and gates
 
@@ -67,14 +94,14 @@ All executable checks below were run on the final executable content; the final 
 | Check | Result |
 |---|---|
 | `pnpm run typecheck` | PASS |
-| `pnpm run test:p1a` | PASS — 2 files, 10 tests |
+| `pnpm run test:p1a` | PASS — 2 files, 13 tests |
 | `pnpm run build` | PASS — Host and Client bundles |
 | Host export smoke (`lib/index.js`) | PASS — `apply`, `installCorrelation`, `ActiveExecutionIndex` present |
 | `pnpm pack --dry-run` | PASS — package contents limited to package allowlist |
 | `git diff --check -- package.json src tests` | PASS |
 | Full `git diff --cached --check` | Supplied frozen Markdown files retain their original Markdown hard-break trailing spaces; no implementation/test whitespace errors. The exact supplied documents were not normalized. |
 | lint / publint | `NOT_CONFIGURED` — no project scripts or binaries present |
-| final `pnpm test` | PASS — T01 9 + T02 16 + T03 17 + T04 21 + T05 3 + P1A 10 = **76 tests** |
+| final `pnpm test` | PASS — T01 9 + T02 16 + T03 17 + T04 21 + T05 3 + P1A 13 = **79 tests** |
 
 The final full regression command was:
 
@@ -85,8 +112,10 @@ pnpm test
   test:r3 17 passed
   test:r4 21 passed
   test:r5  3 passed
-  test:p1a 10 passed
+  test:p1a 13 passed
 ```
+
+The prior Phase 1A final regression remains recorded above as 76 tests; this repair's fresh final regression is 79 tests on the Tested SHA below.
 
 The T05 benchmark unit suite ran as the inherited 3-test regression. The separate R5 smoke/full benchmark was not run because Phase 1A did not introduce a justified benchmark-policy change.
 
@@ -97,7 +126,7 @@ The T05 benchmark unit suite ran as the inherited 3-test regression. The separat
 - `read` and `write` are name-and-shape-only provisional classifications. Unknown tools, including shell/PTC-style names, remain unknown.
 - There is no filesystem, shell, process, network/provider, Browser RPC, LLM/Judge, assessment, approval answerer, or native outcome authority added by Phase 1A.
 - Snapshot detachment is early-stop bounded at 16 KiB UTF-8 budget, depth 8, 256 nodes, 64 keys per object, and 8192-character strings; cycles, accessors/proxy failures, unsupported values, and budget breaches degrade without raw retention.
-- The store is capped at 512 entries with an absolute five-minute injectable-clock TTL, settled-first eviction, all-active refusal, exact-result raw purge, and generation disposal/no-revival.
+- The store is capped at 512 entries with an absolute five-minute injectable-clock TTL, settled-first eviction, all-active refusal, exact-result raw purge, weak settled-entry retention, and generation disposal/no-revival.
 - T01 Browser fixture, T02 correlation, T03 replay, T04 ledger, and T05 benchmark/statistics behavior were not rewritten or promoted into Phase 1A product claims. T04 exact cross-plane F-006/F-007/F-013 gates remain open.
 - No `docs/baseline/**`, prior task report, Harness Core file, or protected drift was changed.
 
@@ -107,6 +136,7 @@ The following remain outside this bounded phase or were not performed: Browser/l
 
 ## SHA handoff
 
-- Tested / final implementation SHA: `ac36a48727c06f567a1fa8305fc2b627760964cb`.
+- Earlier Phase 1A Tested SHA: `ac36a48727c06f567a1fa8305fc2b627760964cb`.
+- Tested / repair implementation SHA: `08c3613af9919b19b15fafd4ce43a802b289554f`.
 - Report-only publication commit and final remote SHA are verified in the terminal handoff after this report is committed and pushed.
 - STOP after publication for ChatGPT Web independent review; Codex does not declare `ACCEPTED`.
