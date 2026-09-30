@@ -67,6 +67,26 @@ export interface AssessmentIssueSummary {
   readonly reasonCodes: readonly Extract<AssessmentReasonCode, 'ORPHAN_DECISION' | 'CAPACITY_EXCEEDED'>[]
 }
 
+export interface AssessmentBridgeSnapshot {
+  readonly sessionId: string
+  readonly callId: string
+  readonly assessmentId?: string
+  readonly association: 'BOUND' | 'UNBOUND'
+  readonly status: 'unavailable'
+  readonly stage: 'not-started'
+  readonly reasonCodes: readonly AssessmentReasonCode[]
+  readonly updatedAt: number
+}
+
+export type ActiveAssessmentQuery =
+  | { readonly kind: 'VIEW'; readonly snapshot: AssessmentBridgeSnapshot }
+  | { readonly kind: 'NOT_FOUND' }
+  | { readonly kind: 'AMBIGUOUS' }
+
+export type OpenAssessmentQuery =
+  | { readonly kind: 'VIEW'; readonly snapshot: AssessmentBridgeSnapshot }
+  | { readonly kind: 'NOT_FOUND' }
+
 export interface AssessmentDiagnostics {
   readonly getForApproval: (session: Session, approvalId: string) => AssessmentDiagnostic
   readonly getIssueSummary: () => AssessmentIssueSummary
@@ -238,6 +258,37 @@ export class ApprovalAssessmentCoordinator {
     })
   }
 
+  queryActiveForCall(session: Session, callIdValue: unknown): ActiveAssessmentQuery {
+    if (!this.active) return { kind: 'NOT_FOUND' }
+    const callId = safeId(callIdValue, true)
+    if (callId === undefined) return { kind: 'NOT_FOUND' }
+    this.sweep(this.readClock())
+    const matches = [...this.recordsBySession.get(session)?.values() ?? []]
+      .filter(record => record.shell.closed === false && record.callId === callId)
+    if (matches.length === 0) return { kind: 'NOT_FOUND' }
+    if (matches.length > 1) return { kind: 'AMBIGUOUS' }
+    const sessionId = safeId(session.id, true)
+    return sessionId === undefined ? { kind: 'NOT_FOUND' } : { kind: 'VIEW', snapshot: bridgeSnapshotFrom(matches[0]!, callId, sessionId) }
+  }
+
+  queryOpenByAssessmentId(assessmentIdValue: unknown): OpenAssessmentQuery {
+    if (!this.active) return { kind: 'NOT_FOUND' }
+    const assessmentId = safeId(assessmentIdValue, true)
+    if (assessmentId === undefined) return { kind: 'NOT_FOUND' }
+    this.sweep(this.readClock())
+    let match: AssessmentRecord | undefined
+    let sessionId: string | undefined
+    for (const record of this.records) {
+      if (record.shell.closed || record.shell.assessmentId !== assessmentId || record.sessionRef.deref() === undefined) continue
+      if (match !== undefined) return { kind: 'NOT_FOUND' }
+      match = record
+      sessionId = safeId(record.sessionRef.deref()!.id, true)
+    }
+    return match === undefined || sessionId === undefined
+      ? { kind: 'NOT_FOUND' }
+      : { kind: 'VIEW', snapshot: bridgeSnapshotFrom(match, match.callId!, sessionId) }
+  }
+
   private observeAsked(
     session: Session,
     approvalIdValue: unknown,
@@ -381,6 +432,20 @@ export class ApprovalAssessmentCoordinator {
 
 function incrementBounded(value: number): number {
   return value >= Number.MAX_SAFE_INTEGER ? Number.MAX_SAFE_INTEGER : value + 1
+}
+
+function bridgeSnapshotFrom(record: AssessmentRecord, callId: string, sessionId: string): AssessmentBridgeSnapshot {
+  const shell = record.shell
+  return Object.freeze({
+    sessionId,
+    callId,
+    ...shell.assessmentId === undefined ? {} : { assessmentId: shell.assessmentId },
+    association: shell.association === 'BOUND' ? 'BOUND' as const : 'UNBOUND' as const,
+    status: 'unavailable' as const,
+    stage: 'not-started' as const,
+    reasonCodes: Object.freeze([...shell.reasonCodes]),
+    updatedAt: shell.updatedAt,
+  })
 }
 
 function emptyIssueSummary(): AssessmentIssueSummary {
