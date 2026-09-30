@@ -31,6 +31,7 @@ function fakeExecution(
 const result = {} as ToolExecutionResult
 
 type InternalEntry = {
+  readonly executionRef: WeakRef<ToolExecution>
   readonly snapshot: Record<string, unknown>
   readonly rawArguments?: unknown
   readonly active: boolean
@@ -131,6 +132,69 @@ describe('Phase 1A Operation Foundation', () => {
     foundation.retire(first)
     expect(entries(foundation).get('ra-execution-hash-1')!.rawArguments).toBeUndefined()
     expect(entries(foundation).get('ra-execution-hash-1')!.snapshot.rawArguments).toBeUndefined()
+  })
+
+  it('does not strongly retain a settled ToolExecution and expires only detached metadata', () => {
+    let now = 0
+    const foundation = new OperationFoundation({ clock: () => now, ttlMs: 10 })
+    const exec = fakeExecution(fakeSession('s-f1'), 'f1-call', { file_path: 'private.txt' }, { name: 'read' })
+    foundation.capture(exec, 'ra-execution-f1')
+    foundation.retire(exec)
+
+    const entry = entries(foundation).get('ra-execution-f1')!
+    expect(entry).not.toHaveProperty('execution')
+    expect(Object.keys(entry)).not.toContain('execution')
+    expect(entry.executionRef).toBeInstanceOf(WeakRef)
+    expect(entry.snapshot).not.toHaveProperty('rawArguments')
+    expect(entry.snapshot).not.toHaveProperty('agent')
+    expect(entry.snapshot).not.toHaveProperty('signal')
+    expect(entry.snapshot).not.toHaveProperty('token')
+    expect(foundation.diagnostics.get('ra-execution-f1').status).toBe('CAPTURED')
+
+    now = 10
+    expect(foundation.diagnostics.get('ra-execution-f1').status).toBe('EXPIRED')
+    expect(foundation.diagnostics.get('ra-execution-f1').status).toBe('NOT_FOUND')
+  })
+
+  it('normalizes required fields from own properties only under ambient prototype pollution', () => {
+    const foundation = new OperationFoundation()
+    const originalFilePath = Object.getOwnPropertyDescriptor(Object.prototype, 'file_path')
+    const originalContent = Object.getOwnPropertyDescriptor(Object.prototype, 'content')
+    try {
+      Object.defineProperty(Object.prototype, 'file_path', { value: 'polluted-path', configurable: true, writable: true })
+      Object.defineProperty(Object.prototype, 'content', { value: 'polluted-content', configurable: true, writable: true })
+      const missingRead = fakeExecution(fakeSession('s-f2'), 'missing-read', {}, { name: 'read' })
+      const missingWrite = fakeExecution(fakeSession('s-f2'), 'missing-write', { file_path: 'a' }, { name: 'write' })
+
+      expect(foundation.capture(missingRead, 'ra-execution-f2-read')).toMatchObject({ status: 'DEGRADED' })
+      expect(foundation.capture(missingWrite, 'ra-execution-f2-write')).toMatchObject({ status: 'DEGRADED' })
+      for (const id of ['ra-execution-f2-read', 'ra-execution-f2-write']) {
+        const snapshot = entries(foundation).get(id)!.snapshot
+        expect(snapshot.operationHash).toBeUndefined()
+        expect((snapshot.normalizedOperation as { kind: string }).kind).toBe('unknown')
+      }
+    } finally {
+      if (originalFilePath === undefined) delete (Object.prototype as Record<string, unknown>).file_path
+      else Object.defineProperty(Object.prototype, 'file_path', originalFilePath)
+      if (originalContent === undefined) delete (Object.prototype as Record<string, unknown>).content
+      else Object.defineProperty(Object.prototype, 'content', originalContent)
+    }
+  })
+
+  it('validates live scope before settled eviction or all-active capacity refusal', () => {
+    const settledFoundation = new OperationFoundation({ maxEntries: 1 })
+    const settled = fakeExecution(fakeSession('s-f3'), 'settled', { file_path: 'a' }, { name: 'read' })
+    settledFoundation.capture(settled, 'ra-execution-f3-settled')
+    settledFoundation.retire(settled)
+    expect(settledFoundation.capture(fakeExecution(undefined, 'missing-session', {}), 'ra-execution-f3-missing-session').status).toBe('UNAVAILABLE')
+    expect(settledFoundation.diagnostics.get('ra-execution-f3-settled').status).toBe('CAPTURED')
+
+    const activeFoundation = new OperationFoundation({ maxEntries: 1 })
+    const active = fakeExecution(fakeSession('s-f3-active'), 'active', { file_path: 'a' }, { name: 'read' })
+    activeFoundation.capture(active, 'ra-execution-f3-active')
+    expect(activeFoundation.capture(fakeExecution(fakeSession('s-f3-active'), undefined, {}), 'ra-execution-f3-missing-call').status).toBe('UNAVAILABLE')
+    expect(activeFoundation.diagnostics.get('ra-execution-f3-active').status).toBe('CAPTURED')
+    expect(activeFoundation.capture(fakeExecution(fakeSession('s-f3-active'), 'overflow', { file_path: 'b' }, { name: 'read' }), 'ra-execution-f3-overflow').status).toBe('CAPACITY_EXCEEDED')
   })
 
   it('records the exact parent witness without exposing it in diagnostics', () => {

@@ -68,7 +68,7 @@ interface PrivateOperationSnapshot {
 }
 
 interface Entry {
-  readonly execution: ToolExecution
+  readonly executionRef: WeakRef<ToolExecution>
   snapshot: PrivateOperationSnapshot
   rawArguments: JsonValue | undefined
   active: boolean
@@ -186,7 +186,7 @@ function cloneBounded(value: unknown, budget: Budget, depth: number): CloneResul
     }
     if (prototype !== Object.prototype && prototype !== null) return failure('ARGUMENT_OBJECT_UNSUPPORTED')
     if (keys.length > MAX_KEYS) return failure('ARGUMENT_KEY_LIMIT_EXCEEDED')
-    const result: Record<string, JsonValue> = {}
+    const result: Record<string, JsonValue> = Object.create(null) as Record<string, JsonValue>
     budget.bytes += 1
     for (const key of keys) {
       if (key.length > MAX_STRING_LENGTH || !charge(budget, JSON.stringify(key))) return failure('ARGUMENT_BYTES_EXCEEDED')
@@ -245,6 +245,29 @@ function keysOf(value: Record<string, JsonValue>): readonly string[] {
   return Object.keys(value)
 }
 
+function hasOwn(value: Record<string, JsonValue>, key: string): boolean {
+  return Object.hasOwn(value, key)
+}
+
+function readLiveScope(exec: ToolExecution): {
+  readonly session: Session | undefined
+  readonly sessionId: string | undefined
+  readonly callId: string | undefined
+  readonly toolName: string | undefined
+} {
+  try {
+    const session = exec.agent?.session
+    return {
+      session,
+      sessionId: safeString(session?.id, true),
+      callId: safeString(exec.callId, true),
+      toolName: safeString(exec.name, true),
+    }
+  } catch {
+    return { session: undefined, sessionId: undefined, callId: undefined, toolName: undefined }
+  }
+}
+
 function normalize(toolName: string, args: JsonValue): {
   readonly operation: PrivateNormalizedOperation
   readonly reasonCodes: readonly string[]
@@ -273,24 +296,28 @@ function normalize(toolName: string, args: JsonValue): {
     : ['file_path', 'content', 'sandbox_permissions', 'justification']
   const reasons: string[] = []
   if (keys.some(key => !allowed.includes(key))) reasons.push('UNKNOWN_ARGUMENT_KEY')
-  if (typeof object.file_path !== 'string' || object.file_path.trim().length === 0) reasons.push('FILE_PATH_INVALID')
+  const filePath = hasOwn(object, 'file_path') ? object.file_path : undefined
+  if (typeof filePath !== 'string' || filePath.trim().length === 0) reasons.push('FILE_PATH_INVALID')
   if (toolName === 'read') {
     for (const key of ['offset', 'limit'] as const) {
-      const value = object[key]
-      if (value !== undefined && (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > MAX_READ_NUMBER)) reasons.push(`${key.toUpperCase()}_INVALID`)
+      if (hasOwn(object, key)) {
+        const value = object[key]
+        if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > MAX_READ_NUMBER) reasons.push(`${key.toUpperCase()}_INVALID`)
+      }
     }
   } else {
-    if (typeof object.content !== 'string') reasons.push('CONTENT_INVALID')
+    const content = hasOwn(object, 'content') ? object.content : undefined
+    if (typeof content !== 'string') reasons.push('CONTENT_INVALID')
     for (const key of ['sandbox_permissions', 'justification'] as const) {
-      if (object[key] !== undefined && typeof object[key] !== 'string') reasons.push(`${key.toUpperCase()}_INVALID`)
+      if (hasOwn(object, key) && typeof object[key] !== 'string') reasons.push(`${key.toUpperCase()}_INVALID`)
     }
   }
   const valid = reasons.length === 0
   const operation: PrivateNormalizedOperation = {
     toolName,
     kind: valid ? toolName === 'read' ? 'filesystem-read' : 'filesystem-write' : 'unknown',
-    ...(valid && typeof object.file_path === 'string' ? { requestedTarget: object.file_path } : {}),
-    ...(valid && toolName === 'write' && typeof object.sandbox_permissions === 'string'
+    ...(valid && typeof filePath === 'string' ? { requestedTarget: filePath } : {}),
+    ...(valid && toolName === 'write' && hasOwn(object, 'sandbox_permissions') && typeof object.sandbox_permissions === 'string'
       ? { requestedPermission: object.sandbox_permissions }
       : {}),
   }
@@ -367,6 +394,13 @@ export class OperationFoundation {
       this.seen.set(exec, result)
       return result
     }
+    const scope = readLiveScope(exec)
+    if (scope.session === undefined || scope.sessionId === undefined || scope.callId === undefined) {
+      const result = Object.freeze({ executionId, status: 'UNAVAILABLE' as const, reasonCodes: Object.freeze(['LIVE_SCOPE_IDENTITY_UNAVAILABLE']) })
+      this.seen.set(exec, result)
+      return result
+    }
+    const { session, sessionId, callId, toolName } = scope
     const now = this.clock()
     this.sweep(now)
     while (this.snapshots.size >= this.maxEntries) {
@@ -377,31 +411,7 @@ export class OperationFoundation {
         return result
       }
       this.snapshots.delete(oldestSettled.snapshot.executionId)
-      this.seen.set(oldestSettled.execution, Object.freeze({
-        executionId: oldestSettled.snapshot.executionId,
-        status: 'NOT_FOUND' as const,
-        reasonCodes: Object.freeze(['EVICTED_CAPACITY']),
-      }))
-    }
-
-    let session: Session | undefined
-    let sessionId: string | undefined
-    let callId: string | undefined
-    let toolName: string | undefined
-    try {
-      session = exec.agent?.session
-      sessionId = safeString(session?.id, true)
-      callId = safeString(exec.callId, true)
-      toolName = safeString(exec.name, true)
-    } catch {
-      sessionId = undefined
-      callId = undefined
-      toolName = undefined
-    }
-    if (session === undefined || sessionId === undefined || callId === undefined) {
-      const result = Object.freeze({ executionId, status: 'UNAVAILABLE' as const, reasonCodes: Object.freeze(['LIVE_SCOPE_IDENTITY_UNAVAILABLE']) })
-      this.seen.set(exec, result)
-      return result
+      this.markSeen(oldestSettled, 'NOT_FOUND', ['EVICTED_CAPACITY'])
     }
 
     const actualToolName = toolName ?? 'unknown'
@@ -465,7 +475,7 @@ export class OperationFoundation {
       executionBoundary: boundaryFor(session),
       ...operationHash === undefined ? {} : { operationHash },
     })
-    const entry: Entry = { execution: exec, snapshot, rawArguments, active: true, createdAt: now }
+    const entry: Entry = { executionRef: new WeakRef(exec), snapshot, rawArguments, active: true, createdAt: now }
     this.snapshots.set(executionId, entry)
     const result = Object.freeze({ executionId, status: captureStatus, reasonCodes })
     this.seen.set(exec, result)
@@ -490,11 +500,7 @@ export class OperationFoundation {
     if (!this.active) return
     this.active = false
     for (const entry of this.snapshots.values()) {
-      this.seen.set(entry.execution, Object.freeze({
-        executionId: entry.snapshot.executionId,
-        status: 'NOT_FOUND' as const,
-        reasonCodes: Object.freeze(['GENERATION_DISPOSED']),
-      }))
+      this.markSeen(entry, 'NOT_FOUND', ['GENERATION_DISPOSED'])
     }
     this.snapshots.clear()
   }
@@ -506,7 +512,7 @@ export class OperationFoundation {
     if (entry === undefined) return notFoundDiagnostic(executionId)
     if (now - entry.createdAt >= this.ttlMs) {
       this.snapshots.delete(executionId)
-      this.seen.set(entry.execution, Object.freeze({ executionId, status: 'EXPIRED' as const, reasonCodes: Object.freeze(['EXPIRED']) }))
+      this.markSeen(entry, 'EXPIRED', ['EXPIRED'])
       return notFoundDiagnostic(executionId, 'EXPIRED')
     }
     return diagnosticFrom(entry.snapshot)
@@ -516,8 +522,18 @@ export class OperationFoundation {
     for (const [executionId, entry] of this.snapshots) {
       if (now - entry.createdAt >= this.ttlMs) {
         this.snapshots.delete(executionId)
-        this.seen.set(entry.execution, Object.freeze({ executionId, status: 'EXPIRED' as const, reasonCodes: Object.freeze(['EXPIRED']) }))
+        this.markSeen(entry, 'EXPIRED', ['EXPIRED'])
       }
     }
+  }
+
+  private markSeen(entry: Entry, status: FoundationStatus, reasonCodes: readonly string[]): void {
+    const execution = entry.executionRef.deref()
+    if (execution === undefined) return
+    this.seen.set(execution, Object.freeze({
+      executionId: entry.snapshot.executionId,
+      status,
+      reasonCodes: Object.freeze([...reasonCodes]),
+    }))
   }
 }
