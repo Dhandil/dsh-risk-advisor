@@ -1,5 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
-import type {} from '@deepseek-ai/dsh-session'
+import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-user-approval'
 import { ActiveExecutionIndex, createCorrelationDiagnostics } from './host/correlation.ts'
@@ -8,6 +8,8 @@ import { installLedger } from './host/ledger.ts'
 import type { LedgerDiagnostics } from './host/ledger.ts'
 import { OperationFoundation } from './host/operation-foundation.ts'
 import type { FoundationDiagnostics } from './host/operation-foundation.ts'
+import { ApprovalAssessmentCoordinator } from './host/assessment-envelope.ts'
+import type { AssessmentDiagnostics } from './host/assessment-envelope.ts'
 
 export const inject = ['tools']
 
@@ -16,12 +18,15 @@ interface Context {
   riskAdvisorCorrelation: CorrelationDiagnostics
   riskAdvisorLedger: LedgerDiagnostics
   riskAdvisorFoundation: FoundationDiagnostics
+  riskAdvisorAssessments: AssessmentDiagnostics
 }
 }
 
 interface CorrelationHooks {
   readonly capture?: (exec: Parameters<ActiveExecutionIndex['observePreExecute']>[0], executionId: ReturnType<ActiveExecutionIndex['observePreExecute']>, parentExecutionId: string | undefined) => void
   readonly retire?: (exec: Parameters<ActiveExecutionIndex['observeResult']>[0]) => void
+  readonly sessionEvent?: (session: Session, event: SessionEvent, index: ActiveExecutionIndex) => void
+  readonly sessionDisposed?: (session: Session) => void
 }
 
 function installCorrelationInternal(ctx: Context, hooks: CorrelationHooks = {}): CorrelationDiagnostics {
@@ -37,7 +42,13 @@ function installCorrelationInternal(ctx: Context, hooks: CorrelationHooks = {}):
     try { hooks.retire?.(exec) } catch { /* Foundation is observational. */ }
     index.observeResult(exec, result)
   })
-  ctx.on('session/event', (session, event) => { index.observeSessionEvent(session, event) })
+  ctx.on('session/event', (session, event) => {
+    index.observeSessionEvent(session, event)
+    try { hooks.sessionEvent?.(session, event, index) } catch { /* Assessment is observational. */ }
+  })
+  ctx.on('session/disposed', session => {
+    try { hooks.sessionDisposed?.(session) } catch { /* Assessment is observational. */ }
+  })
   ctx.effect(() => () => { index.dispose() }, 'risk-advisor-correlation-generation')
   return diagnostics
 }
@@ -50,12 +61,17 @@ export function installCorrelation(ctx: Context): CorrelationDiagnostics {
 /** Host bundle entry. R2 observes native execution and approval events only. */
 export function apply(ctx: Context): void {
   const foundation = new OperationFoundation()
+  const assessments = new ApprovalAssessmentCoordinator(foundation.diagnostics)
   installCorrelationInternal(ctx, {
     capture: (exec, executionId, parentExecutionId) => { foundation.capture(exec, executionId, parentExecutionId) },
     retire: exec => { foundation.retire(exec) },
+    sessionEvent: (session, event, index) => { assessments.observeSessionEvent(session, event, index) },
+    sessionDisposed: session => { assessments.observeSessionDisposed(session) },
   })
   ctx.provide('riskAdvisorFoundation', foundation.diagnostics)
+  ctx.provide('riskAdvisorAssessments', assessments.diagnostics)
   ctx.effect(() => () => { foundation.dispose() }, 'risk-advisor-operation-foundation-generation')
+  ctx.effect(() => () => { assessments.dispose() }, 'risk-advisor-assessment-generation')
   installLedger(ctx)
 }
 
@@ -74,6 +90,7 @@ export type {
   NotFoundReason,
 } from './host/correlation.ts'
 export type { FoundationBoundaryDiagnostic, FoundationDiagnostic, FoundationDiagnostics, FoundationStatus, FoundationToolKind, FoundationUnknown } from './host/operation-foundation.ts'
+export type { AssessmentAssociation, AssessmentDiagnostic, AssessmentDiagnostics, AssessmentReasonCode, AssessmentStage, AssessmentStatus, ApprovalAssessmentShell } from './host/assessment-envelope.ts'
 export type {
   DurableOccurrenceRef,
   EdgeResolution,
