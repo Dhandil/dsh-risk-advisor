@@ -90,7 +90,7 @@ export type {
   NotFoundReason,
 } from './host/correlation.ts'
 export type { FoundationBoundaryDiagnostic, FoundationDiagnostic, FoundationDiagnostics, FoundationStatus, FoundationToolKind, FoundationUnknown } from './host/operation-foundation.ts'
-export type { AssessmentAssociation, AssessmentDiagnostic, AssessmentDiagnostics, AssessmentReasonCode, AssessmentStage, AssessmentStatus, ApprovalAssessmentShell } from './host/assessment-envelope.ts'
+export type { AssessmentAssociation, AssessmentDiagnostic, AssessmentDiagnostics, AssessmentIssueSummary, AssessmentReasonCode, AssessmentStage, AssessmentStatus, ApprovalAssessmentShell } from './host/assessment-envelope.ts'
 export type {
   DurableOccurrenceRef,
   EdgeResolution,

@@ -78,6 +78,18 @@ describe('Phase 1B pinned Host runtime integration', () => {
       expect(answererCalls).toBe(1)
       const assessments = ctx.get('riskAdvisorAssessments')
 
+      session.append('approval/asked', {
+        id: approvalId as never,
+        toolName: 'p1b-conflicting-tool',
+        callId: ToolCallId('p1b-conflicting-call'),
+      })
+      const conflicted = assessments.getForApproval(session, approvalId)
+      expect(conflicted).toMatchObject({ association: 'UNBOUND', status: 'unavailable', closed: false })
+      expect(conflicted).not.toHaveProperty('executionId')
+      expect(conflicted).not.toHaveProperty('assessmentId')
+      expect(conflicted.reasonCodes).toContain('CORRELATION_CONFLICT')
+      expect(answererCalls).toBe(1)
+
       decision.resolve('allowed-once')
       await expect(pending).resolves.toMatchObject({ isError: false })
       expect(assessments.getForApproval(session, approvalId)).toMatchObject({

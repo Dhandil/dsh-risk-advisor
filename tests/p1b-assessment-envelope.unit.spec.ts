@@ -118,7 +118,15 @@ describe('Phase 1B approval assessment envelope', () => {
     expect(coordinator.observeSessionEvent(session, asked('same', 'probe', 'call-1'), index)).toBe('DUPLICATE')
     expect(get(coordinator, session, 'same').assessmentId).toBe(first.assessmentId)
     expect(coordinator.observeSessionEvent(session, asked('same', 'other-tool', 'other-call'), index)).toBe('CONFLICT')
-    expect(get(coordinator, session, 'same').reasonCodes).toContain('CORRELATION_CONFLICT')
+    const conflicted = get(coordinator, session, 'same')
+    expect(conflicted).toMatchObject({ association: 'UNBOUND', status: 'unavailable', closed: false })
+    expect(conflicted).not.toHaveProperty('executionId')
+    expect(conflicted).not.toHaveProperty('assessmentId')
+    expect(conflicted.reasonCodes).toContain('CORRELATION_CONFLICT')
+    expect(coordinator.observeSessionEvent(session, decided('same', 'rejected'), index)).toBe('DECIDED')
+    expect(get(coordinator, session, 'same')).toMatchObject({ association: 'UNBOUND', closed: true, observedOutcome: 'rejected' })
+    expect(get(coordinator, session, 'same')).not.toHaveProperty('executionId')
+    expect(get(coordinator, session, 'same')).not.toHaveProperty('assessmentId')
     expect(coordinator.observeSessionEvent(session, asked('second', 'probe', 'call-1'), index)).toBe('RECORDED')
     expect(get(coordinator, session, 'second').assessmentId).not.toBe(first.assessmentId)
   })
@@ -149,7 +157,14 @@ describe('Phase 1B approval assessment envelope', () => {
 
   it('P1B-07 ignores orphan decisions and generation disposal prevents revival', () => {
     const { session, index, coordinator } = setup()
-    expect(coordinator.observeSessionEvent(session, decided('orphan', 'rejected'), index)).toBe('IGNORED')
+    expect(coordinator.observeSessionEvent(session, decided('orphan', 'rejected'), index)).toBe('ORPHAN_DECISION')
+    for (let i = 0; i < 1000; i += 1) coordinator.observeSessionEvent(session, decided(`orphan-${i}`, 'rejected'), index)
+    expect(coordinator.getIssueSummary()).toMatchObject({
+      orphanDecisions: 1001,
+      capacityExceeded: 0,
+      reasonCodes: ['ORPHAN_DECISION'],
+    })
+    expect(get(coordinator, session, 'orphan').status).toBe('not-found')
     coordinator.observeSessionEvent(session, asked('late', 'probe', 'call-1'), index)
     coordinator.dispose()
     expect(get(coordinator, session, 'late')).toMatchObject({ status: 'not-found', reasonCodes: ['NOT_FOUND'] })
@@ -192,6 +207,13 @@ describe('Phase 1B approval assessment envelope', () => {
     activeIndex.observePreExecute(fakeExecution(activeSession, 'active'))
     activeCoordinator.observeSessionEvent(activeSession, asked('active', 'probe', 'active'), activeIndex)
     expect(activeCoordinator.observeSessionEvent(activeSession, asked('overflow', 'probe', 'missing'), activeIndex)).toBe('CAPACITY_EXCEEDED')
+    expect(activeCoordinator.getIssueSummary()).toMatchObject({
+      orphanDecisions: 0,
+      capacityExceeded: 1,
+      reasonCodes: ['CAPACITY_EXCEEDED'],
+    })
+    expect(get(activeCoordinator, activeSession, 'active').association).toBe('BOUND')
+    expect(get(activeCoordinator, activeSession, 'overflow').status).toBe('not-found')
   })
 
   it('P1B-10 returns detached frozen diagnostics, ignores reason payloads, and contains clock faults', () => {
@@ -207,5 +229,31 @@ describe('Phase 1B approval assessment envelope', () => {
     expect(Object.isFrozen(diagnostic.reasonCodes)).toBe(true)
     expect(JSON.stringify(diagnostic)).not.toContain('private clock')
     expect(() => { (diagnostic as { status: string }).status = 'pending' }).toThrow()
+  })
+
+  it('P1B-12 preserves completed TTL timestamps across a NaN clock fault', () => {
+    let now = 10_000
+    let fault = false
+    const session = fakeSession('clock-session')
+    const index = new ActiveExecutionIndex()
+    index.observePreExecute(fakeExecution(session, 'clock-call'))
+    const coordinator = new ApprovalAssessmentCoordinator(foundation(), {
+      clock: () => fault ? Number.NaN : now,
+      completedTtlMs: 10,
+    })
+
+    coordinator.observeSessionEvent(session, asked('clocked', 'probe', 'clock-call'), index)
+    const started = get(coordinator, session, 'clocked')
+    fault = true
+    coordinator.observeSessionEvent(session, decided('clocked', 'allowed-once'), index)
+    const closed = get(coordinator, session, 'clocked')
+    expect(closed.updatedAt).toBeGreaterThanOrEqual(started.startedAt)
+    expect(closed.observedOutcome).toBe('allowed-once')
+
+    fault = false
+    now = started.startedAt + 9
+    expect(get(coordinator, session, 'clocked').status).toBe('unavailable')
+    now = started.startedAt + 10
+    expect(get(coordinator, session, 'clocked').status).toBe('not-found')
   })
 })

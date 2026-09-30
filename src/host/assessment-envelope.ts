@@ -60,8 +60,16 @@ export interface AssessmentDiagnostic {
   readonly observedOutcome?: ApprovalOutcome
 }
 
+export interface AssessmentIssueSummary {
+  readonly schemaVersion: 1
+  readonly orphanDecisions: number
+  readonly capacityExceeded: number
+  readonly reasonCodes: readonly Extract<AssessmentReasonCode, 'ORPHAN_DECISION' | 'CAPACITY_EXCEEDED'>[]
+}
+
 export interface AssessmentDiagnostics {
   readonly getForApproval: (session: Session, approvalId: string) => AssessmentDiagnostic
+  readonly getIssueSummary: () => AssessmentIssueSummary
 }
 
 export type AssessmentObservationResult =
@@ -71,6 +79,7 @@ export type AssessmentObservationResult =
   | 'CONFLICT'
   | 'CLOSED'
   | 'DECIDED'
+  | 'ORPHAN_DECISION'
   | 'CAPACITY_EXCEEDED'
   | 'FAULTED'
 
@@ -148,9 +157,15 @@ export class ApprovalAssessmentCoordinator {
   private readonly clock: () => number
   private readonly maxRecords: number
   private readonly completedTtlMs: number
+  private orphanDecisions = 0
+  private capacityExceeded = 0
+  private lastClock = 0
   private active = true
 
-  readonly diagnostics: AssessmentDiagnostics = Object.freeze({ getForApproval: this.getForApproval.bind(this) })
+  readonly diagnostics: AssessmentDiagnostics = Object.freeze({
+    getForApproval: this.getForApproval.bind(this),
+    getIssueSummary: this.getIssueSummary.bind(this),
+  })
 
   constructor(foundation: FoundationDiagnostics, options: AssessmentCoordinatorOptions = {}) {
     this.foundation = foundation
@@ -195,6 +210,8 @@ export class ApprovalAssessmentCoordinator {
     }
     this.records.clear()
     this.recordsBySession = new WeakMap()
+    this.orphanDecisions = 0
+    this.capacityExceeded = 0
   }
 
   getForApproval(session: Session, approvalId: string): AssessmentDiagnostic {
@@ -205,6 +222,20 @@ export class ApprovalAssessmentCoordinator {
     this.sweep(now)
     const record = this.recordsBySession.get(session)?.get(id)
     return record === undefined ? notFoundDiagnostic(session, id) : diagnosticFrom(record.shell)
+  }
+
+  getIssueSummary(): AssessmentIssueSummary {
+    if (!this.active) return emptyIssueSummary()
+    const reasonCodes: AssessmentIssueSummary['reasonCodes'] = [
+      ...(this.orphanDecisions > 0 ? ['ORPHAN_DECISION' as const] : []),
+      ...(this.capacityExceeded > 0 ? ['CAPACITY_EXCEEDED' as const] : []),
+    ]
+    return Object.freeze({
+      schemaVersion: 1 as const,
+      orphanDecisions: this.orphanDecisions,
+      capacityExceeded: this.capacityExceeded,
+      reasonCodes: Object.freeze(reasonCodes),
+    })
   }
 
   private observeAsked(
@@ -226,10 +257,7 @@ export class ApprovalAssessmentCoordinator {
     if (existing !== undefined) {
       if (existing.shell.closed) return 'CLOSED'
       if (existing.toolName !== toolName || existing.callId !== callId) {
-        this.replaceShell(existing, {
-          status: 'unavailable',
-          reasonCodes: copyReasons([...existing.shell.reasonCodes, 'CORRELATION_CONFLICT']),
-        })
+        this.markConflict(existing)
         return 'CONFLICT'
       }
       return 'DUPLICATE'
@@ -239,7 +267,10 @@ export class ApprovalAssessmentCoordinator {
     this.sweep(now)
     if (this.records.size >= this.maxRecords) {
       const oldestClosed = [...this.records].find(record => record.shell.closed)
-      if (oldestClosed === undefined) return 'CAPACITY_EXCEEDED'
+      if (oldestClosed === undefined) {
+        this.capacityExceeded = incrementBounded(this.capacityExceeded)
+        return 'CAPACITY_EXCEEDED'
+      }
       this.remove(oldestClosed)
     }
 
@@ -285,7 +316,10 @@ export class ApprovalAssessmentCoordinator {
     const outcome = outcomeOf(outcomeValue)
     if (approvalId === undefined || outcome === undefined) return 'IGNORED'
     const record = this.recordsBySession.get(session)?.get(approvalId)
-    if (record === undefined) return 'IGNORED'
+    if (record === undefined) {
+      this.orphanDecisions = incrementBounded(this.orphanDecisions)
+      return 'ORPHAN_DECISION'
+    }
     if (record.shell.closed) return 'CLOSED'
     const now = this.readClock()
     this.replaceShell(record, {
@@ -315,10 +349,27 @@ export class ApprovalAssessmentCoordinator {
   private readClock(): number {
     try {
       const value = this.clock()
-      return Number.isFinite(value) && value >= 0 ? value : 0
+      if (Number.isFinite(value) && value >= 0) this.lastClock = Math.max(this.lastClock, value)
     } catch {
-      return 0
+      // Keep the last coherent monotonic value when an injected clock faults.
     }
+    return this.lastClock
+  }
+
+  private markConflict(record: AssessmentRecord): void {
+    const shell = record.shell
+    record.shell = Object.freeze({
+      schemaVersion: 1 as const,
+      sessionId: shell.sessionId,
+      approvalId: shell.approvalId,
+      association: 'UNBOUND' as const,
+      status: 'unavailable' as const,
+      stage: 'not-started' as const,
+      reasonCodes: copyReasons([...shell.reasonCodes, 'CORRELATION_CONFLICT']),
+      startedAt: shell.startedAt,
+      updatedAt: Math.max(shell.updatedAt, this.readClock()),
+      closed: false,
+    })
   }
 
   private sweep(now: number): void {
@@ -326,4 +377,17 @@ export class ApprovalAssessmentCoordinator {
       if (record.shell.closed && now - record.shell.updatedAt >= this.completedTtlMs) this.remove(record)
     }
   }
+}
+
+function incrementBounded(value: number): number {
+  return value >= Number.MAX_SAFE_INTEGER ? Number.MAX_SAFE_INTEGER : value + 1
+}
+
+function emptyIssueSummary(): AssessmentIssueSummary {
+  return Object.freeze({
+    schemaVersion: 1 as const,
+    orphanDecisions: 0,
+    capacityExceeded: 0,
+    reasonCodes: Object.freeze([]),
+  })
 }
