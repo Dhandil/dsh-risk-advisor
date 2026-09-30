@@ -2,7 +2,7 @@
 
 ## Outcome
 
-`PHASE1C_RECOVERY_PUBLISHED_READY_FOR_REVIEW`
+`PHASE1C_FINAL_REPAIR_PUBLISHED_READY_FOR_REVIEW`
 
 This is Codex's implementation and execution record only. Final acceptance remains with ChatGPT Web independent review. No `Acceptance_Report.md` was created, no next phase was started, and Codex does not declare `ACCEPTED`.
 
@@ -13,6 +13,7 @@ This is Codex's implementation and execution record only. Final acceptance remai
 - Recovery start plugin `HEAD == origin/main == git ls-remote`: `6461b1e6dc153075f39c722b78dbebe6820a88a9`.
 - Historical Phase 1C tested executable SHA: `0312fd7332f39e7245f7ab44137a82cd5194ba02`.
 - Recovery tested executable SHA: `d5d23f5568163ba48a0eef24670a2c2f6ed5a445`.
+- Final lifecycle-repair tested executable SHA: `9c7a4e54effe3455171aabb724724dd0e7eeb9b4`.
 - Frozen Harness reference: `ddefc45fbc7f8e46dd73185e68295696d1297887` (`HEAD == origin/master`). Harness Core was read-only; no fetch, install, build, checkout, reset, clean, or source/worktree modification was performed.
 - Observed Harness upstream `4878cdabd87d4041bdaff61d04c966883b9fd07a` remains unvalidated and was not used.
 - Existing plugin drift was preserved and not staged: `.vitest-cache/`, `docs/risk-advisor-current/`, `docs/tasks/Phase1A-operation-foundation/Phase1A_Repair_Instructions.md`, `docs/tasks/Phase1B-assessment-envelope/Phase1B_Repair_Instructions.md`, `docs/tasks/T01-approval-ui/T01_Final_Runtime_Gate_Instructions.md`, generated `lib/`, `node_modules/`, and `pnpm-lock.yaml`.
@@ -27,15 +28,16 @@ Operational note: a temporary peer-metadata experiment was reverted before commi
 - `src/bridge-contract.ts` — browser-safe DTO, closed read union, bounded identity checks, strict unknown-field rejection, reason-code allowlist, and detached/frozen parser helpers.
 - `src/client/assessment-bridge.ts` — read-only client adapter calling only `rpc.call('/risk-advisor', endpoint, payload, signal)`, runtime validation, and fail-safe transport/Host/protocol/cancellation mapping.
 - `src/client/index.ts` — exports the adapter and safe types only; it does not wire the adapter into the existing T01 slot or modify `RiskAdvisorDetail.tsx`/`R1FixtureStore`.
-- `src/index.ts` — `ctx.inject(['sessions'])` plus optional `ctx.get('connection', false)` local narrowing; the existing Host continues to work when Connection is absent, and bridge registration belongs to the plugin generation without declaring a competing `Context.connection` type.
+- `src/index.ts` — bridge sub-fiber depends on both `ctx.inject(['connection', 'sessions'])` services and locally narrows `ctx.get('connection', false)`; the existing Host continues to work while Connection is absent because the bridge waits, and registration belongs to the dependency-owned generation without declaring a competing `Context.connection` type.
 - `tests/p1c-browser-bridge.spec.ts` — real approval/session lifecycle, active-only behavior, conflict/ambiguity, RPC registration/disposal, strict payloads, privacy, and client failure mapping.
+- `tests/p1c-browser-bridge.spec.ts` — additionally proves sessions-before-connection, late mount, Connection disposal/replacement remount, no duplicate channel, and final tree disposal.
 - `tests/p1c-pinned-connection.probe.mjs` — acceptance-only probe against the frozen Harness build; it uses the actual pinned `HostConnectionService` with isolated WebServer and BrowserAuth fixtures and is intentionally outside the package test chain.
 - `package.json` — `test:p1c` included in the complete test chain.
 - The supplied Phase 1C freeze/instruction documents were preserved in this task directory.
 
 ## Authenticated Connection RPC boundary
 
-The production bridge uses only the pinned public Connection shape verified at Harness SHA `ddefc45f...`: the optional service is obtained with `ctx.get('connection', false)`, narrowed locally, and passed to `connection.rpc.handle('/risk-advisor', handler)`. It does not register a raw `webServer` route, use global `fetch`, hard-code origin/port, or bypass Connection admission. Phase 1C's supported carrier claim is limited to the authenticated normal served-Web/desktop HTTP Connection route.
+The production bridge uses only the pinned public Connection shape verified at Harness SHA `ddefc45f...`: the bridge sub-fiber requires both `connection` and `sessions`, then obtains the service with `ctx.get('connection', false)`, narrows locally, and passes that instance to `connection.rpc.handle('/risk-advisor', handler)`. It does not register a raw `webServer` route, use global `fetch`, hard-code origin/port, or bypass Connection admission. Phase 1C's supported carrier claim is limited to the authenticated normal served-Web/desktop HTTP Connection route.
 
 The original test uses an in-memory plugin-composed authenticated decoded Connection seam with the same public `handle`/dispatch shape. It remains historical evidence for lifecycle and DTO behavior, but is not deployed Live Browser or HTTP carrier evidence. The recovery probe below supplies the genuine pinned `HostConnectionService` Web route evidence. No user browser profile or live web server was started.
 
@@ -70,7 +72,7 @@ The Browser-safe `RiskAdvisorBridgeViewV1` allowlist is exactly `schemaVersion`,
 |---|---|
 | `pnpm run typecheck` | PASS |
 | Acceptance-only pinned Connection probe | PASS — actual pinned `HostConnectionService`; `/risk-advisor` route registration, 401 unauthenticated rejection, 403 untrusted Host rejection, authenticated Risk Advisor `VIEW`, DTO privacy, and disposal to zero routes |
-| `pnpm run test:p1c` | PASS — 1 file, 7 tests |
+| `pnpm run test:p1c` | PASS — 1 file, 8 tests |
 | `pnpm run build` | PASS — Host and Client bundles |
 | Host export smoke (`lib/index.js`) | PASS — `apply`, `installCorrelation` present |
 | Client export smoke (`window.__ModuleLoader__`) | PASS — `createRiskAdvisorBridgeClient`, `R1FixtureStore` present |
@@ -80,6 +82,7 @@ The Browser-safe `RiskAdvisorBridgeViewV1` allowlist is exactly `schemaVersion`,
 | lint / publint | `NOT_CONFIGURED` — no project scripts or binaries present |
 | historical final fresh `pnpm test` on `0312fd7...` | PASS — R1 9 + R2 16 + R3 17 + R4 21 + R5 3 + Phase 1A 13 + Phase 1B 14 + Phase 1C 7 = **100 tests** |
 | recovery final fresh `pnpm test` on `d5d23f5...` | PASS — R1 9 + R2 16 + R3 17 + R4 21 + R5 3 + Phase 1A 13 + Phase 1B 14 + Phase 1C 7 = **100/100 tests** |
+| final lifecycle-repair fresh `pnpm test` on `9c7a4e5...` | PASS — R1 9 + R2 16 + R3 17 + R4 21 + R5 3 + Phase 1A 13 + Phase 1B 14 + Phase 1C 8 = **101/101 tests** |
 
 The R1 suite prints expected fixture-fault stack traces while its assertions pass. No R5 benchmark smoke/full rerun was needed; Phase 1C changes no latency policy or assessment-performance claim.
 
@@ -89,7 +92,7 @@ The R1 suite prints expected fixture-fault stack traces while its assertions pas
 - One existing `ActiveExecutionIndex` remains the sole execution identity owner and UUID mint path. No alternate identity, history reconstruction, Ledger join, or approval-ID guessing was added.
 - The client adapter is exported but not connected to `conversation.approval.detail`; T01 fixture semantics and `RiskAdvisorDetail.tsx` remain unchanged.
 - No Rule Engine, Context Builder, Judge, Provider, OperationPresentation, RiskAssessment engine, product card, polling policy, Approval buttons, native answerer, or Phase 2 implementation was added.
-- Connection absence is compositional: the Host plugin remains usable without the optional Connection service, the bridge registration is generation-owned to prevent stale/HMR channels, and Risk Advisor no longer declares ownership of `Context.connection`.
+- Connection absence is compositional: the Host plugin remains usable without the optional Connection service because the bridge sub-fiber waits for both dependencies; connection disappearance unloads it and replacement re-runs it, preventing stale/missing HMR channels. Risk Advisor no longer declares ownership of `Context.connection`.
 - Transport boundary is explicit: authenticated normal served-Web/desktop Connection route is `IN_SCOPE`; WebWorker is `NOT_VALIDATED / NOT_SUPPORTED_BY_PHASE1C`; Typert/shared-`/api` carrier-neutral redesign is `DEFERRED ARCHITECTURE OPTION`.
 
 ## Inherited open and not-run gates
@@ -155,9 +158,47 @@ Therefore the dedicated `/risk-advisor` carrier is `IN_SCOPE` only for authentic
 | Harness Core mutation or dependency installation | PASS — none performed during recovery; Harness remained read-only at `ddefc45f...` |
 | Fresh complete regression | PASS — exactly one recovery run, **100/100** |
 
+## Final lifecycle repair evidence — F4
+
+### Root cause and exact repair
+
+The previous recovery declared only `sessions` as the bridge sub-fiber dependency and read `connection` opportunistically. That allowed a no-op callback when sessions appeared first and did not cause a remount when Connection later appeared or was replaced.
+
+The final repair changes only the dependency list to:
+
+```ts
+ctx.inject(['connection', 'sessions'], bridgeCtx => {
+  const connection = bridgeCtx.get('connection', false) as HostConnectionLike | undefined
+  if (connection === undefined) return
+  installRiskAdvisorBrowserBridge(bridgeCtx, connection, assessments)
+})
+```
+
+The callback still uses local structural narrowing and does not redeclare `Context.connection`. There is no polling, listener, retry loop, raw WebServer route, Typert work, or second Connection service.
+
+### Focused lifecycle proof
+
+`tests/p1c-browser-bridge.spec.ts` adds `P1C-F4` using the existing structural Connection seam and a shared active-channel registry:
+
+1. `sessions` is available before Connection; the registry remains empty and no `/risk-advisor` registration occurs.
+2. Providing the first Connection mounts exactly one channel.
+3. Disposing that Connection withdraws the first registration before replacement; its disposer runs once and the registry is empty.
+4. Providing a replacement Connection mounts exactly one channel on the replacement; the shared registry proves there is no duplicate `/risk-advisor` route/channel.
+5. Disposing the Cordis root/plugin tree withdraws the final replacement registration and leaves the registry empty.
+
+Focused result: `pnpm run test:p1c` — **8/8 tests PASS**. The genuine pinned `HostConnectionService` probe was rerun after the source repair and remained PASS with the same Web/Auth and DTO evidence recorded above.
+
+### Final lifecycle gate
+
+- Final executable SHA: `9c7a4e54effe3455171aabb724724dd0e7eeb9b4`.
+- No executable files were changed after the final fresh regression.
+- Final fresh complete regression: **101/101 PASS**.
+- Harness remained read-only at `ddefc45fbc7f8e46dd73185e68295696d1297887`; no `pnpm install` was run.
+
 ## SHA handoff
 
 - Historical Implementation/Tested SHA: `0312fd7332f39e7245f7ab44137a82cd5194ba02`.
 - Recovery Implementation/Tested SHA: `d5d23f5568163ba48a0eef24670a2c2f6ed5a445`.
+- Final lifecycle-repair Implementation/Tested SHA: `9c7a4e54effe3455171aabb724724dd0e7eeb9b4`.
 - Report-only publication commit and final remote SHA are verified after this report is committed and pushed.
 - Stop after publication for ChatGPT Web independent review. Codex does not generate an Acceptance Report or declare `ACCEPTED`.
