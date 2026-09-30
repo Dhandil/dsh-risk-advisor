@@ -195,6 +195,15 @@ export class ActiveExecutionIndex {
     if (members.size === 0) calls?.delete(record.callId)
   }
 
+  /**
+   * Private Host wiring may read the exact parent witness captured for this
+   * object. It is deliberately absent from CorrelationDiagnostics: callers
+   * never receive ToolExecution, tokens, or a capture capability.
+   */
+  parentExecutionIdOf(exec: Readonly<ToolExecution>): ExecutionId | undefined {
+    return this.executions.get(exec)?.parentExecutionId
+  }
+
   /** Resolve only the currently active exact Session/callId bucket. */
   lookup(session: Session | undefined, callId: string | undefined): ActiveExecutionLookup {
     if (callId === undefined) return notFound('MISSING_CALL_ID')

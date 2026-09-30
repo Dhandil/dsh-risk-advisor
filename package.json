@@ -32,7 +32,7 @@
     "build": "tsc -p tsconfig.json && tsdown",
     "bundle": "tsdown",
     "watch": "tsdown --watch",
-    "test": "pnpm run test:r1 && pnpm run test:r2 && pnpm run test:r3 && pnpm run test:r4 && pnpm run test:r5",
+    "test": "pnpm run test:r1 && pnpm run test:r2 && pnpm run test:r3 && pnpm run test:r4 && pnpm run test:r5 && pnpm run test:p1a",
     "test:r1": "vitest run tests/r1-fixture.unit.spec.tsx tests/r1-slot.integration.spec.tsx",
     "test:r2": "vitest run tests/r2-correlation.unit.spec.ts tests/r2-runtime.integration.spec.ts",
     "test:r3": "vitest run tests/r3-ptc-replay.unit.spec.ts tests/r3-runtime.integration.spec.ts",
@@ -46,6 +46,7 @@
     "test:r4:unit": "vitest run tests/r4-ledger.unit.spec.ts",
     "test:r4:integration": "vitest run tests/r4-runtime.integration.spec.ts",
     "test:r5": "vitest run tests/r5-benchmark.unit.spec.ts",
+    "test:p1a": "vitest run tests/p1a-operation-foundation.unit.spec.ts tests/p1a-runtime.integration.spec.ts",
     "bench:r5:smoke": "pnpm run build && vitest run --config vitest.config.ts tests/r5-benchmark-smoke.spec.ts",
     "bench:r5": "pnpm run build && vitest run --config vitest.config.ts tests/r5-benchmark-full.spec.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
