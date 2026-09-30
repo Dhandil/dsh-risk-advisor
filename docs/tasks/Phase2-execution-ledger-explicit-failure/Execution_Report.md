@@ -2,7 +2,7 @@
 
 ## Outcome
 
-`PHASE2_PUBLISHED_READY_FOR_REVIEW`
+`PHASE2_REPAIR_PUBLISHED_READY_FOR_REVIEW`
 
 Codex completed the bounded Phase 2 implementation and delivery handoff. Final acceptance remains the responsibility of ChatGPT Web. No Acceptance Report was generated and no acceptance decision was made.
 
@@ -135,3 +135,50 @@ HEAD == origin/main == git ls-remote origin refs/heads/main
 ```
 
 The exact final values are recorded in the completion handoff after push. This report is an implementation handoff for independent ChatGPT Web review, not an acceptance record.
+
+## Final Repair — F1–F3
+
+### Repair state
+
+- Repair starting SHA: `e4eba51c38fa89481f1b8eed83714a45c357e5bd`.
+- Reviewed executable SHA repaired: `054a0496f41ff1d56ac5fc06b50a7287c4f81dd1`.
+- New executable/tested SHA: `67e4890429a72ec55da4dc21f766e7457ff6fd67`.
+- Repair scope: F1 shell evidence conflict handling, F2 package-root authority boundary, and F3 sandbox enum validation only.
+- Repair handoff: `PHASE2_REPAIR_PUBLISHED_READY_FOR_REVIEW`.
+
+### F1 — shell evidence fail-closed
+
+Root cause: the previous live record retained one mutable shell DTO and overwrote it on each successful bash/pwsh result, while terminal deduplication only compared `isError` and sanitized error identity. A later `exitCode`, sandbox denial, or terminal observation could therefore become last-writer-wins.
+
+Fix: the live record now retains the first bounded shell DTO, compares later observations semantically, treats exact duplicates as idempotent, and marks `SHELL_EVIDENCE_CONFLICT` on any difference without replacing the first fact. A shell evidence conflict suppresses shell-specific failures and yields `processSuccess='unknown'`. Any terminal-claim conflict also suppresses shell/process certainty and yields `processSuccess='unknown'`. The existing bounded issue and health projection exposes the degradation.
+
+Focused F1 proof covers repeated identical success, both exit-code orders, both sandbox-denial orders, and successful shell evidence followed by a conflicting ToolRuntime error. No shell conflict is converted into semantic failure or `SANDBOX_DENIED` certainty.
+
+### F2 — authority witness package boundary
+
+Root cause: `projectPreExecuteDecision` and `projectGuardReturnedDenial` were package-root exports whose ordinary arguments could self-certify an effective/deterministic witness.
+
+Fix: both authority-bearing helpers remain internal to `src/host/explicit-failure.ts` for conservative component tests but were removed from `src/index.ts` exports. The supported product seam remains only the frozen, read-only `riskAdvisorLedger.phase2(session)` diagnostics. Host export smoke now asserts that the two helpers are absent while required Phase2 exports remain present.
+
+### F3 — sandbox enum closure
+
+Root cause: the adapter copied arbitrary `sandbox.mode` and `sandbox.enforcement` strings.
+
+Fix: the adapter now accepts only pinned producer vocabularies: modes `read-only | workspace-write | danger-full-access`, and enforcement `full | partial`. Unexpected, oversized, or malformed values fail closed and are not copied. Output, stderr, spill paths, command, workdir and other raw fields remain ignored.
+
+### Repair evidence and gates
+
+- Phase2 focused repair suite: 2 files, 15 tests passed.
+- Directly affected R4 suite: 2 files, 21 tests passed.
+- `pnpm run typecheck`: passed.
+- `pnpm run build`: passed.
+- Host export smoke: required exports present; authority-bearing helpers absent.
+- Client export smoke: passed; Phase 1C Client loader remained intact.
+- `pnpm pack --dry-run --json`: passed.
+- `git diff --check`, scope audit, root export scan, enum scan, and privacy/secret checks: passed.
+- Fresh complete regression run exactly once on `67e4890429a72ec55da4dc21f766e7457ff6fd67`: 16 test files, 116 tests passed.
+- The inherited R1 fixture-fault console output remained expected inside passing fault-containment tests.
+
+F-006/F-013 remain `PARTIAL`; real native PTC producer and true disk/process restart remain `NOT_RUN`; Browser/profile, WebWorker, and newer Harness gates remain unchanged. Harness Core mutation remains zero. No provider/model/browser product calls were made. No Phase 3 or later behavior was implemented, and no Native Approval authority was changed.
+
+The final report-only publication SHA and the post-push equality `HEAD == origin/main == git ls-remote origin refs/heads/main` are recorded in the completion handoff after publication.
