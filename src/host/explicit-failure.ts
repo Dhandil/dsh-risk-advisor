@@ -302,8 +302,10 @@ export function projectShellResult(
     if (typeof rawSandbox !== 'object' || rawSandbox === null || Array.isArray(rawSandbox)) return undefined
     const sandboxValue = rawSandbox as Record<string, unknown>
     if (typeof sandboxValue.denied !== 'boolean') return undefined
-    if (sandboxValue.mode !== undefined && typeof sandboxValue.mode !== 'string') return undefined
-    if (sandboxValue.enforcement !== undefined && typeof sandboxValue.enforcement !== 'string') return undefined
+    if (sandboxValue.mode !== undefined
+      && (typeof sandboxValue.mode !== 'string' || !['read-only', 'workspace-write', 'danger-full-access'].includes(sandboxValue.mode))) return undefined
+    if (sandboxValue.enforcement !== undefined
+      && (typeof sandboxValue.enforcement !== 'string' || !['full', 'partial'].includes(sandboxValue.enforcement))) return undefined
     if (sandboxValue.runnerFailed !== undefined && typeof sandboxValue.runnerFailed !== 'boolean') return undefined
     sandbox = {
       ...sandboxValue.mode === undefined ? {} : { mode: sandboxValue.mode },

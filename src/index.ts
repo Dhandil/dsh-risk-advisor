@@ -125,9 +125,7 @@ export type {
 } from './host/ledger.ts'
 export {
   projectApprovalOutcome,
-  projectGuardReturnedDenial,
   projectPtcProjection,
-  projectPreExecuteDecision,
   projectShellResult,
   projectTerminalClaim,
   projectTerminalClaims,
@@ -137,7 +135,6 @@ export type {
   ExecutionTerminalFact,
   ExplicitFailureFact,
   ExplicitFailureKind,
-  GuardDenialTrace,
   Phase2ApprovalProjection,
   Phase2ExecutionOutcome,
   Phase2ExecutionOutcomeRecord,

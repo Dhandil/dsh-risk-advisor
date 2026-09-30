@@ -177,6 +177,7 @@ interface LiveRecord {
   dispatchObserved: boolean
   finalClaims: LedgerTerminalClaim[]
   shellEvidence?: ShellEvidence
+  shellEvidenceConflict?: boolean
   issueCodes: Set<string>
 }
 
@@ -250,6 +251,14 @@ function sourceRef(seq: number, type: string, provenance: LedgerProvenance): Led
 
 function issue(code: string, seq: number | undefined, provenance: LedgerProvenance): LedgerIssue {
   return freezeObject({ code, ...seq === undefined ? {} : { seq }, provenance })
+}
+
+function sameShellEvidence(a: ShellEvidence, b: ShellEvidence): boolean {
+  return a.processSuccess === b.processSuccess
+    && a.sandbox?.mode === b.sandbox?.mode
+    && a.sandbox?.denied === b.sandbox?.denied
+    && a.sandbox?.enforcement === b.sandbox?.enforcement
+    && a.sandbox?.runnerFailed === b.sandbox?.runnerFailed
 }
 
 interface ParsedResult {
@@ -811,8 +820,16 @@ function buildPhase2Snapshot(state: LedgerState, snapshot: LedgerSnapshot): Phas
       ? liveByOrdinal.get(fact.occurrence.liveOrdinal)
       : undefined
     const shell = live?.shellEvidence
+    const shellConflicted = live?.shellEvidenceConflict === true || fact.terminalClaims.length !== 1
     const mergedOutcome = shell === undefined
       ? projected.outcome
+      : shellConflicted
+        ? Object.freeze({
+          terminalStatus: projected.outcome.terminalStatus,
+          semanticSuccess: 'unknown' as const,
+          processSuccess: 'unknown' as const,
+          failures: freezeArray(projected.outcome.failures),
+        })
       : Object.freeze({
         terminalStatus: projected.outcome.terminalStatus,
         semanticSuccess: 'unknown' as const,
@@ -961,7 +978,14 @@ export class LedgerController {
           result.value,
           [sourceRef(live.ordinal, 'tools/result', 'LIVE_FINAL')],
         )
-        if (shell !== undefined) live.shellEvidence = shell.evidence
+        if (shell !== undefined && live.shellEvidenceConflict !== true) {
+          if (live.shellEvidence === undefined) live.shellEvidence = shell.evidence
+          else if (!sameShellEvidence(live.shellEvidence, shell.evidence)) {
+            live.shellEvidenceConflict = true
+            live.issueCodes.add('SHELL_EVIDENCE_CONFLICT')
+            addIssue(this.stateFor(live.session), 'SHELL_EVIDENCE_CONFLICT', undefined, 'LIVE_FINAL')
+          }
+        }
       }
       const prior = live.finalClaims[0]
       if (prior === undefined) live.finalClaims.push(claim)

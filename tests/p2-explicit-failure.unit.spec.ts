@@ -1,13 +1,12 @@
 import { describe, expect, it } from 'vitest'
+import * as publicApi from '../src/index.ts'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { PreToolDecision, ToolExecution, ToolExecutionResult, ToolExecutionToken } from '@deepseek-ai/dsh-tools'
 import {
   projectApprovalOutcome,
-  projectGuardReturnedDenial,
   projectPtcProjection,
-  projectPreExecuteDecision,
   projectShellResult,
   projectTerminalClaim,
   projectTerminalClaims,
@@ -15,6 +14,7 @@ import {
   type LedgerEvidenceRef,
   type LedgerTerminalClaim,
 } from '../src/index.ts'
+import { projectGuardReturnedDenial, projectPreExecuteDecision } from '../src/host/explicit-failure.ts'
 import { foldLedgerSnapshot, LedgerController } from '../src/host/ledger.ts'
 import { replayPtcSnapshot } from '../src/host/ptc-replay.ts'
 
@@ -66,11 +66,11 @@ function sessionWith(source: readonly SessionEvent[] = []): Session {
   return { id: 'p2-session', snapshotEvents: () => source } as unknown as Session
 }
 
-function execution(session: Session, callId = 'p2-live'): ToolExecution {
+function execution(session: Session, callId = 'p2-live', name = 'p2-tool'): ToolExecution {
   return {
     callId: ToolCallId(callId),
     rootCallId: ToolCallId(callId),
-    name: 'p2-tool',
+    name,
     arguments: { secret: 'private' },
     agent: { session } as unknown as Agent,
     signal: new AbortController().signal,
@@ -166,6 +166,90 @@ describe('Phase 2 explicit failure classifier', () => {
     expect(projectShellResult('bash', { ...value, exitCode: null, sandbox: { mode: 'workspace-write', denied: false, runnerFailed: true } }, [ref()])!.failures).toMatchObject([{ kind: 'SANDBOX_UNAVAILABLE' }])
     expect(projectTerminalClaim(claim(true, 'SANDBOX_UNAVAILABLE')).outcome.failures[0]!.kind).toBe('SANDBOX_UNAVAILABLE')
     expect(projectShellResult('bash', { kind: 'background', jobId: 'private-job' }, [ref()])).toBeUndefined()
+  })
+
+  it('F1 keeps repeated shell evidence idempotent and conflicts fail closed', () => {
+    const shell = (exitCode: number | null, denied: boolean) => ({
+      isError: false,
+      content: [],
+      value: {
+        kind: 'foreground',
+        exitCode,
+        stdout: { text: 'private-output' },
+        stderr: { text: 'private-error' },
+        sandbox: { mode: 'workspace-write', denied, enforcement: 'full' },
+      },
+    } as unknown as ToolExecutionResult)
+
+    const repeatedSession = sessionWith()
+    const repeated = new LedgerController()
+    const repeatedExec = execution(repeatedSession, 'repeat-shell', 'bash')
+    repeated.observePreExecute(repeatedExec)
+    repeated.observeResult(repeatedExec, shell(0, false))
+    repeated.observeResult(repeatedExec, shell(0, false))
+    const repeatedOutcome = repeated.phase2(repeatedSession).executions[0]!
+    expect(repeatedOutcome.outcome.processSuccess).toBe(true)
+    expect(repeatedOutcome.issueCodes).not.toContain('SHELL_EVIDENCE_CONFLICT')
+
+    for (const [first, second] of [[0, 7], [7, 0]] as const) {
+      const session = sessionWith()
+      const controller = new LedgerController()
+      const exec = execution(session, `exit-conflict-${first}-${second}`, 'bash')
+      controller.observePreExecute(exec)
+      controller.observeResult(exec, shell(first, false))
+      controller.observeResult(exec, shell(second, false))
+      const item = controller.phase2(session).executions[0]!
+      expect(item.outcome.processSuccess).toBe('unknown')
+      expect(item.outcome.failures).toEqual([])
+      expect(item.issueCodes).toContain('SHELL_EVIDENCE_CONFLICT')
+      expect(item.health).toBe('DEGRADED')
+    }
+
+    for (const [first, second] of [[false, true], [true, false]] as const) {
+      const session = sessionWith()
+      const controller = new LedgerController()
+      const exec = execution(session, `sandbox-conflict-${first}-${second}`, 'bash')
+      controller.observePreExecute(exec)
+      controller.observeResult(exec, shell(0, first))
+      controller.observeResult(exec, shell(0, second))
+      const item = controller.phase2(session).executions[0]!
+      expect(item.outcome.processSuccess).toBe('unknown')
+      expect(item.outcome.failures).not.toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'SANDBOX_DENIED' })]))
+      expect(item.issueCodes).toContain('SHELL_EVIDENCE_CONFLICT')
+    }
+
+    const terminalConflictSession = sessionWith()
+    const terminalConflict = new LedgerController()
+    const terminalConflictExec = execution(terminalConflictSession, 'terminal-conflict', 'bash')
+    terminalConflict.observePreExecute(terminalConflictExec)
+    terminalConflict.observeResult(terminalConflictExec, shell(0, true))
+    terminalConflict.observeResult(terminalConflictExec, {
+      isError: true,
+      content: [],
+      error: { message: 'private error', info: { name: 'ToolError', code: 'TOOL_FAILED' } },
+    } as unknown as ToolExecutionResult)
+    const terminalConflictItem = terminalConflict.phase2(terminalConflictSession).executions[0]!
+    expect(terminalConflictItem.terminal.status).toBe('UNKNOWN')
+    expect(terminalConflictItem.outcome.processSuccess).toBe('unknown')
+    expect(terminalConflictItem.outcome.failures).not.toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'SANDBOX_DENIED' })]))
+    expect(terminalConflictItem.issueCodes).toContain('TERMINAL_CONFLICT')
+  })
+
+  it('F2 keeps self-certified authority witnesses out of the package root', () => {
+    expect('projectPreExecuteDecision' in publicApi).toBe(false)
+    expect('projectGuardReturnedDenial' in publicApi).toBe(false)
+  })
+
+  it('F3 accepts only the pinned bounded sandbox mode and enforcement enums', () => {
+    const base = {
+      kind: 'foreground',
+      exitCode: 0,
+      sandbox: { denied: false },
+    }
+    expect(projectShellResult('bash', { ...base, sandbox: { mode: 'read-only', denied: false, enforcement: 'full' } }, [ref()])).toBeDefined()
+    expect(projectShellResult('bash', { ...base, sandbox: { mode: 'unexpected-mode', denied: false, enforcement: 'full' } }, [ref()])).toBeUndefined()
+    expect(projectShellResult('bash', { ...base, sandbox: { mode: 'workspace-write', denied: false, enforcement: 'unexpected-enforcement' } }, [ref()])).toBeUndefined()
+    expect(projectShellResult('bash', { ...base, sandbox: { mode: 'x'.repeat(1024), denied: false } }, [ref()])).toBeUndefined()
   })
 
   it('P2-13/P2-14 projects approval facts without changing native authority or binding causes', () => {
