@@ -5,16 +5,19 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { PreToolDecision, ToolExecution, ToolExecutionResult, ToolExecutionToken } from '@deepseek-ai/dsh-tools'
 import {
-  projectApprovalOutcome,
-  projectPtcProjection,
-  projectShellResult,
-  projectTerminalClaim,
-  projectTerminalClaims,
   type LedgerApprovalFact,
   type LedgerEvidenceRef,
   type LedgerTerminalClaim,
 } from '../src/index.ts'
-import { projectGuardReturnedDenial, projectPreExecuteDecision } from '../src/host/explicit-failure.ts'
+import {
+  projectApprovalOutcome,
+  projectGuardReturnedDenial,
+  projectPtcProjection,
+  projectPreExecuteDecision,
+  projectShellResult,
+  projectTerminalClaim,
+  projectTerminalClaims,
+} from '../src/host/explicit-failure.ts'
 import { foldLedgerSnapshot, LedgerController } from '../src/host/ledger.ts'
 import { replayPtcSnapshot } from '../src/host/ptc-replay.ts'
 
@@ -236,8 +239,17 @@ describe('Phase 2 explicit failure classifier', () => {
   })
 
   it('F2 keeps self-certified authority witnesses out of the package root', () => {
-    expect('projectPreExecuteDecision' in publicApi).toBe(false)
-    expect('projectGuardReturnedDenial' in publicApi).toBe(false)
+    for (const name of [
+      'projectPreExecuteDecision',
+      'projectGuardReturnedDenial',
+      'projectApprovalOutcome',
+      'projectPtcProjection',
+      'projectShellResult',
+      'projectTerminalClaim',
+      'projectTerminalClaims',
+    ]) {
+      expect(name in publicApi).toBe(false)
+    }
   })
 
   it('F3 accepts only the pinned bounded sandbox mode and enforcement enums', () => {

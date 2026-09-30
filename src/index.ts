@@ -123,13 +123,6 @@ export type {
   LedgerSnapshot,
   LedgerTerminalClaim,
 } from './host/ledger.ts'
-export {
-  projectApprovalOutcome,
-  projectPtcProjection,
-  projectShellResult,
-  projectTerminalClaim,
-  projectTerminalClaims,
-} from './host/explicit-failure.ts'
 export type {
   EvidenceStrength,
   ExecutionTerminalFact,
