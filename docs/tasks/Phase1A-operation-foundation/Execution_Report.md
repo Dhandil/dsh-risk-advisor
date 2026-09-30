@@ -17,9 +17,9 @@ This is Codex's implementation and execution record only. Final acceptance remai
 
 ## Implementation manifest
 
-The implementation commit `a0c543569d251905492319fb7821bb7f3767373f` contains only the Phase 1A scope:
+The implementation commits `a0c543569d251905492319fb7821bb7f3767373f` and `ac36a48727c06f567a1fa8305fc2b627760964cb` contain only the Phase 1A scope:
 
-- `src/host/operation-foundation.ts` — Host-private bounded snapshot, closed read/write shape normalizer, public-evidence boundary metadata, SHA-256 comparison hash, TTL/capacity store, retirement, disposal, and sanitized diagnostics.
+- `src/host/operation-foundation.ts` — Host-private bounded snapshot, closed read/write shape normalizer, hostile-key-safe detached data properties, public-evidence boundary metadata, SHA-256 comparison hash, TTL/capacity store, retirement, disposal, and sanitized diagnostics.
 - `src/host/correlation.ts` — private parent-token witness accessor; existing public `CorrelationDiagnostics` is unchanged.
 - `src/index.ts` — one shared private correlation observer for `installCorrelation` and `apply`; `apply` wires the exact returned T02 ID into Foundation capture synchronously and calls native `next()` once, while preserving the independent Ledger observer.
 - `tests/p1a-operation-foundation.unit.spec.ts` — bounded input, identity, normalization, privacy, hash, parent, capacity, TTL, retirement, and disposal proof.
@@ -62,7 +62,7 @@ The public Foundation facade exposes only `get(executionId)` with detached sanit
 
 ## Commands and gates
 
-All executable checks below were run before the implementation commit, with no executable change afterward.
+All executable checks below were run on the final executable content; the final full regression ran after the last executable commit.
 
 | Check | Result |
 |---|---|
@@ -107,6 +107,6 @@ The following remain outside this bounded phase or were not performed: Browser/l
 
 ## SHA handoff
 
-- Tested / implementation SHA: `a0c543569d251905492319fb7821bb7f3767373f`.
+- Tested / final implementation SHA: `ac36a48727c06f567a1fa8305fc2b627760964cb`.
 - Report-only publication commit and final remote SHA are verified in the terminal handoff after this report is committed and pushed.
 - STOP after publication for ChatGPT Web independent review; Codex does not declare `ACCEPTED`.
