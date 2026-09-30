@@ -123,3 +123,27 @@ export type {
   LedgerSnapshot,
   LedgerTerminalClaim,
 } from './host/ledger.ts'
+export {
+  projectApprovalOutcome,
+  projectGuardReturnedDenial,
+  projectPtcProjection,
+  projectPreExecuteDecision,
+  projectShellResult,
+  projectTerminalClaim,
+  projectTerminalClaims,
+} from './host/explicit-failure.ts'
+export type {
+  EvidenceStrength,
+  ExecutionTerminalFact,
+  ExplicitFailureFact,
+  ExplicitFailureKind,
+  GuardDenialTrace,
+  Phase2ApprovalProjection,
+  Phase2ExecutionOutcome,
+  Phase2ExecutionOutcomeRecord,
+  Phase2LedgerSnapshot,
+  Phase2PtcOutcomeRecord,
+  Phase2PtcProjection,
+  ShellEvidence,
+  TerminalStatus,
+} from './host/explicit-failure.ts'

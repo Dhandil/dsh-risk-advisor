@@ -7,6 +7,15 @@ import {
   replayPtcSnapshot,
   type PtcReplayProjection,
 } from './ptc-replay.ts'
+import {
+  makePhase2ApprovalProjection,
+  projectPtcProjection,
+  projectShellResult,
+  projectTerminalClaims,
+  type Phase2ExecutionOutcomeRecord,
+  type Phase2LedgerSnapshot,
+  type ShellEvidence,
+} from './explicit-failure.ts'
 
 export const LEDGER_LIMITS = Object.freeze({
   maxRetainedFacts: 128,
@@ -167,6 +176,7 @@ interface LiveRecord {
   readonly rootCallId: string | undefined
   dispatchObserved: boolean
   finalClaims: LedgerTerminalClaim[]
+  shellEvidence?: ShellEvidence
   issueCodes: Set<string>
 }
 
@@ -222,8 +232,9 @@ function scopeOf(value: Record<string, unknown>): Scope | undefined {
 
 function errorIdentity(value: unknown): { readonly name: string; readonly code: string } | undefined {
   if (!record(value)) return undefined
-  const name = safeString(value.name)
-  const code = safeString(value.code)
+  const info = record(value.info) ? value.info : value
+  const name = safeString(value.name) ?? safeString(info.name)
+  const code = safeString(value.code) ?? safeString(info.code)
   return name === undefined || code === undefined ? undefined : freezeObject({ name, code })
 }
 
@@ -791,8 +802,51 @@ function buildSnapshot(state: LedgerState, options: LedgerQueryOptions = {}): Le
   })
 }
 
+function buildPhase2Snapshot(state: LedgerState, snapshot: LedgerSnapshot): Phase2LedgerSnapshot {
+  const liveByOrdinal = new Map<number, LiveRecord>()
+  for (const live of state.liveRecords) liveByOrdinal.set(live.ordinal, live)
+  const executions: Phase2ExecutionOutcomeRecord[] = snapshot.executions.map((fact) => {
+    const projected = projectTerminalClaims(fact.terminalClaims)
+    const live = fact.occurrence.kind === 'LIVE' && fact.occurrence.liveOrdinal !== undefined
+      ? liveByOrdinal.get(fact.occurrence.liveOrdinal)
+      : undefined
+    const shell = live?.shellEvidence
+    const mergedOutcome = shell === undefined
+      ? projected.outcome
+      : Object.freeze({
+        terminalStatus: projected.outcome.terminalStatus,
+        semanticSuccess: 'unknown' as const,
+        processSuccess: shell.processSuccess,
+        failures: freezeArray([...projected.outcome.failures, ...shell.failures]),
+      })
+    return Object.freeze({
+      sessionId: fact.sessionId,
+      occurrence: Object.freeze({ ...fact.occurrence }),
+      lifecycle: fact.lifecycle,
+      health: fact.health,
+      provenance: fact.provenance,
+      source: freezeArray(fact.source),
+      terminal: projected.terminal,
+      outcome: mergedOutcome,
+      issueCodes: freezeArray(fact.issueCodes),
+    })
+  })
+  return Object.freeze({
+    sessionId: snapshot.sessionId,
+    health: snapshot.health,
+    sourceWatermark: snapshot.sourceWatermark,
+    sourceComplete: snapshot.sourceComplete,
+    truncated: snapshot.truncated,
+    issues: freezeArray(snapshot.issues),
+    executions: freezeArray(executions),
+    approvals: freezeArray(snapshot.approvals.map(makePhase2ApprovalProjection)),
+    ...snapshot.ptc === undefined ? {} : { ptc: projectPtcProjection(snapshot.ptc) },
+  })
+}
+
 export interface LedgerDiagnostics {
   readonly snapshot: (session: Session, options?: LedgerQueryOptions) => LedgerSnapshot
+  readonly phase2: (session: Session, options?: LedgerQueryOptions) => Phase2LedgerSnapshot
 }
 
 /** Host-only bounded ledger controller. Public consumers receive only its frozen query facade. */
@@ -857,7 +911,7 @@ export class LedgerController {
 
   observePreExecuteAndContinue(exec: ToolExecution, next: () => Promise<PreToolDecision>): Promise<PreToolDecision> {
     this.observePreExecute(exec)
-    return next()
+    return next().then(decision => decision)
   }
 
   observeDispatch(exec: ToolExecution): void {
@@ -901,6 +955,14 @@ export class LedgerController {
       if (live === undefined) return
       const error = errorIdentity(result.error)
       const claim = terminalClaim(result.isError, 'LIVE_FINAL', sourceRef(live.ordinal, 'tools/result', 'LIVE_FINAL'), error)
+      if (!result.isError) {
+        const shell = projectShellResult(
+          live.toolName,
+          result.value,
+          [sourceRef(live.ordinal, 'tools/result', 'LIVE_FINAL')],
+        )
+        if (shell !== undefined) live.shellEvidence = shell.evidence
+      }
       const prior = live.finalClaims[0]
       if (prior === undefined) live.finalClaims.push(claim)
       else if (!sameClaim(prior, claim)) {
@@ -946,6 +1008,11 @@ export class LedgerController {
     return buildSnapshot(state, options)
   }
 
+  phase2(session: Session, options: LedgerQueryOptions = {}): Phase2LedgerSnapshot {
+    const snapshot = this.snapshot(session, options)
+    return buildPhase2Snapshot(this.stateFor(session), snapshot)
+  }
+
   dispose(): void {
     this.active = false
   }
@@ -985,7 +1052,10 @@ export function installLedger(ctx: Context): LedgerDiagnostics {
     if (event.type === 'approval/asked') controller.observeApprovalAsked(session, String(event.data.id))
   })
   ctx.effect(() => () => { controller.dispose() }, 'risk-advisor-ledger-generation')
-  const diagnostics = Object.freeze({ snapshot: controller.snapshot.bind(controller) })
+  const diagnostics = Object.freeze({
+    snapshot: controller.snapshot.bind(controller),
+    phase2: controller.phase2.bind(controller),
+  })
   ctx.provide('riskAdvisorLedger', diagnostics)
   return diagnostics
 }
