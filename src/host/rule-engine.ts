@@ -314,9 +314,8 @@ function hasCredentialResource(value: string): boolean {
 
 function isSystemLocation(value: string): boolean {
   const normalized = value.replaceAll('\\', '/').toLowerCase()
-  return /(?:^|\/)(?:windows|program files(?: \(x86\))?|programdata)(?:\/|$)/.test(normalized)
+  return /^(?:[a-z]:)?\/(?:windows|program files(?: \(x86\))?|programdata)(?:\/|$)/.test(normalized)
     || /^(?:[a-z]:)?\/(?:etc|usr|bin|sbin|system|library)(?:\/|$)/.test(normalized)
-    || normalized.includes('/windows/system32/')
 }
 
 function lowerTokens(tokens: readonly string[]): string[] {
@@ -326,18 +325,29 @@ function lowerTokens(tokens: readonly string[]): string[] {
 interface ShellScan {
   readonly codes: readonly FindingCode[]
   readonly ambiguous: boolean
+  readonly degraded: boolean
   readonly tokens: readonly string[]
   readonly systemLocation: boolean
 }
 
-function splitShell(command: string): { segments: string[]; ambiguous: boolean } {
+function splitShell(command: string): { segments: string[]; ambiguous: boolean; unsupported: boolean } {
   const segments: string[] = []
   let current = ''
   let quote: 'single' | 'double' | undefined
   let escaped = false
   let ambiguous = false
+  let unsupported = false
+  let comment = false
   for (let index = 0; index < command.length; index += 1) {
     const char = command[index]!
+    if (comment) {
+      if (char === '\n') {
+        if (current.trim()) segments.push(current)
+        current = ''
+        comment = false
+      }
+      continue
+    }
     if (escaped) {
       current += char
       escaped = false
@@ -360,13 +370,24 @@ function splitShell(command: string): { segments: string[]; ambiguous: boolean }
       continue
     }
     if (quote === undefined) {
+      if (char === '#' && (index === 0 || /\s/.test(command[index - 1]!))) {
+        comment = true
+        continue
+      }
       if (char === '$' && command[index + 1] === '(') ambiguous = true
       if (char === '`') ambiguous = true
       if (char === '<' || char === '>') {
         ambiguous = true
+        if (command[index + 1] === char || command[index + 1] === '(') unsupported = true
         current += char
         continue
       }
+      if (char === '(' || char === ')' || char === '{' || char === '}') {
+        ambiguous = true
+        unsupported = true
+      }
+      if ((char === '@' && (command[index + 1] === '"' || command[index + 1] === "'"))
+        || (char === '$' && command[index + 1] === '{')) unsupported = true
       if (char === '\n' || char === ';') {
         if (current.trim()) segments.push(current)
         current = ''
@@ -386,7 +407,7 @@ function splitShell(command: string): { segments: string[]; ambiguous: boolean }
   }
   if (quote !== undefined || escaped) ambiguous = true
   if (current.trim()) segments.push(current)
-  return { segments, ambiguous }
+  return { segments, ambiguous, unsupported }
 }
 
 function tokenizeSegment(segment: string): { tokens: string[]; ambiguous: boolean } {
@@ -436,13 +457,13 @@ function hasFlag(tokens: readonly string[], ...flags: string[]): boolean {
 function commandToken(tokens: readonly string[]): { command?: string; args: readonly string[]; assignments: readonly string[] } {
   let index = 0
   const assignments: string[] = []
-  while (index < tokens.length && /^(?:PATH|LD_PRELOAD|NODE_OPTIONS)=.+/i.test(tokens[index]!)) {
+  while (index < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=.+/.test(tokens[index]!)) {
     assignments.push(tokens[index]!)
     index += 1
   }
   if (tokens[index]?.toLowerCase() === 'export') {
     index += 1
-    while (index < tokens.length && /^(?:PATH|LD_PRELOAD|NODE_OPTIONS)=.+/i.test(tokens[index]!)) {
+    while (index < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=.+/.test(tokens[index]!)) {
       assignments.push(tokens[index]!)
       index += 1
     }
@@ -455,29 +476,37 @@ function commandToken(tokens: readonly string[]): { command?: string; args: read
   }
 }
 
-function scanShell(command: string, workdir: string | undefined): ShellScan {
+function scanShell(command: string, dialect: 'bash' | 'pwsh'): ShellScan {
   const split = splitShell(command)
   const codes = new Set<FindingCode>()
-  let ambiguous = split.ambiguous
-  let systemLocation = workdir !== undefined && isSystemLocation(workdir)
+  let ambiguous = split.ambiguous || split.unsupported
+  let systemLocation = false
+  const unsupportedCommands = new Set([
+    'if', 'then', 'elif', 'elseif', 'else', 'fi', 'for', 'foreach', 'while', 'until', 'do', 'done',
+    'case', 'esac', 'function', 'switch', 'try', 'catch', 'finally',
+  ])
   if (/^\s*&\s+\$/.test(command)) codes.add('SHELL_DYNAMIC_EXECUTION')
   for (const segment of split.segments) {
     const tokenized = tokenizeSegment(segment)
     ambiguous ||= tokenized.ambiguous
     const tokens = tokenized.tokens
-    if (isSystemLocation(segment)) systemLocation = true
     const lower = lowerTokens(tokens)
     const { command: executable, args, assignments } = commandToken(tokens)
-    if (assignments.length > 0 || lower.some(token => /^\$env:(?:path|ld_preload|node_options)=/i.test(token))) {
+    const executableIsVariable = executable !== undefined && (executable.startsWith('$') || executable.startsWith('${'))
+    const sensitiveAssignment = assignments.some(value => /^(?:PATH|LD_PRELOAD|NODE_OPTIONS)=/i.test(value))
+    if (sensitiveAssignment || lower.some(token => /^\$env:(?:path|ld_preload|node_options)=/i.test(token))) {
       codes.add('SHELL_ENVIRONMENT_INJECTION')
     }
+    if (assignments.length > 0 && !sensitiveAssignment) ambiguous = true
+    if (lower.some(token => /^\$env:[a-z_][a-z0-9_]*=/.test(token))) ambiguous = true
     if (tokens.some(token => hasSecret(token))) codes.add('CREDENTIAL_SECRET_MATERIAL_PRESENT')
-    if (tokens.some(token => hasCredentialResource(token))) codes.add('CREDENTIAL_RESOURCE_ACCESS')
-    if (tokens.some(token => isSystemLocation(token))) systemLocation = true
 
     const dynamic = executable === 'eval'
       || executable === 'invoke-expression'
       || executable === 'iex'
+      || executable === 'source'
+      || executable === '.'
+      || executableIsVariable
       || (['bash', 'sh', 'node', 'python', 'perl', 'powershell', 'pwsh', 'cmd'].includes(executable ?? '')
         && args.some(arg => {
           const flag = arg.toLowerCase()
@@ -487,76 +516,86 @@ function scanShell(command: string, workdir: string | undefined): ShellScan {
           return (executable === 'node' && flag === '-e') || (executable === 'python' && flag === '-c') || (executable === 'perl' && flag === '-e')
         }))
     if (dynamic) codes.add('SHELL_DYNAMIC_EXECUTION')
+    if (dynamic && (executableIsVariable || executable === 'source' || executable === '.')) ambiguous = true
     if ((executable === 'powershell' || executable === 'pwsh') && args.some(arg => ['-encodedcommand', '-enc'].includes(arg.toLowerCase()))) {
       codes.add('SHELL_ENCODED_EXECUTION')
     }
-    if (tokens.some(token => /^(?:&|\.\s*)\$/.test(token))) {
-      codes.add('SHELL_DYNAMIC_EXECUTION')
-    }
+    if (tokens.some(token => /^(?:&|\.\s*)\$/.test(token))) codes.add('SHELL_DYNAMIC_EXECUTION')
+    if (unsupportedCommands.has(executable ?? '')) ambiguous = true
 
-    if (executable === 'rm' && args.some(arg => arg.toLowerCase() === '--recursive' || (/^-[^-]/.test(arg) && arg.toLowerCase().includes('r')))) {
+    const wrapper = dialect === 'bash' && ['sudo', 'doas', 'pkexec'].includes(executable ?? '')
+    const actionIndex = wrapper ? args.findIndex(arg => !arg.startsWith('-')) : -1
+    const action = wrapper && actionIndex >= 0 ? args[actionIndex]!.toLowerCase() : executable
+    const actionArgs = wrapper && actionIndex >= 0 ? args.slice(actionIndex + 1) : args
+
+    if ((dialect === 'bash' && action === 'rm') && actionArgs.some(arg => arg.toLowerCase() === '--recursive' || (/^-[^-]/.test(arg) && arg.toLowerCase().includes('r')))) {
       codes.add('DESTRUCTIVE_RECURSIVE_DELETE')
     }
-    if ((executable === 'remove-item' || executable === 'ri' || executable === 'del' || executable === 'erase')
-      && hasFlag(args, '-recurse', '-r', '-recursive')) {
+    if (dialect === 'pwsh' && ['remove-item', 'ri', 'del', 'erase'].includes(action ?? '')
+      && hasFlag(actionArgs, '-recurse', '-r', '-recursive')) {
       codes.add('DESTRUCTIVE_RECURSIVE_DELETE')
     }
-    if ((executable?.startsWith('mkfs') ?? false) || ['format-volume', 'clear-disk', 'format', 'diskpart'].includes(executable ?? '')) {
+    if ((dialect === 'bash' && (action?.startsWith('mkfs') ?? false))
+      || (dialect === 'pwsh' && ['format-volume', 'clear-disk', 'diskpart'].includes(action ?? ''))) {
       codes.add('DESTRUCTIVE_DISK_WIPE')
     }
-    if (executable === 'git' && args[0]?.toLowerCase() === 'reset' && args.some(arg => arg.toLowerCase() === '--hard')) {
+    if (action === 'git' && actionArgs[0]?.toLowerCase() === 'reset' && actionArgs.some(arg => arg.toLowerCase() === '--hard')) {
       codes.add('DESTRUCTIVE_GIT_RESET_HARD')
     }
-    if (executable === 'git' && args[0]?.toLowerCase() === 'clean' && args.some(arg => arg.toLowerCase() === '--force' || (/^-[^-]/.test(arg) && arg.toLowerCase().includes('f')))) {
+    if (action === 'git' && actionArgs[0]?.toLowerCase() === 'clean' && actionArgs.some(arg => arg.toLowerCase() === '--force' || (/^-[^-]/.test(arg) && arg.toLowerCase().includes('f')))) {
       codes.add('DESTRUCTIVE_GIT_CLEAN')
     }
-    if (executable === 'git' && args[0]?.toLowerCase() === 'push') {
+    if (action === 'git' && actionArgs[0]?.toLowerCase() === 'push') {
       codes.add('NETWORK_EXTERNAL_WRITE')
-      if (args.some(arg => ['--force', '--force-with-lease', '-f'].includes(arg.toLowerCase()))) codes.add('DESTRUCTIVE_FORCE_PUSH')
+      if (actionArgs.some(arg => ['--force', '--force-with-lease', '-f'].includes(arg.toLowerCase()))) codes.add('DESTRUCTIVE_FORCE_PUSH')
     }
 
-    const systemMutation = executable === 'reg' || executable === 'reg.exe'
-      ? ['add', 'delete', 'import', 'copy'].includes(args[0]?.toLowerCase() ?? '')
-      : ['set-itemproperty', 'new-itemproperty', 'remove-itemproperty', 'set-acl', 'new-service', 'set-service', 'remove-service', 'start-service', 'stop-service', 'restart-service'].includes(executable ?? '')
-        && tokens.some(token => /registry|hklm:|hkcu:/i.test(token))
-    if (systemMutation && (executable === 'reg' || executable === 'reg.exe' || tokens.some(token => /registry|hklm:|hkcu:/i.test(token)))) {
-      codes.add('SYSTEM_REGISTRY_MUTATION')
-    }
-    const serviceMutation = (executable === 'systemctl' && ['enable', 'disable', 'start', 'stop', 'restart', 'mask', 'unmask'].includes(args[0]?.toLowerCase() ?? ''))
-      || (executable === 'sc' && ['create', 'config', 'delete', 'start', 'stop'].includes(args[0]?.toLowerCase() ?? ''))
-      || (executable === 'service' && ['start', 'stop', 'restart', 'enable', 'disable'].includes(args[0]?.toLowerCase() ?? ''))
-      || ['new-service', 'set-service', 'remove-service', 'start-service', 'stop-service', 'restart-service'].includes(executable ?? '')
+    const registryMutation = action === 'reg' || action === 'reg.exe'
+      ? ['add', 'delete', 'import', 'copy'].includes(actionArgs[0]?.toLowerCase() ?? '')
+      : dialect === 'pwsh'
+        && ['set-itemproperty', 'new-itemproperty', 'remove-itemproperty'].includes(action ?? '')
+        && actionArgs.some(token => /registry|hklm:|hkcu:/i.test(token))
+    if (registryMutation) codes.add('SYSTEM_REGISTRY_MUTATION')
+    const serviceMutation = (action === 'systemctl' && ['enable', 'disable', 'start', 'stop', 'restart', 'mask', 'unmask'].includes(actionArgs[0]?.toLowerCase() ?? ''))
+      || (action === 'sc' && ['create', 'config', 'delete', 'start', 'stop'].includes(actionArgs[0]?.toLowerCase() ?? ''))
+      || (action === 'service' && ['start', 'stop', 'restart', 'enable', 'disable'].includes(actionArgs[0]?.toLowerCase() ?? ''))
+      || (dialect === 'pwsh' && ['new-service', 'set-service', 'remove-service', 'start-service', 'stop-service', 'restart-service'].includes(action ?? ''))
     if (serviceMutation) codes.add('SYSTEM_SERVICE_MUTATION')
 
-    if (['sudo', 'doas', 'pkexec', 'runas'].includes(executable ?? '')
-      || (executable === 'start-process' && args.some(arg => arg.toLowerCase() === '-verb' || arg.toLowerCase() === 'runas'))
-      || tokens.some(token => /^-verb:runas$/i.test(token))) {
-      codes.add('PERMISSION_PRIVILEGE_ELEVATION')
-    }
-    if (['chmod', 'chown', 'chgrp', 'setfacl', 'icacls', 'takeown', 'set-acl'].includes(executable ?? '')
-      || tokens.some(token => ['chmod', 'chown', 'chgrp', 'setfacl', 'icacls', 'takeown', 'set-acl'].includes(token.toLowerCase()))) {
+    const startProcessRunAs = dialect === 'pwsh' && action === 'start-process'
+      && actionArgs.some((arg, position) => arg.toLowerCase() === '-verb' && actionArgs[position + 1]?.toLowerCase() === 'runas')
+    if ((dialect === 'bash' && wrapper) || startProcessRunAs) codes.add('PERMISSION_PRIVILEGE_ELEVATION')
+    if (['chmod', 'chown', 'chgrp', 'setfacl', 'icacls', 'takeown'].includes(action ?? '')
+      || (dialect === 'pwsh' && action === 'set-acl')) {
       codes.add('PERMISSION_ACCESS_CONTROL_MUTATION')
     }
 
-    if ((executable === 'npm' || executable === 'pnpm') && ['install', 'add', 'ci'].includes(args[0]?.toLowerCase() ?? '')) {
+    if ((action === 'npm' || action === 'pnpm') && ['install', 'add', 'ci'].includes(actionArgs[0]?.toLowerCase() ?? '')) {
       codes.add('INSTALL_PACKAGE_MUTATION')
-      if (args.some(arg => ['-g', '--global'].includes(arg.toLowerCase()))) codes.add('INSTALL_GLOBAL_SCOPE')
+      if (actionArgs.some(arg => ['-g', '--global'].includes(arg.toLowerCase()))) codes.add('INSTALL_GLOBAL_SCOPE')
     }
-    if ((executable === 'npm' || executable === 'pnpm') && args[0]?.toLowerCase() === 'publish') codes.add('NETWORK_EXTERNAL_WRITE')
-    if (['curl', 'wget', 'invoke-webrequest', 'invoke-restmethod'].includes(executable ?? '')
-      && (args.some(arg => ['-d', '--data', '--data-raw', '--data-binary', '--upload-file', '-t', '--post-file'].includes(arg.toLowerCase()))
-        || args.some((arg, position) => arg.toLowerCase() === '-x' && ['post', 'put', 'patch', 'delete'].includes(args[position + 1]?.toLowerCase() ?? ''))
-        || args.some(arg => /^-method:(post|put|patch|delete)$/i.test(arg)))) {
+    if ((action === 'npm' || action === 'pnpm') && actionArgs[0]?.toLowerCase() === 'publish') codes.add('NETWORK_EXTERNAL_WRITE')
+    if (['curl', 'wget', 'invoke-webrequest', 'invoke-restmethod'].includes(action ?? '')
+      && (actionArgs.some(arg => ['-d', '--data', '--data-raw', '--data-binary', '--upload-file', '-t', '--post-file'].includes(arg.toLowerCase()))
+        || actionArgs.some((arg, position) => arg.toLowerCase() === '-x' && ['post', 'put', 'patch', 'delete'].includes(actionArgs[position + 1]?.toLowerCase() ?? ''))
+        || actionArgs.some(arg => /^-method:(post|put|patch|delete)$/i.test(arg)))) {
       codes.add('NETWORK_EXTERNAL_WRITE')
     }
-    if (['scp', 'sftp', 'rsync'].includes(executable ?? '')) codes.add('NETWORK_EXTERNAL_WRITE')
+    if (['scp', 'sftp', 'rsync'].includes(action ?? '')) ambiguous = true
+
+    const mutatingFact = [...codes].some(code => code.startsWith('DESTRUCTIVE_')
+      || ['SYSTEM_LOCATION_MUTATION', 'SYSTEM_REGISTRY_MUTATION', 'SYSTEM_SERVICE_MUTATION', 'PERMISSION_ACCESS_CONTROL_MUTATION', 'INSTALL_PACKAGE_MUTATION', 'INSTALL_GLOBAL_SCOPE', 'NETWORK_EXTERNAL_WRITE'].includes(code))
+    const targetTokens = actionArgs.filter(token => !token.startsWith('-'))
+    if (mutatingFact && targetTokens.some(token => isSystemLocation(token))) systemLocation = true
   }
+  const degradedByFinding = [...codes].some(code => ['SHELL_SEMANTICS_AMBIGUOUS', 'SHELL_DYNAMIC_EXECUTION', 'SHELL_ENCODED_EXECUTION', 'SHELL_ENVIRONMENT_INJECTION'].includes(code))
   if (ambiguous) codes.add('SHELL_SEMANTICS_AMBIGUOUS')
-  return { codes: [...codes], ambiguous, tokens: split.segments.flatMap(segment => tokenizeSegment(segment).tokens), systemLocation }
+  const degraded = ambiguous || degradedByFinding
+  return { codes: [...codes], ambiguous, degraded, tokens: split.segments.flatMap(segment => tokenizeSegment(segment).tokens), systemLocation }
 }
 
 function urlHasCredential(value: string): boolean {
-  return hasSecret(value) || hasCredentialResource(value)
+  return hasSecret(value)
 }
 
 interface EvaluationParts {
@@ -595,12 +634,15 @@ function invalidParts(kind: RuleOperationKind, summary: FailureChainSummary | un
   }
 }
 
-function scanValues(parts: EvaluationParts, values: readonly (string | undefined)[]): void {
+function scanSecretValues(parts: EvaluationParts, values: readonly (string | undefined)[]): void {
   for (const value of values) {
     if (value === undefined) continue
     if (hasSecret(value)) addFinding(parts, 'CREDENTIAL_SECRET_MATERIAL_PRESENT')
-    if (hasCredentialResource(value)) addFinding(parts, 'CREDENTIAL_RESOURCE_ACCESS')
   }
+}
+
+function scanCredentialTarget(parts: EvaluationParts, value: string): void {
+  if (hasCredentialResource(value)) addFinding(parts, 'CREDENTIAL_RESOURCE_ACCESS')
 }
 
 function evaluateOperation(toolName: string, args: unknown, summary: FailureChainSummary | undefined): EvaluationParts {
@@ -615,7 +657,8 @@ function evaluateOperation(toolName: string, args: unknown, summary: FailureChai
       status: 'READY', operationKind: 'filesystem-read', parserConfidence: 'high', mutating: false, externalEffect: false, networkEffect: 'none',
       findings: new Set(), reasonCodes: new Set(), failureContext: emptyFailureContext(summary),
     }
-    scanValues(parts, [path])
+    scanSecretValues(parts, [path])
+    scanCredentialTarget(parts, path)
     return parts
   }
   if (toolName === 'write') {
@@ -630,7 +673,8 @@ function evaluateOperation(toolName: string, args: unknown, summary: FailureChai
       ...pair.permission === undefined ? {} : { requestedPermission: pair.permission },
       findings: new Set(), reasonCodes: new Set(), failureContext: emptyFailureContext(summary),
     }
-    scanValues(parts, [path, content])
+    scanSecretValues(parts, [path, content])
+    scanCredentialTarget(parts, path)
     if (isSystemLocation(path)) addFinding(parts, 'SYSTEM_LOCATION_MUTATION')
     if (pair.permission === 'danger-full-access') addFinding(parts, 'PERMISSION_DANGER_FULL_ACCESS')
     return parts
@@ -649,7 +693,8 @@ function evaluateOperation(toolName: string, args: unknown, summary: FailureChai
       ...pair.permission === undefined ? {} : { requestedPermission: pair.permission },
       findings: new Set(), reasonCodes: new Set(), failureContext: emptyFailureContext(summary),
     }
-    scanValues(parts, [path, oldString, newString])
+    scanSecretValues(parts, [path, oldString, newString])
+    scanCredentialTarget(parts, path)
     if (isSystemLocation(path)) addFinding(parts, 'SYSTEM_LOCATION_MUTATION')
     if (pair.permission === 'danger-full-access') addFinding(parts, 'PERMISSION_DANGER_FULL_ACCESS')
     return parts
@@ -671,12 +716,11 @@ function evaluateOperation(toolName: string, args: unknown, summary: FailureChai
     }
     const pair = permissionPair(fields)
     if (pair.invalid) return invalidParts('shell', summary, 'RULE_ESCALATION_PAIR_UNSUPPORTED')
-    const workdir = optionalString(fields, 'workdir')
-    const scan = scanShell(command, workdir === false ? undefined : workdir)
+    const scan = scanShell(command, toolName)
     const parts: EvaluationParts = {
-      status: scan.ambiguous ? 'DEGRADED' : 'READY', operationKind: 'shell', parserConfidence: scan.ambiguous ? 'medium' : 'high', mutating: 'unknown', externalEffect: false, networkEffect: 'none',
+      status: scan.degraded ? 'DEGRADED' : 'READY', operationKind: 'shell', parserConfidence: scan.degraded ? 'medium' : 'high', mutating: 'unknown', externalEffect: 'unknown', networkEffect: 'unknown',
       ...pair.permission === undefined ? {} : { requestedPermission: pair.permission },
-      findings: new Set(scan.codes), reasonCodes: new Set(scan.ambiguous ? ['RULE_SHELL_AMBIGUOUS'] : []), failureContext: emptyFailureContext(summary),
+      findings: new Set(scan.codes), reasonCodes: new Set(scan.degraded ? ['RULE_SHELL_AMBIGUOUS'] : []), failureContext: emptyFailureContext(summary),
     }
     if (pair.permission === 'danger-full-access') addFinding(parts, 'PERMISSION_DANGER_FULL_ACCESS')
     if (scan.codes.includes('NETWORK_EXTERNAL_WRITE')) {
@@ -714,7 +758,7 @@ function evaluateOperation(toolName: string, args: unknown, summary: FailureChai
       status: 'READY', operationKind: 'network-read', parserConfidence: 'high', mutating: false, externalEffect: true, networkEffect: 'read',
       findings: new Set(['NETWORK_EXTERNAL_READ']), reasonCodes: new Set(), failureContext: emptyFailureContext(summary),
     }
-    scanValues(parts, queries as string[])
+    scanSecretValues(parts, queries as string[])
     if (parts.failureContext.degraded) { parts.status = 'DEGRADED'; parts.parserConfidence = 'medium'; parts.reasonCodes.add('RULE_FAILURE_CONTEXT_DEGRADED') }
     return parts
   }

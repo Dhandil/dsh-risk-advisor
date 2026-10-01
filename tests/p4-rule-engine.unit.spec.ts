@@ -114,6 +114,52 @@ describe('Phase 4 deterministic Rule Engine', () => {
     expect(codes(credential)).toContain('CREDENTIAL_RESOURCE_ACCESS')
   })
 
+  it('repairs fail-closed status, semantic roles, comments, generic env prefixes, and network direction', () => {
+    for (const [tool, command, expected] of [
+      ['bash', 'bash -c "echo safe"', 'SHELL_DYNAMIC_EXECUTION'],
+      ['pwsh', 'powershell -EncodedCommand AAAA', 'SHELL_ENCODED_EXECUTION'],
+      ['bash', 'PATH=/tmp echo safe', 'SHELL_ENVIRONMENT_INJECTION'],
+      ['bash', 'FOO=bar rm -rf build', 'DESTRUCTIVE_RECURSIVE_DELETE'],
+    ] as const) {
+      const result = evaluate(tool, { command })
+      expect(result.status, command).toBe('DEGRADED')
+      expect(result.parserConfidence, command).not.toBe('high')
+      expect(codes(result), command).toContain(expected)
+    }
+    expect(codes(evaluate('bash', { command: 'rm -rf build; if true; then echo safe; fi' }))).toContain('DESTRUCTIVE_RECURSIVE_DELETE')
+    expect(evaluate('bash', { command: 'if true; then echo safe; fi' }).status).toBe('DEGRADED')
+    expect(evaluate('pwsh', { command: '{ Write-Output safe }' }).status).toBe('DEGRADED')
+    expect(codes(evaluate('bash', { command: '$cmd rm -rf build' }))).toContain('SHELL_DYNAMIC_EXECUTION')
+    expect(codes(evaluate('bash', { command: 'echo safe # ; rm -rf build' }))).not.toContain('DESTRUCTIVE_RECURSIVE_DELETE')
+  })
+
+  it('does not mint role-sensitive findings from inert data and preserves real absolute targets', () => {
+    expect(codes(evaluate('bash', { command: 'echo chmod' }))).not.toContain('PERMISSION_ACCESS_CONTROL_MUTATION')
+    expect(codes(evaluate('pwsh', { command: 'echo -Verb:RunAs' }))).not.toContain('PERMISSION_PRIVILEGE_ELEVATION')
+    expect(codes(evaluate('bash', { command: 'echo /etc/passwd' }))).not.toContain('SYSTEM_LOCATION_MUTATION')
+    expect(codes(evaluate('bash', { command: 'echo "C:\\Windows\\System32"' }))).not.toContain('SYSTEM_LOCATION_MUTATION')
+    expect(codes(evaluate('bash', { command: 'cat /etc/passwd' }))).not.toContain('SYSTEM_LOCATION_MUTATION')
+    expect(codes(evaluate('bash', { command: 'rm -rf Windows/foo' }))).not.toContain('SYSTEM_LOCATION_MUTATION')
+    expect(codes(evaluate('bash', { command: 'rm -rf /etc/app.conf' }))).toContain('SYSTEM_LOCATION_MUTATION')
+    expect(codes(evaluate('pwsh', { command: 'Start-Process cmd.exe -Verb RunAs' }))).toContain('PERMISSION_PRIVILEGE_ELEVATION')
+    expect(codes(evaluate('write', { file_path: 'notes.txt', content: '/home/user/.ssh/id_rsa' }))).not.toContain('CREDENTIAL_RESOURCE_ACCESS')
+    expect(codes(evaluate('edit', { file_path: 'notes.txt', old_string: 'x', new_string: '/home/user/.ssh/id_rsa' }))).not.toContain('CREDENTIAL_RESOURCE_ACCESS')
+    expect(codes(evaluate('web_search', { queries: ['read /home/user/.ssh/id_rsa'] }))).not.toContain('CREDENTIAL_RESOURCE_ACCESS')
+    expect(codes(evaluate('read', { file_path: '/home/user/.ssh/id_rsa' }))).toContain('CREDENTIAL_RESOURCE_ACCESS')
+  })
+
+  it('keeps shell external effects unknown until direction is proven', () => {
+    expect(evaluate('bash', { command: 'echo safe' })).toMatchObject({ externalEffect: 'unknown', networkEffect: 'unknown' })
+    expect(evaluate('bash', { command: 'git push origin main' })).toMatchObject({ externalEffect: true, networkEffect: 'write' })
+    expect(evaluate('bash', { command: 'curl -d payload https://example.com' })).toMatchObject({ externalEffect: true, networkEffect: 'write' })
+    for (const command of ['scp remote:/tmp/a.txt local.txt', 'rsync local.txt backup/', 'sftp remote-host']) {
+      const result = evaluate('bash', { command })
+      expect(codes(result), command).not.toContain('NETWORK_EXTERNAL_WRITE')
+      expect(result.externalEffect).toBe('unknown')
+      expect(result.networkEffect).toBe('unknown')
+    }
+  })
+
   it('preserves deliberate workspace, sandbox and reversibility evidence gaps', () => {
     for (const result of [
       evaluate('read', { file_path: '../outside.txt' }),
