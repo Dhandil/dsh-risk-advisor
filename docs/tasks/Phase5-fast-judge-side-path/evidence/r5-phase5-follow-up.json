@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "benchmark": "R5_PHASE5_FOLLOW_UP",
+  "mode": "FULL",
+  "samples": 32,
+  "testedAt": "2026-10-01T10:28:46.425Z",
+  "localPathMeasurementsMs": {
+    "contextBuild": { "samples": 32, "min": 0.1349, "p50Approx": 0.236, "p95Approx": 0.7832, "max": 8.7555 },
+    "seedRedactor": { "samples": 32, "min": 0.0288, "p50Approx": 0.060, "p95Approx": 0.3055, "max": 0.6248 },
+    "deterministicA1": { "samples": 32, "min": 0.0444, "p50Approx": 0.060, "p95Approx": 0.3617, "max": 1.5044 },
+    "inMemoryPublish": { "samples": 32, "min": 0.0004, "p50Approx": 0.0012, "p95Approx": 0.0029, "max": 0.0082 },
+    "schedulerQueue": { "completedSamples": 6, "min": 0.4102, "p50Approx": 1.0425, "p95Approx": 4.2033, "max": 4.2033 },
+    "schedulerExecute": { "completedSamples": 6, "min": 0.6549, "p50Approx": 3.0544, "p95Approx": 14.8422, "max": 14.8422 }
+  },
+  "scheduler": {
+    "maxConcurrent": 2,
+    "maxPending": 4,
+    "completed": 6,
+    "saturated": 26,
+    "saturationFailure": "JUDGE_QUEUE_SATURATED"
+  },
+  "nativeApproval": { "outcome": "allowed-once", "answerers": 1, "sessionEvents": "NOT_READ" },
+  "labels": {
+    "evidence": "LOCAL_MOCK_ONLY",
+    "providerLatency": "REAL_PROVIDER_NOT_RUN",
+    "productionPolicy": "PRODUCTION_POLICY_UNDETERMINED"
+  },
+  "nonClaims": [
+    "No real provider/model latency percentile is claimed.",
+    "No production timeout, concurrency, or queue policy is claimed from this run."
+  ]
+}
