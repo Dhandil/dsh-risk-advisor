@@ -16,6 +16,7 @@ import { RetryEscalationAnalyzer } from './host/retry-escalation.ts'
 import type { FailureChainDiagnostics } from './host/retry-escalation.ts'
 import { RuleEngine } from './host/rule-engine.ts'
 import type { RuleDiagnostics } from './host/rule-engine.ts'
+import type { FastJudgeConfig } from './host/fast-judge.ts'
 
 export const inject = ['tools']
 
@@ -67,16 +68,23 @@ export function installCorrelation(ctx: Context): CorrelationDiagnostics {
 }
 
 /** Host bundle entry. R2 observes native execution and approval events only. */
-export function apply(ctx: Context): void {
+export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConfig } = {}): void {
+  const ledger = installLedger(ctx)
   const foundation = new OperationFoundation()
-  const assessments = new ApprovalAssessmentCoordinator(foundation.diagnostics)
   const failureChain = new RetryEscalationAnalyzer()
   const rules = new RuleEngine()
+  const assessments = new ApprovalAssessmentCoordinator(foundation.diagnostics, {
+    rules: rules.diagnostics,
+    failureChain: failureChain.diagnostics,
+    ledger,
+    ...config.fastJudge === undefined ? {} : { fastJudge: config.fastJudge },
+  })
   installCorrelationInternal(ctx, {
     capture: (exec, executionId, parentExecutionId) => {
       foundation.capture(exec, executionId, parentExecutionId)
       failureChain.observePreExecute(exec, executionId)
       rules.observePreExecute(exec, executionId, executionId === undefined ? undefined : failureChain.diagnostics.get(executionId))
+      assessments.captureReviewerSeed(exec, executionId)
     },
     retire: (exec, result) => {
       foundation.retire(exec)
@@ -93,11 +101,15 @@ export function apply(ctx: Context): void {
     const connection = bridgeCtx.get('connection', false) as HostConnectionLike | undefined
     if (connection !== undefined) installRiskAdvisorBrowserBridge(bridgeCtx, connection, assessments)
   })
+  ctx.inject(['llm'], judgeCtx => {
+    const llm = judgeCtx.get('llm')
+    if (llm !== undefined) assessments.attachJudge(llm)
+    judgeCtx.effect(() => () => assessments.detachJudge(), 'risk-advisor-fast-judge-capability')
+  })
   ctx.effect(() => () => { foundation.dispose() }, 'risk-advisor-operation-foundation-generation')
-  ctx.effect(() => () => { assessments.dispose() }, 'risk-advisor-assessment-generation')
+  ctx.effect(() => () => assessments.dispose(), 'risk-advisor-assessment-generation')
   ctx.effect(() => () => { failureChain.dispose() }, 'risk-advisor-failure-chain-generation')
   ctx.effect(() => () => { rules.dispose() }, 'risk-advisor-rule-engine-generation')
-  installLedger(ctx)
 }
 
 export { ActiveExecutionIndex }
@@ -117,7 +129,9 @@ export type {
 export type { FoundationBoundaryDiagnostic, FoundationDiagnostic, FoundationDiagnostics, FoundationStatus, FoundationToolKind, FoundationUnknown } from './host/operation-foundation.ts'
 export type { FailureChainDiagnostics, FailureChainEntry, FailureChainFailureKind, FailureChainSummary, RelationSummaryStatus, RetryEscalationOptions } from './host/retry-escalation.ts'
 export type { RuleDiagnostics, RuleEvaluationStatus, RuleParserConfidence, RuleOperationKind, RuleFindingCategory, RuleFinding, RuleFailureContext, RuleEvaluation } from './host/rule-engine.ts'
-export type { AssessmentAssociation, AssessmentBridgeSnapshot, AssessmentDiagnostic, AssessmentDiagnostics, AssessmentIssueSummary, AssessmentReasonCode, AssessmentStage, AssessmentStatus, ApprovalAssessmentShell } from './host/assessment-envelope.ts'
+export type { AssessmentAssociation, AssessmentBridgeSnapshot, AssessmentDiagnostic, AssessmentDiagnostics, AssessmentIssueSummary, AssessmentReasonCode, AssessmentStage, AssessmentStatus, ApprovalAssessmentShell, Phase5AssessmentStage, Phase5AssessmentStatus } from './host/assessment-envelope.ts'
+export type { FastJudgeConfig, FastJudgeCandidate, FastJudgeDimension, FastJudgeDimensionResult, JudgeFailureCode, NormalizedFastJudgeConfig, ReviewerRoute } from './host/fast-judge.ts'
+export type { RiskAssessment, RiskContextSnapshot, RiskFeature, RiskFeatureSet, AssessmentFinding, AssessmentUncertainty, SaferAlternative } from './host/risk-engine.ts'
 export type { BrowserBridgeClientResult, BrowserSafeReasonCode, RiskAdvisorBridgeRead, RiskAdvisorBridgeViewV1 } from './bridge-contract.ts'
 export type {
   DurableOccurrenceRef,

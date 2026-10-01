@@ -8,10 +8,32 @@ import type {
   ExecutionId,
 } from './correlation.ts'
 import type { FoundationDiagnostics } from './operation-foundation.ts'
+import type { RuleDiagnostics } from './rule-engine.ts'
+import type { FailureChainDiagnostics } from './retry-escalation.ts'
+import type { LedgerDiagnostics } from './ledger.ts'
+import type { LlmRuntime } from '@deepseek-ai/dsh-llm'
+import { DirectUserRing, ReviewerSeedStore } from './reviewer-seed.ts'
+import { buildPhase5Context, type BuiltPhase5Context } from './context-builder.ts'
+import {
+  createDeterministicAssessment,
+  mergeJudgeAssessment,
+  type RiskAssessment,
+} from './risk-engine.ts'
+import {
+  executeFastJudge,
+  JudgeScheduler,
+  normalizeFastJudgeConfig,
+  requestedJudgeDimensions,
+  resolveReviewerRoute,
+  type FastJudgeConfig,
+  type NormalizedFastJudgeConfig,
+} from './fast-judge.ts'
 
 export type AssessmentAssociation = 'BOUND' | 'UNBOUND' | 'AMBIGUOUS'
 export type AssessmentStatus = 'pending' | 'unavailable' | 'cancelled' | 'not-found'
 export type AssessmentStage = 'not-started'
+export type Phase5AssessmentStatus = 'COMPLETE' | 'PARTIAL' | 'DEGRADED'
+export type Phase5AssessmentStage = 'rules' | 'fast' | 'complete'
 export type AssessmentReasonCode =
   | 'ASSESSOR_NOT_IMPLEMENTED'
   | 'FOUNDATION_DEGRADED'
@@ -27,6 +49,20 @@ export type AssessmentReasonCode =
   | 'ORPHAN_DECISION'
   | 'NATIVE_OUTCOME_OBSERVED'
   | 'NOT_FOUND'
+  | 'JUDGE_DISABLED'
+  | 'JUDGE_CONFIG_UNAVAILABLE'
+  | 'JUDGE_CAPABILITY_UNAVAILABLE'
+  | 'JUDGE_ROUTE_UNAVAILABLE'
+  | 'JUDGE_QUEUE_SATURATED'
+  | 'JUDGE_TIMEOUT'
+  | 'JUDGE_STREAM_ERROR'
+  | 'JUDGE_ABORTED'
+  | 'JUDGE_INVALID_OUTPUT'
+  | 'JUDGE_SUPERSEDED'
+  | 'JUDGE_NATIVE_DECISION'
+  | 'JUDGE_GENERATION_DISPOSED'
+  | 'REDACTION_FAILED'
+  | 'CONTEXT_DEGRADED'
 
 export interface ApprovalAssessmentShell {
   readonly schemaVersion: 1
@@ -58,6 +94,10 @@ export interface AssessmentDiagnostic {
   readonly updatedAt: number
   readonly closed: boolean
   readonly observedOutcome?: ApprovalOutcome
+  readonly lifecycleStatus?: Phase5AssessmentStatus
+  readonly lifecycleStage?: Phase5AssessmentStage
+  readonly latestAssessmentId?: string
+  readonly assessment?: RiskAssessment
 }
 
 export interface AssessmentIssueSummary {
@@ -89,6 +129,8 @@ export type OpenAssessmentQuery =
 
 export interface AssessmentDiagnostics {
   readonly getForApproval: (session: Session, approvalId: string) => AssessmentDiagnostic
+  readonly getAssessment: (assessmentId: string) => RiskAssessment | undefined
+  readonly getLatestForApproval: (session: Session, approvalId: string) => RiskAssessment | undefined
   readonly getIssueSummary: () => AssessmentIssueSummary
 }
 
@@ -107,6 +149,10 @@ export interface AssessmentCoordinatorOptions {
   readonly clock?: () => number
   readonly maxRecords?: number
   readonly completedTtlMs?: number
+  readonly rules?: RuleDiagnostics
+  readonly failureChain?: FailureChainDiagnostics
+  readonly ledger?: LedgerDiagnostics
+  readonly fastJudge?: FastJudgeConfig
 }
 
 interface AssessmentRecord {
@@ -115,6 +161,16 @@ interface AssessmentRecord {
   readonly toolName: string
   readonly callId?: string
   shell: ApprovalAssessmentShell
+  phase5: Phase5Record | undefined
+}
+
+interface Phase5Record {
+  readonly context: BuiltPhase5Context
+  readonly a1: RiskAssessment
+  latest: RiskAssessment
+  readonly generation: number
+  attempted: boolean
+  closed: boolean
 }
 
 const MAX_RECORDS = 256
@@ -166,6 +222,18 @@ function diagnosticFrom(shell: ApprovalAssessmentShell): AssessmentDiagnostic {
   })
 }
 
+function diagnosticFromRecord(record: AssessmentRecord): AssessmentDiagnostic {
+  const base = diagnosticFrom(record.shell)
+  if (record.phase5 === undefined) return base
+  return Object.freeze({
+    ...base,
+    lifecycleStatus: record.phase5.latest.status,
+    lifecycleStage: record.phase5.latest.provenance.judge.invoked ? 'complete' as const : 'rules' as const,
+    latestAssessmentId: record.phase5.latest.assessmentId,
+    assessment: record.phase5.latest,
+  })
+}
+
 /**
  * Host-private Phase 1B lifecycle shell. It observes committed approval audit
  * events only; it never answers approval or creates a completed assessment.
@@ -177,6 +245,15 @@ export class ApprovalAssessmentCoordinator {
   private readonly clock: () => number
   private readonly maxRecords: number
   private readonly completedTtlMs: number
+  private readonly rules: RuleDiagnostics | undefined
+  private readonly failureChain: FailureChainDiagnostics | undefined
+  private readonly ledger: LedgerDiagnostics | undefined
+  private readonly fastJudgeConfig: NormalizedFastJudgeConfig
+  private readonly fastJudgeConfigInvalid: boolean
+  private readonly seedStore: ReviewerSeedStore
+  private readonly userRing = new DirectUserRing()
+  private judge: LlmRuntime | undefined
+  private scheduler: JudgeScheduler | undefined
   private orphanDecisions = 0
   private capacityExceeded = 0
   private lastClock = 0
@@ -184,6 +261,8 @@ export class ApprovalAssessmentCoordinator {
 
   readonly diagnostics: AssessmentDiagnostics = Object.freeze({
     getForApproval: this.getForApproval.bind(this),
+    getAssessment: this.getAssessment.bind(this),
+    getLatestForApproval: this.getLatestForApproval.bind(this),
     getIssueSummary: this.getIssueSummary.bind(this),
   })
 
@@ -192,6 +271,11 @@ export class ApprovalAssessmentCoordinator {
     this.clock = options.clock ?? (() => performance.now())
     this.maxRecords = options.maxRecords ?? MAX_RECORDS
     this.completedTtlMs = options.completedTtlMs ?? COMPLETED_TTL_MS
+    this.rules = options.rules
+    this.failureChain = options.failureChain
+    this.ledger = options.ledger
+    this.seedStore = new ReviewerSeedStore(this.clock)
+    try { this.fastJudgeConfig = normalizeFastJudgeConfig(options.fastJudge); this.fastJudgeConfigInvalid = false } catch { this.fastJudgeConfig = normalizeFastJudgeConfig(undefined); this.fastJudgeConfigInvalid = true }
     if (!Number.isSafeInteger(this.maxRecords) || this.maxRecords < 1 || !Number.isSafeInteger(this.completedTtlMs) || this.completedTtlMs < 1) {
       throw new RangeError('Assessment coordinator bounds must be positive safe integers')
     }
@@ -200,6 +284,7 @@ export class ApprovalAssessmentCoordinator {
   observeSessionEvent(session: Session, event: SessionEvent, index: ActiveExecutionIndex): AssessmentObservationResult {
     if (!this.active) return 'IGNORED'
     try {
+      this.userRing.observe(session, event)
       if (event.type === 'approval/asked') return this.observeAsked(session, event.data.id, event.data.toolName, event.data.callId, index)
       if (event.type === 'approval/decided') return this.observeDecided(session, event.data.id, event.data.outcome)
       return 'IGNORED'
@@ -211,9 +296,13 @@ export class ApprovalAssessmentCoordinator {
   observeSessionDisposed(session: Session): void {
     if (!this.active) return
     try {
+      this.userRing.disposeSession(session)
       const byId = this.recordsBySession.get(session)
       if (byId === undefined) return
-      for (const record of byId.values()) this.records.delete(record)
+      for (const record of byId.values()) {
+        if (record.phase5 !== undefined) { record.phase5.closed = true; this.scheduler?.cancel(record.approvalId, 'JUDGE_GENERATION_DISPOSED') }
+        this.records.delete(record)
+      }
       byId.clear()
       this.recordsBySession.delete(session)
     } catch {
@@ -221,9 +310,14 @@ export class ApprovalAssessmentCoordinator {
     }
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
     if (!this.active) return
     this.active = false
+    const scheduler = this.scheduler
+    this.scheduler = undefined
+    this.judge = undefined
+    this.seedStore.dispose()
+    this.userRing.dispose()
     for (const record of this.records) {
       const session = record.sessionRef.deref()
       if (session !== undefined) this.recordsBySession.get(session)?.delete(record.approvalId)
@@ -232,6 +326,7 @@ export class ApprovalAssessmentCoordinator {
     this.recordsBySession = new WeakMap()
     this.orphanDecisions = 0
     this.capacityExceeded = 0
+    if (scheduler !== undefined) await scheduler.dispose()
   }
 
   getForApproval(session: Session, approvalId: string): AssessmentDiagnostic {
@@ -241,7 +336,49 @@ export class ApprovalAssessmentCoordinator {
     const now = this.readClock()
     this.sweep(now)
     const record = this.recordsBySession.get(session)?.get(id)
-    return record === undefined ? notFoundDiagnostic(session, id) : diagnosticFrom(record.shell)
+    return record === undefined ? notFoundDiagnostic(session, id) : diagnosticFromRecord(record)
+  }
+
+  getAssessment(assessmentIdValue: string): RiskAssessment | undefined {
+    if (!this.active) return undefined
+    const id = safeId(assessmentIdValue, true)
+    if (id === undefined) return undefined
+    this.sweep(this.readClock())
+    for (const record of this.records) {
+      if (record.phase5?.a1.assessmentId === id || record.phase5?.latest.assessmentId === id) return record.phase5.latest.assessmentId === id ? record.phase5.latest : record.phase5.a1
+    }
+    return undefined
+  }
+
+  getLatestForApproval(session: Session, approvalId: string): RiskAssessment | undefined {
+    if (!this.active) return undefined
+    const id = safeId(approvalId, true)
+    if (id === undefined) return undefined
+    return this.recordsBySession.get(session)?.get(id)?.phase5?.latest
+  }
+
+  attachJudge(llm: LlmRuntime): void {
+    if (!this.active || !this.fastJudgeConfig.enabled) return
+    this.judge = llm
+    this.scheduler ??= new JudgeScheduler(this.fastJudgeConfig.maxConcurrentJudges, this.fastJudgeConfig.maxPendingJudges)
+    for (const record of this.records) this.scheduleJudge(record)
+  }
+
+  async detachJudge(): Promise<void> {
+    this.judge = undefined
+    const scheduler = this.scheduler
+    this.scheduler = undefined
+    if (scheduler !== undefined) await scheduler.dispose()
+  }
+
+  captureReviewerSeed(exec: Parameters<ActiveExecutionIndex['observePreExecute']>[0], executionId: ExecutionId | undefined): void {
+    if (this.rules === undefined) return
+    try {
+      const evaluation = executionId === undefined ? undefined : this.rules.get(executionId)
+      if (evaluation !== undefined && executionId !== undefined) this.seedStore.capture(executionId, exec, evaluation)
+    } catch {
+      // Capture is observational and must not veto the native path.
+    }
   }
 
   getIssueSummary(): AssessmentIssueSummary {
@@ -354,11 +491,24 @@ export class ApprovalAssessmentCoordinator {
       toolName,
       ...callId === undefined ? {} : { callId },
       shell,
+      phase5: undefined,
     }
     const next = byId ?? new Map<string, AssessmentRecord>()
     next.set(approvalId, record)
     if (byId === undefined) this.recordsBySession.set(session, next)
     this.records.add(record)
+    if (bound && executionId !== undefined && this.phase5Available()) {
+      try {
+        const built = this.buildPhase5Context(session, executionId)
+        const assessment = createDeterministicAssessment(built.snapshot, assessmentId!, now)
+        record.phase5 = { context: built, a1: assessment, latest: assessment, generation: 1, attempted: false, closed: false }
+        if (this.fastJudgeConfigInvalid) this.addReason(record, 'JUDGE_CONFIG_UNAVAILABLE')
+        else if (!this.fastJudgeConfig.enabled) this.addReason(record, 'JUDGE_DISABLED')
+        this.scheduleJudge(record)
+      } catch {
+        this.addReason(record, 'CONTEXT_DEGRADED')
+      }
+    }
     return 'RECORDED'
   }
 
@@ -373,6 +523,10 @@ export class ApprovalAssessmentCoordinator {
     }
     if (record.shell.closed) return 'CLOSED'
     const now = this.readClock()
+    if (record.phase5 !== undefined) {
+      record.phase5.closed = true
+      this.scheduler?.cancel(record.approvalId, 'JUDGE_NATIVE_DECISION')
+    }
     this.replaceShell(record, {
       status: outcome === 'cancelled' ? 'cancelled' : 'unavailable',
       observedOutcome: outcome,
@@ -408,6 +562,11 @@ export class ApprovalAssessmentCoordinator {
   }
 
   private markConflict(record: AssessmentRecord): void {
+    if (record.phase5 !== undefined) {
+      record.phase5.closed = true
+      this.scheduler?.cancel(record.approvalId, 'JUDGE_SUPERSEDED')
+      record.phase5 = undefined
+    }
     const shell = record.shell
     record.shell = Object.freeze({
       schemaVersion: 1 as const,
@@ -427,6 +586,63 @@ export class ApprovalAssessmentCoordinator {
     for (const record of this.records) {
       if (record.shell.closed && now - record.shell.updatedAt >= this.completedTtlMs) this.remove(record)
     }
+  }
+
+  private phase5Available(): boolean {
+    return this.rules !== undefined && this.failureChain !== undefined
+  }
+
+  private buildPhase5Context(session: Session, executionId: ExecutionId): BuiltPhase5Context {
+    const ruleEvaluation = this.rules!.get(executionId)
+    const failureSummary = this.failureChain!.get(executionId)
+    const foundation = this.foundation.get(executionId)
+    return buildPhase5Context({
+      session,
+      executionId,
+      seed: this.seedStore.get(executionId),
+      ruleEvaluation,
+      failureSummary,
+      foundation,
+      userRing: this.userRing,
+      ledger: this.ledger,
+    })
+  }
+
+  private scheduleJudge(record: AssessmentRecord): void {
+    const phase5 = record.phase5
+    if (phase5 === undefined || phase5.attempted || phase5.closed || !this.fastJudgeConfig.enabled) return
+    if (this.judge === undefined || this.scheduler === undefined) return
+    if (phase5.latest.status === 'DEGRADED' || phase5.context.snapshot.degraded) {
+      this.addReason(record, 'CONTEXT_DEGRADED')
+      phase5.attempted = true
+      return
+    }
+    phase5.attempted = true
+    const session = record.sessionRef.deref()
+    if (session === undefined) { this.addReason(record, 'JUDGE_GENERATION_DISPOSED'); return }
+    const route = resolveReviewerRoute(this.fastJudgeConfig, session)
+    if (route === undefined) { this.addReason(record, 'JUDGE_ROUTE_UNAVAILABLE'); return }
+    const requested = requestedJudgeDimensions(phase5.context, phase5.latest)
+    if (requested.length === 0) return
+    const generation = phase5.generation
+    void this.scheduler.enqueue(record.approvalId, signal => executeFastJudge(this.judge!, route, phase5.context, requested, this.fastJudgeConfig, signal)).then(result => {
+      if (!this.active || record.phase5 !== phase5 || phase5.closed || phase5.generation !== generation) return
+      if (!result.ok || result.candidate === undefined) {
+        if (result.failure !== undefined) this.addReason(record, result.failure)
+        return
+      }
+    const latest = mergeJudgeAssessment(phase5.latest, phase5.context.snapshot, {
+        dimensions: requested as readonly import('./assessment-aggregator.ts').DimensionName[],
+        results: result.candidate.results,
+        suggestedAlternatives: result.candidate.suggestedAlternatives,
+      }, `ra-assessment-${randomUUID()}`, this.readClock(), route.model)
+      phase5.latest = latest
+    })
+  }
+
+  private addReason(record: AssessmentRecord, reason: AssessmentReasonCode): void {
+    const reasons = [...record.shell.reasonCodes, reason]
+    this.replaceShell(record, { reasonCodes: copyReasons(reasons), updatedAt: this.readClock() })
   }
 }
 
