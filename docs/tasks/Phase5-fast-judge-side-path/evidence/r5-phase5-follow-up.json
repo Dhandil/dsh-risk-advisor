@@ -28,6 +28,15 @@
     "samples": 32,
     "measurementClaim": "bounded local mock evidence only"
   },
+  "residualRepair": {
+    "scope": "R1-R2",
+    "testedExecutableSha": "de8a7649dd3ce6deca5bb797ac6fc233abd740f3",
+    "focused": "PASS",
+    "r5Smoke": "PASS",
+    "r5Full": "PASS",
+    "fullRegression": { "commands": 12, "testFiles": 24, "tests": 173 },
+    "measurementClaim": "no real provider latency or production policy claim"
+  },
   "labels": {
     "evidence": "LOCAL_MOCK_ONLY",
     "providerLatency": "REAL_PROVIDER_NOT_RUN",

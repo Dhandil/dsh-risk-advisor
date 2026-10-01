@@ -12,6 +12,7 @@ This is an implementation handoff only. Final repository review is external to C
 |---|---|
 | Historical Phase 5 implementation start / frozen remote baseline | `99434f262276aef6d0805b19825ef67489db23c9` |
 | Final repair start / required remote commit present | `d5ab0183c9637dd2274af85e20fb167f6099da49` |
+| Residual repair start / required remote commit present | `274432ec4fee8edd45bddb363f8825062d2318eb` |
 | Harness checkout used read-only | `ddefc45fbc7f8e46dd73185e68295696d1297887` |
 | Historical Phase 5 implementation Tested SHA | `b32d4dbb612dbbf7dabee6e0254b01a44083a0c1` |
 | Final repair executable/Tested SHA | `bcb07deb2f86344ec2f27c2cf70f9dde02c42b4e` |
@@ -47,6 +48,12 @@ The existing `lib/`, `node_modules/`, `pnpm-lock.yaml`, `.vitest-cache/`, `docs/
 - F4 validates duplicate JSON object keys recursively with string-aware parsing before `JSON.parse`, preserves strict schema/8192-character limits, and rechecks bounds after redaction.
 - F5 adds expanded focused and real pinned `ctx.llm.stream()` lifecycle evidence for source/privacy caps, route/eligibility, stream rejection, scheduler saturation/cancellation/timeout, decision/dispose/HMR fencing, identity isolation, duplicate asked events, and Native Approval non-interference.
 
+## Residual Repair R1–R2
+
+- R1 maps `reversibility` AssessmentFindings to primary dimension `RISK`, while retaining `recovery.reversible` as the valid basis feature and leaving Phase-4 RuleFinding category/severity/hardness unchanged. The focused finding matrix proves destructive/system-change/credential/network/install/reversibility → `RISK`, permission → `PRIVILEGE`, and shell-ambiguity/unknown-tool/path-alias/workspace-boundary → `EVIDENCE_QUALITY`; every basisFeatureId remains present in RiskFeatureSet.
+- R2 classifies malformed HTTP(S) URL userinfo only when `@` occurs in the authority before the first `/`, `?`, or `#`; malformed sensitive query material remains fail-closed, ordinary path `@` is not broadly classified, and valid credential URLs remain redacted and idempotent.
+- Residual executable/Tested SHA: `de8a7649dd3ce6deca5bb797ac6fc233abd740f3`.
+
 - The existing exact-live capture chain remains the only capture path: foundation → failure-chain → Phase 4 rules → redacted reviewer seed.
 - A deterministic A1 is synchronously created for every exact BOUND approval when the Phase 1–4 diagnostics are available. A1 uses the existing assessment identity and remains the latest artifact until a valid A2 exists.
 - Context is bounded to allowlisted operation fields, accepted deterministic findings, Phase 3 summary, the direct-user ring, and ledger health metadata. No raw argument tree, full Session, full Ledger, approval reason, tool output, or ReviewerPayload is stored in a RiskAssessment.
@@ -76,6 +83,7 @@ The existing `lib/`, `node_modules/`, `pnpm-lock.yaml`, `.vitest-cache/`, `docs/
 | Diff/privacy/scope gate | PASS; `git diff --check`, pinned Harness read-only SHA, no production deprecated Session readers, no child process/CLI/subagent/network fixture |
 | Phase 5 R5 smoke (`pnpm run bench:r5:p5:smoke`) | PASS — 1 file, 1 test |
 | Phase 5 R5 full (`pnpm run bench:r5:p5`) | PASS — 1 file, 1 test, 32 local samples; `LOCAL_MOCK_ONLY` |
+| Residual R1–R2 focused assertions | PASS — included in the 4-file / 23-test Phase-5 focused suite |
 
 ## Real seam and Native Approval proof
 
@@ -99,14 +107,14 @@ All measurements are labeled `LOCAL_MOCK_ONLY`. Real provider/model latency is `
 
 ## Fresh complete regression provenance
 
-The exact command was run once after the final repair executable commit and before this report-only change:
+The exact command was run once after the residual repair executable commit and before this report-only change:
 
 ```text
 git rev-parse HEAD
 pnpm test
 ```
 
-The first line was `bcb07deb2f86344ec2f27c2cf70f9dde02c42b4e`. The complete chain passed 12 test commands, 25 test files, and 173 tests. The R1 fixture intentionally emits expected fault logs while its tests pass; there were no failed tests.
+The first line was `de8a7649dd3ce6deca5bb797ac6fc233abd740f3`. The complete chain passed 12 test commands, 24 test files, and 173 tests. The R1 fixture intentionally emits expected fault logs while its tests pass; there were no failed tests.
 
 No executable, test, configuration or package semantic changes were made after this Full. The only post-Full additions are this report and the declared bounded benchmark evidence.
 
@@ -116,13 +124,13 @@ The following remain open without promotion: F-006 PARTIAL; F-013 PARTIAL; guard
 
 ## Tested-to-remote proof
 
-The historical executable commit is `b32d4dbb612dbbf7dabee6e0254b01a44083a0c1`; the final repair executable commit is `bcb07deb2f86344ec2f27c2cf70f9dde02c42b4e`. After the final report/evidence commit is pushed, the following exact commands are run:
+The historical executable commit is `b32d4dbb612dbbf7dabee6e0254b01a44083a0c1`; the final repair executable commit is `bcb07deb2f86344ec2f27c2cf70f9dde02c42b4e`; the residual repair executable commit is `de8a7649dd3ce6deca5bb797ac6fc233abd740f3`. After the residual report/evidence commit is pushed, the following exact commands are run:
 
 ```text
 git rev-parse HEAD
 git rev-parse origin/main
 git ls-remote origin refs/heads/main
-git diff --name-only bcb07deb2f86344ec2f27c2cf70f9dde02c42b4e HEAD
+git diff --name-only de8a7649dd3ce6deca5bb797ac6fc233abd740f3 HEAD
 ```
 
-The three final SHA outputs are required to be equal. The final Tested→remote path must contain only `docs/tasks/Phase5-fast-judge-side-path/Execution_Report.md` and `docs/tasks/Phase5-fast-judge-side-path/evidence/r5-phase5-follow-up.json`; all pre-existing untracked drift remains outside the commits.
+The three final SHA outputs are required to be equal. The residual Tested→remote path must contain only `docs/tasks/Phase5-fast-judge-side-path/Execution_Report.md` and `docs/tasks/Phase5-fast-judge-side-path/evidence/r5-phase5-follow-up.json`; all pre-existing untracked drift remains outside the commits.
