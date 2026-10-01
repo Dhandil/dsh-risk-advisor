@@ -2,7 +2,7 @@
 
 ## Handoff
 
-`PHASE4_REPAIR_PUBLISHED_READY_FOR_REVIEW`
+`PHASE4_FINAL_REPAIR_PUBLISHED_READY_FOR_REVIEW`
 
 This is a Codex implementation handoff. Final acceptance remains with ChatGPT Web. No Acceptance Report was generated and Phase 4 was not self-declared accepted.
 
@@ -11,6 +11,7 @@ This is a Codex implementation handoff. Final acceptance remains with ChatGPT We
 - Repository: `Dhandil/dsh-risk-advisor`, branch `main`.
 - Original Phase-4 implementation start SHA: `daed3eca6bff9352c41d15ad296ff69732be23e6`.
 - Repair start SHA: `0cb216dd163eb93e9e9f783d01e71d4c43938d30`; confirmed as the requested `origin/main` baseline before repair.
+- Final scanner repair start SHA: `78ce18b5991094db48b89bb52097ee39c95d52cd`; confirmed as the requested `origin/main` baseline before F5–F6 repair.
 - Preflight publication checkpoint: `4e87d52663460d441955125974cc93422328c76c`.
 - Architecture Freeze checkpoint: `55566056952454286c00133ab891f173e24137ab`.
 - Implementation Instructions checkpoint/start: `daed3eca6bff9352c41d15ad296ff69732be23e6`.
@@ -180,13 +181,48 @@ Exactly one fresh complete `pnpm test` was run against that SHA and passed:
 - Provider/model calls: 0; external product/network calls: 0; deployed Browser/profile runs: 0.
 - Real destructive filesystem/shell effects: 0; Harness Core mutations: 0; Native Approval changes: 0; Phase-5+ implementation: 0.
 
+## Final Scanner Repair F5–F6
+
+The final scanner repair remained inside the frozen Phase-4 Rule Engine and added no RuleFinding code.
+
+- **F5 segment-local, target-role-aware system mutation:** deterministic shell findings are accumulated per segment. `SYSTEM_LOCATION_MUTATION` is now derived only from a recognized filesystem mutation action and its closed target operands (`rm`/PowerShell recursive delete or access-control mutation). Global findings from an earlier segment cannot contaminate `echo`, Git remote operands, package source operands, service/registry data, or network arguments. Cross-segment and package-source negatives, plus absolute `/etc` mutation positives, are covered.
+- **F6 pipeline and wrapper fail-closed behavior:** pipeline RHS metadata is retained; a pipeline into `bash`, `sh`, `powershell`, `pwsh`, `python`, `perl`, or `node` emits the existing `SHELL_DYNAMIC_EXECUTION` and degrades status/confidence without inspecting piped content. A bounded wrapper policy handles literal nested commands for `env`, `command`, `exec`, `xargs`, `sudo`, and `doas`; wrapper semantics degrade, unknown privilege options degrade without guessing, and nested destructive findings remain visible. No external parser or execution was introduced.
+
+Final scanner focused coverage passed: **2 files / 17 tests**. It covers all six F5 required cases, pipeline-to-interpreter cases, `env`/`command`/`exec`/`xargs`, `sudo -u`, `doas -u`, unsupported wrapper options, nested destructive-fact preservation, and no-new-finding-code proof by static matrix audit.
+
+Affected inherited suites passed again:
+
+| Suite | Files | Tests |
+| --- | ---: | ---: |
+| Phase 1A foundation/correlation | 2 | 13 |
+| R2 correlation | 2 | 16 |
+| R4 ledger | 2 | 21 |
+| Phase 2 | 2 | 15 |
+| Phase 3 | 2 | 17 |
+
+All final pre-Full gates passed: typecheck, build, Host export, Client loader, declaration/root-export, pack dry-run (21 files), diff-check, scope, privacy/secret-retention, and Harness mutation=0. The `phase4-v1` finding matrix is unchanged; no new public code/category/severity/hardness was added.
+
+Final scanner repair executable/Tested SHA:
+
+`f2582981767e1892a72314fe931ff7562c7b1899`
+
+Exactly one fresh complete `pnpm test` was run against that SHA and passed:
+
+- **20 test files / 150 tests passed**.
+- Provider/model calls: 0; external product/network calls: 0; deployed Browser/profile runs: 0.
+- Real destructive filesystem/shell effects: 0; Harness Core mutations: 0; Native Approval changes: 0; Phase-5+ implementation: 0.
+
+No executable, test, configuration, package, or dependency semantic change was made after this Full run. Only this report documentation may change.
+
 ## Publication verification
 
 - Historical original Tested SHA: `dbf6f075b1509b8975a0b4096af4231e7ebf3591`.
-- Current repair Tested SHA: `8707cee500d720d0a426333eec5dfc774b6513af`.
+- Historical F1–F4 repair Tested SHA: `8707cee500d720d0a426333eec5dfc774b6513af`.
+- Current final scanner repair Tested SHA: `f2582981767e1892a72314fe931ff7562c7b1899`.
 - Historical original report-only remote SHA: `66a2d36e090e8b3f1c897e2c48abeecc213000cf`.
+- Historical F1–F4 repair report-only remote SHA: `dc2e30ee4113136d70b91c72615699db491594f3`.
 - The final report-only remote SHA is the docs-only publication commit created after this report; its exact value and `HEAD == origin/main == git ls-remote` equality are recorded in the completion handoff because a commit cannot contain its own final SHA.
-- The repair Tested SHA → final report-only delta is restricted to `docs/tasks/Phase4-rule-engine/Execution_Report.md`; no executable, test, package, dependency, or configuration semantic change is included.
+- The final scanner repair Tested SHA → final report-only delta is restricted to `docs/tasks/Phase4-rule-engine/Execution_Report.md`; no executable, test, package, dependency, or configuration semantic change is included.
 
 ## Inherited open and not-run boundaries preserved
 
