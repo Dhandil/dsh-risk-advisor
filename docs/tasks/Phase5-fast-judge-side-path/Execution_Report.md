@@ -10,10 +10,11 @@ This is an implementation handoff only. Final repository review is external to C
 
 | Item | SHA / value |
 |---|---|
-| Plugin start / frozen remote baseline | `99434f262276aef6d0805b19825ef67489db23c9` |
-| Required remote commit present | `99434f262276aef6d0805b19825ef67489db23c9` |
+| Historical Phase 5 implementation start / frozen remote baseline | `99434f262276aef6d0805b19825ef67489db23c9` |
+| Final repair start / required remote commit present | `d5ab0183c9637dd2274af85e20fb167f6099da49` |
 | Harness checkout used read-only | `ddefc45fbc7f8e46dd73185e68295696d1297887` |
-| Executable/Tested SHA | `b32d4dbb612dbbf7dabee6e0254b01a44083a0c1` |
+| Historical Phase 5 implementation Tested SHA | `b32d4dbb612dbbf7dabee6e0254b01a44083a0c1` |
+| Final repair executable/Tested SHA | `bcb07deb2f86344ec2f27c2cf70f9dde02c42b4e` |
 | Final remote SHA | Verified after the report-only publication with `git rev-parse HEAD`, `git rev-parse origin/main`, and `git ls-remote origin refs/heads/main`; all three values were equal. |
 
 The final remote hash is deliberately verified by the final publication command rather than copied into this report, because this report is itself part of the final commit tree. The command output is the authoritative post-publication value.
@@ -30,13 +31,21 @@ Implemented only the frozen Phase 5 bounded side path:
 - `src/host/assessment-aggregator.ts` — pure P0–P9 recommendation aggregation.
 - `src/host/fast-judge.ts` — fixed prompt, direct `ctx.llm.stream()` invocation, strict parser and finite scheduler.
 - `src/host/assessment-envelope.ts` / `src/index.ts` — BOUND lifecycle integration, optional capability wiring, A1/A2 diagnostics and generation fencing.
-- `tests/p5-fast-judge.unit.spec.ts` and `tests/p5-runtime.integration.spec.ts` — focused redaction, parser, aggregator, structural gate and real pinned LLM seam proofs.
+- `tests/p5-fast-judge.unit.spec.ts`, `tests/p5-repair.unit.spec.ts`, `tests/p5-lifecycle.integration.spec.ts`, and `tests/p5-runtime.integration.spec.ts` — focused redaction, parser, aggregator, lifecycle/security, structural gate and real pinned LLM seam proofs.
 - `benchmarks/r5-phase5.mjs`, `tests/r5-phase5-benchmark-smoke.spec.ts`, `tests/r5-phase5-benchmark-full.spec.ts` — distinct local Phase-5 R5 follow-up.
 - `evidence/r5-phase5-follow-up.json` — bounded local measurement evidence only.
 
 The existing `lib/`, `node_modules/`, `pnpm-lock.yaml`, `.vitest-cache/`, `docs/risk-advisor-current/`, and prior repair-document drift were preserved unmodified and excluded from the commits.
 
 ## Frozen architecture mapping
+
+## Final Repair F1–F5
+
+- F1 now uses exact closed adapters only (`read`, `write`, `edit`, `bash`, `pwsh`, `web_fetch`, `web_search`), requires operation-kind agreement, reads plain/null-prototype argument objects through own data descriptors, rejects accessors and arbitrary aliases, and fails credential-bearing malformed URLs closed.
+- F2 now keeps deletion/configuration/permission/code facts deterministic and narrowly mapped, maps every retained finding basis to an existing RiskFeature, preserves escalation/repeated-failure policy flags, and projects positive-proof false placeholders as `UNKNOWN / NOT_PROVEN` for Judge input.
+- F3 constructs local deterministic A1 before reviewer serialization. Reviewer payload failure/redaction degradation leaves A1 readable and skips Judge; successful Phase-5 BOUND records no longer retain `ASSESSOR_NOT_IMPLEMENTED`, while genuine P1B-only records retain it.
+- F4 validates duplicate JSON object keys recursively with string-aware parsing before `JSON.parse`, preserves strict schema/8192-character limits, and rechecks bounds after redaction.
+- F5 adds expanded focused and real pinned `ctx.llm.stream()` lifecycle evidence for source/privacy caps, route/eligibility, stream rejection, scheduler saturation/cancellation/timeout, decision/dispose/HMR fencing, identity isolation, duplicate asked events, and Native Approval non-interference.
 
 - The existing exact-live capture chain remains the only capture path: foundation → failure-chain → Phase 4 rules → redacted reviewer seed.
 - A deterministic A1 is synchronously created for every exact BOUND approval when the Phase 1–4 diagnostics are available. A1 uses the existing assessment identity and remains the latest artifact until a valid A2 exists.
@@ -51,7 +60,7 @@ The existing `lib/`, `node_modules/`, `pnpm-lock.yaml`, `.vitest-cache/`, `docs/
 
 | Gate | Result |
 |---|---|
-| Phase 5 focused (`pnpm test:p5`) | PASS — 2 files, 5 tests |
+| Phase 5 focused (`pnpm test:p5`) | PASS — 4 files, 23 tests |
 | Phase 4 regression (`pnpm test:p4`) | PASS — 2 files, 17 tests |
 | Phase 3 regression (`pnpm test:p3`) | PASS — 2 files, 17 tests |
 | Phase 2 regression (`pnpm test:p2`) | PASS — 2 files, 15 tests |
@@ -66,7 +75,7 @@ The existing `lib/`, `node_modules/`, `pnpm-lock.yaml`, `.vitest-cache/`, `docs/
 | Pack gate (`pnpm pack --dry-run --json`) | PASS; package contains only declared bundles, declarations, package metadata and README |
 | Diff/privacy/scope gate | PASS; `git diff --check`, pinned Harness read-only SHA, no production deprecated Session readers, no child process/CLI/subagent/network fixture |
 | Phase 5 R5 smoke (`pnpm run bench:r5:p5:smoke`) | PASS — 1 file, 1 test |
-| Phase 5 R5 full (`pnpm run bench:r5:p5`) | PASS — 1 file, 1 test, 32 local samples |
+| Phase 5 R5 full (`pnpm run bench:r5:p5`) | PASS — 1 file, 1 test, 32 local samples; `LOCAL_MOCK_ONLY` |
 
 ## Real seam and Native Approval proof
 
@@ -76,7 +85,7 @@ Native Approval is not awaited, answered, rejected, or modified by Phase 5. The 
 
 ## Privacy and trust proof
 
-- The redactor covers the frozen secret vocabulary, bounded URL/userinfo/query forms and is idempotence-tested.
+- The redactor covers the frozen secret vocabulary, bounded URL/userinfo/query forms, malformed credential-bearing URL fail-closed behavior, and idempotence-tested output.
 - Seeds use only allowlisted read/write/edit path, shell command/workdir, web-fetch URL, and bounded web-search queries. Write/edit content and approval justification are excluded.
 - Direct user input is observed only from committed `user/message` events with `source.kind === 'user'`, capped at four messages/eight thousand characters, and SecretRedacted before context construction.
 - Rationale, proposed facts, and model alternative strings are SecretRedacted before storage. Proposed facts remain `HYPOTHESIS`; no hypothesis becomes a feature or hard fact.
@@ -90,14 +99,14 @@ All measurements are labeled `LOCAL_MOCK_ONLY`. Real provider/model latency is `
 
 ## Fresh complete regression provenance
 
-The exact command was run once after the executable commit and before this report-only change:
+The exact command was run once after the final repair executable commit and before this report-only change:
 
 ```text
 git rev-parse HEAD
 pnpm test
 ```
 
-The first line was `b32d4dbb612dbbf7dabee6e0254b01a44083a0c1`. The complete chain passed 12 test commands, 23 test files, and 155 tests. The R1 fixture intentionally emits expected fault logs while its tests pass; there were no failed tests.
+The first line was `bcb07deb2f86344ec2f27c2cf70f9dde02c42b4e`. The complete chain passed 12 test commands, 25 test files, and 173 tests. The R1 fixture intentionally emits expected fault logs while its tests pass; there were no failed tests.
 
 No executable, test, configuration or package semantic changes were made after this Full. The only post-Full additions are this report and the declared bounded benchmark evidence.
 
@@ -107,13 +116,13 @@ The following remain open without promotion: F-006 PARTIAL; F-013 PARTIAL; guard
 
 ## Tested-to-remote proof
 
-The executable commit is `b32d4dbb612dbbf7dabee6e0254b01a44083a0c1`. After the report/evidence commit was pushed, the following exact commands were run:
+The historical executable commit is `b32d4dbb612dbbf7dabee6e0254b01a44083a0c1`; the final repair executable commit is `bcb07deb2f86344ec2f27c2cf70f9dde02c42b4e`. After the final report/evidence commit is pushed, the following exact commands are run:
 
 ```text
 git rev-parse HEAD
 git rev-parse origin/main
 git ls-remote origin refs/heads/main
-git diff --name-only b32d4dbb612dbbf7dabee6e0254b01a44083a0c1 HEAD
+git diff --name-only bcb07deb2f86344ec2f27c2cf70f9dde02c42b4e HEAD
 ```
 
-The three SHA outputs were equal. The Tested→remote path contained only `docs/tasks/Phase5-fast-judge-side-path/Execution_Report.md` and `docs/tasks/Phase5-fast-judge-side-path/evidence/r5-phase5-follow-up.json`; all pre-existing untracked drift remained outside the commits.
+The three final SHA outputs are required to be equal. The final Tested→remote path must contain only `docs/tasks/Phase5-fast-judge-side-path/Execution_Report.md` and `docs/tasks/Phase5-fast-judge-side-path/evidence/r5-phase5-follow-up.json`; all pre-existing untracked drift remains outside the commits.

@@ -20,6 +20,14 @@
     "saturationFailure": "JUDGE_QUEUE_SATURATED"
   },
   "nativeApproval": { "outcome": "allowed-once", "answerers": 1, "sessionEvents": "NOT_READ" },
+  "repairFollowUp": {
+    "scope": "F1-F5",
+    "focusedPhase5": { "files": 4, "tests": 23 },
+    "smoke": "PASS",
+    "full": "PASS",
+    "samples": 32,
+    "measurementClaim": "bounded local mock evidence only"
+  },
   "labels": {
     "evidence": "LOCAL_MOCK_ONLY",
     "providerLatency": "REAL_PROVIDER_NOT_RUN",
