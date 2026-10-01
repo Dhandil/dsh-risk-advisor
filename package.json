@@ -52,7 +52,7 @@
     "test:p2": "vitest run tests/p2-explicit-failure.unit.spec.ts tests/p2-runtime.integration.spec.ts",
     "test:p3": "vitest run tests/p3-retry-escalation.unit.spec.ts tests/p3-runtime.integration.spec.ts",
     "test:p4": "vitest run tests/p4-rule-engine.unit.spec.ts tests/p4-runtime.integration.spec.ts",
-    "test:p5": "vitest run tests/p5-fast-judge.unit.spec.ts tests/p5-runtime.integration.spec.ts",
+    "test:p5": "vitest run tests/p5-fast-judge.unit.spec.ts tests/p5-repair.unit.spec.ts tests/p5-runtime.integration.spec.ts tests/p5-lifecycle.integration.spec.ts",
     "bench:r5:smoke": "pnpm run build && vitest run --config vitest.config.ts tests/r5-benchmark-smoke.spec.ts",
     "bench:r5": "pnpm run build && vitest run --config vitest.config.ts tests/r5-benchmark-full.spec.ts",
     "bench:r5:p5:smoke": "pnpm run build && vitest run --config vitest.config.ts tests/r5-phase5-benchmark-smoke.spec.ts",

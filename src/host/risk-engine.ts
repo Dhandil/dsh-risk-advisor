@@ -32,6 +32,25 @@ export interface RiskFeatureSet {
   readonly features: readonly RiskFeature[]
 }
 
+export interface JudgeFeatureView {
+  readonly id: string
+  readonly value: FeatureValue
+  readonly qualification?: 'NOT_PROVEN'
+}
+
+const POSITIVE_PROOF_FALSE_FEATURES = new Set([
+  'scope.outsideWorkspace',
+  'scope.systemScope',
+  'recovery.checkpointAvailable',
+  'recovery.rollbackMechanismKnown',
+])
+
+export function projectJudgeFeatures(features: RiskFeatureSet): readonly JudgeFeatureView[] {
+  return Object.freeze(features.features.map(feature => feature.value === false && POSITIVE_PROOF_FALSE_FEATURES.has(feature.id)
+    ? Object.freeze({ id: feature.id, value: 'unknown' as const, qualification: 'NOT_PROVEN' as const })
+    : Object.freeze({ id: feature.id, value: feature.value })))
+}
+
 export interface RiskContextSnapshot {
   readonly schemaVersion: 1
   readonly contextId: string
@@ -135,12 +154,13 @@ export function projectRiskFeatures(input: RiskEngineInput): RiskFeatureSet {
   const number = (id: string, value: number): RiskFeature => ({ id, value, source: 'DETERMINISTIC', strength: 'DETERMINISTIC' })
   const features: RiskFeature[] = []
   features.push(bool('operation.mutatesState', input.ruleEvaluation.mutating))
-  features.push(bool('operation.deletesState', hasCategory(findings, 'destructive') ? true : knownNonMutating(input.ruleEvaluation) ? false : 'unknown'))
-  features.push(bool('operation.executesCode', input.ruleEvaluation.operationKind === 'shell'))
+  features.push(bool('operation.deletesState', hasAnyId(findings, ['DESTRUCTIVE_RECURSIVE_DELETE', 'DESTRUCTIVE_DISK_WIPE', 'DESTRUCTIVE_GIT_CLEAN']) ? true : knownNonMutating(input.ruleEvaluation) ? false : 'unknown'))
+  features.push(bool('operation.executesCode', input.ruleEvaluation.operationKind === 'shell' ? true : knownOperationKind(input.ruleEvaluation.operationKind) ? false : 'unknown'))
+  features.push(bool('operation.kindKnown', input.ruleEvaluation.operationKind !== 'unknown'))
   features.push(bool('operation.installsSoftware', hasId(findings, 'INSTALL_PACKAGE_MUTATION') ? true : knownNonMutating(input.ruleEvaluation) ? false : 'unknown'))
-  features.push(bool('operation.changesConfiguration', hasCategory(findings, 'system-change') ? true : 'unknown'))
+  features.push(bool('operation.changesConfiguration', hasAnyId(findings, ['SYSTEM_REGISTRY_MUTATION', 'SYSTEM_SERVICE_MUTATION']) ? true : 'unknown'))
   features.push(bool('operation.accessesCredentials', hasCategory(findings, 'credential') ? true : 'unknown'))
-  features.push(bool('operation.changesPermissions', hasCategory(findings, 'permission') ? true : 'unknown'))
+  features.push(bool('operation.changesPermissions', hasId(findings, 'PERMISSION_ACCESS_CONTROL_MUTATION') ? true : knownNonMutating(input.ruleEvaluation) ? false : 'unknown'))
   features.push(bool('operation.networkEgress', input.ruleEvaluation.networkEffect === 'none' ? false : input.ruleEvaluation.externalEffect === true ? true : 'unknown'))
   features.push(bool('operation.remoteWrite', input.ruleEvaluation.networkEffect === 'write' || hasId(findings, 'NETWORK_EXTERNAL_WRITE') ? true : input.ruleEvaluation.networkEffect === 'none' || input.ruleEvaluation.networkEffect === 'read' ? false : 'unknown'))
   const networkWrite = (input.ruleEvaluation.networkEffect as string) === 'write'
@@ -165,7 +185,7 @@ export function projectRiskFeatures(input: RiskEngineInput): RiskFeatureSet {
   features.push(bool('authorization.operationGoalRelationKnown', false))
   features.push(bool('authorization.explicitGrantPresent', false))
   features.push(bool('authorization.explicitDenialPresent', false))
-  features.push({ id: 'authorization.grantSource', value: 'unknown', source: 'DETERMINISTIC', strength: 'DETERMINISTIC' })
+  features.push({ id: 'authorization.grantSource', value: 'none', source: 'DETERMINISTIC', strength: 'DETERMINISTIC' })
   features.push(bool('authorization.agentJustificationPresent', false))
   features.push(bool('privilege.minimumScopeEvidenceAvailable', false))
   features.push({ id: 'privilege.requestedScope', value: requestedScope(input.seed?.requestedPermission), source: 'DETERMINISTIC', strength: 'DETERMINISTIC' })
@@ -269,10 +289,10 @@ function deterministicDimensions(context: RiskContextSnapshot) {
   const risk: RiskVerdict = findings.some(item => item.severity === 'critical') ? 'CRITICAL' : findings.some(item => item.severity === 'high') ? 'HIGH' : findings.some(item => item.category === 'unknown-tool' || item.category === 'shell-ambiguity') ? 'UNKNOWN' : findings.some(item => item.severity === 'medium') ? 'MEDIUM' : context.ruleEvaluation.status === 'READY' && context.ruleEvaluation.parserConfidence === 'high' && context.ruleEvaluation.operationKind !== 'unknown' && context.ruleEvaluation.mutating !== 'unknown' && context.ruleEvaluation.externalEffect !== 'unknown' && context.ruleEvaluation.networkEffect !== 'unknown' ? 'LOW' : 'UNKNOWN'
   const evidenceQuality: EvidenceQualityVerdict = context.degraded ? 'LOW' : 'MEDIUM'
   return {
-    risk: dimension('RISK', risk, risk === 'UNKNOWN' ? 'UNKNOWN' : 'RULE', evidenceQuality, featureIdsForRisk(context), risk === 'UNKNOWN' ? ['RISK_SEMANTICS_UNRESOLVED'] : ['DETERMINISTIC_RULE_EVALUATION'], risk === 'UNKNOWN' ? 'Deterministic operation semantics remain incomplete.' : 'Risk verdict derives from accepted deterministic findings.'),
+    risk: dimension('RISK', risk, risk === 'UNKNOWN' ? 'UNKNOWN' : 'RULE', evidenceQuality, featureIdsForRisk(context), [...(risk === 'UNKNOWN' ? ['RISK_SEMANTICS_UNRESOLVED'] : ['DETERMINISTIC_RULE_EVALUATION']), ...historyReasonCodes(context)], risk === 'UNKNOWN' ? 'Deterministic operation semantics remain incomplete.' : 'Risk verdict derives from accepted deterministic findings.'),
     authorization: dimension('AUTHORIZATION', 'UNKNOWN', 'UNKNOWN', evidenceQuality, ['authorization.goalKnown'], ['AUTHORIZATION_SEMANTICS_UNRESOLVED'], 'Authorization relation is not proven by deterministic Phase 5 facts.'),
     necessity: dimension('NECESSITY', 'UNKNOWN', 'UNKNOWN', evidenceQuality, ['authorization.goalKnown'], ['NECESSITY_UNRESOLVED'], 'Necessity is not proven by retry or failure history alone.'),
-    privilege: dimension('PRIVILEGE', 'UNKNOWN', 'UNKNOWN', evidenceQuality, ['privilege.minimumScopeEvidenceAvailable'], ['MINIMUM_PRIVILEGE_UNRESOLVED'], 'Minimum required authority is not available in Phase 5.'),
+    privilege: dimension('PRIVILEGE', 'UNKNOWN', 'UNKNOWN', evidenceQuality, ['privilege.minimumScopeEvidenceAvailable'], ['MINIMUM_PRIVILEGE_UNRESOLVED', ...escalationReasonCodes(context)], 'Minimum required authority is not available in Phase 5.'),
     alternatives: dimension('ALTERNATIVES', 'NO_KNOWN_SAFER_ALTERNATIVE', 'RULE', evidenceQuality, [], ['NO_VERIFIED_ALTERNATIVE'], 'No deterministic verified safer alternative is registered in Phase 5.'),
     evidenceQuality: dimension('EVIDENCE_QUALITY', evidenceQuality, 'RULE', evidenceQuality, evidenceFeatureIds(context), evidenceQuality === 'LOW' ? ['STRUCTURAL_DEGRADATION'] : ['PHASE5_EVIDENCE_CAP'], evidenceQuality === 'LOW' ? 'Local evidence structure is degraded.' : 'Evidence quality is deterministic and capped before later evidence phases.'),
   } as const
@@ -334,14 +354,38 @@ function evidenceSummary(context: RiskContextSnapshot, dimensions: { readonly ri
 function findingDimension(finding: RuleFinding): DimensionName {
   return finding.category === 'permission' ? 'PRIVILEGE' : finding.category === 'workspace-boundary' || finding.category === 'path-alias' || finding.category === 'shell-ambiguity' || finding.category === 'unknown-tool' || finding.category === 'reversibility' ? 'EVIDENCE_QUALITY' : 'RISK'
 }
-function featureIdsForFinding(finding: RuleFinding): string[] { return [`rule.${finding.id}`] }
+function featureIdsForFinding(finding: RuleFinding): string[] {
+  if (finding.category === 'permission') return finding.id === 'PERMISSION_ESCALATION_RETRY'
+    ? ['privilege.privilegeEscalation']
+    : finding.id === 'PERMISSION_ACCESS_CONTROL_MUTATION'
+      ? ['operation.changesPermissions']
+      : ['privilege.requestedScope']
+  if (finding.category === 'destructive') return ['operation.deletesState', 'operation.persistentEffect']
+  if (finding.category === 'system-change') return ['operation.changesConfiguration', 'scope.systemScope']
+  if (finding.category === 'credential') return ['operation.accessesCredentials']
+  if (finding.category === 'network') return ['operation.networkEgress']
+  if (finding.category === 'install') return ['operation.installsSoftware']
+  if (finding.category === 'reversibility') return ['recovery.reversible']
+  if (finding.category === 'shell-ambiguity') return ['operation.executesCode', 'operation.kindKnown']
+  if (finding.category === 'unknown-tool') return ['operation.kindKnown']
+  if (finding.category === 'path-alias' || finding.category === 'workspace-boundary') return ['scope.canonicalTargetsKnown']
+  return []
+}
 function featureIdsForRisk(context: RiskContextSnapshot): string[] { return context.features.features.filter(item => item.id.startsWith('operation.') || item.id.startsWith('scope.')).slice(0, 24).map(item => item.id) }
 function evidenceFeatureIds(context: RiskContextSnapshot): string[] { return context.features.features.filter(item => item.id.startsWith('scope.') || item.id.startsWith('recovery.')).map(item => item.id) }
 function hasCategory(findings: readonly RuleFinding[], category: RuleFinding['category']): boolean { return findings.some(item => item.category === category) }
 function hasId(findings: readonly RuleFinding[], id: string): boolean { return findings.some(item => item.id === id) }
+function hasAnyId(findings: readonly RuleFinding[], ids: readonly string[]): boolean { return ids.some(id => hasId(findings, id)) }
 function knownNonMutating(evaluation: RuleEvaluation): boolean { return evaluation.mutating === false }
+function knownOperationKind(kind: RuleEvaluation['operationKind']): boolean { return kind !== 'unknown' }
 function positiveScope(targetScope: FoundationDiagnostic['boundary']['targetScope'], expected: 'workspace'): boolean { return targetScope !== 'unknown' && targetScope !== expected }
 function requestedScope(permission: ReviewerOperationSeed['requestedPermission']): FeatureValue { return permission === 'workspace-write' ? 'workspace' : permission === 'danger-full-access' ? 'unrestricted' : 'unknown' }
+function historyReasonCodes(context: RiskContextSnapshot): readonly string[] {
+  return context.failureSummary.retryCount > 0 || context.failureSummary.recentFailureCount > 0 ? ['REPEATED_FAILURE', 'FAILURE_HISTORY'] : []
+}
+function escalationReasonCodes(context: RiskContextSnapshot): readonly string[] {
+  return context.failureSummary.permissionEscalation === true ? ['PERMISSION_ESCALATION_RETRY', 'REPEATED_ESCALATION'] : []
+}
 
 function deepFreeze<T>(value: T): T {
   if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return value

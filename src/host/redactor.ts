@@ -52,9 +52,15 @@ function redactCredentialUrls(value: string): string {
       }
       return changed ? url.toString() : raw
     } catch {
-      // A malformed URL is still data. The URL parser is not allowed to turn
-      // a redaction error into an unsafe retained value.
+      // A malformed credential-bearing URL is not safe to retain. The caller
+      // fails closed and omits the affected seed/Judge field.
+      if (hasCredentialMaterial(raw)) throw new TypeError('malformed credential-bearing URL')
       return raw
     }
-})
+  })
+}
+
+function hasCredentialMaterial(value: string): boolean {
+  return /https?:\/\/[^\s<>"]+:[^\s@<>]*@/i.test(value)
+    || /[?&](?:token|key|secret|password|credential|auth|api[_-]?key)=/i.test(value)
 }

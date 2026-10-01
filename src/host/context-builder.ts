@@ -4,7 +4,7 @@ import type { FoundationDiagnostic } from './operation-foundation.ts'
 import type { LedgerDiagnostics, LedgerHealth } from './ledger.ts'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { DirectUserRing, ReviewerOperationSeed } from './reviewer-seed.ts'
-import { buildRiskContext, type RiskContextSnapshot } from './risk-engine.ts'
+import { buildRiskContext, projectJudgeFeatures, type JudgeFeatureView, type RiskContextSnapshot } from './risk-engine.ts'
 
 export const PHASE5_CONTEXT_VERSION = 'phase5-context-v1' as const
 export const MAX_REVIEWER_PAYLOAD_CHARS = 24_000
@@ -33,7 +33,7 @@ export interface ReviewerPayload {
     readonly truncated: boolean
   }
   readonly directUser: { readonly messages: readonly string[]; readonly historyOmitted: boolean }
-  readonly features: readonly { readonly id: string; readonly value: unknown }[]
+  readonly features: readonly JudgeFeatureView[]
   readonly ledger: { readonly health: LedgerHealth; readonly sourceComplete: boolean; readonly truncated: boolean; readonly issueCodes: readonly string[] }
   readonly degraded: boolean
   readonly omissionFlags: readonly string[]
@@ -41,11 +41,30 @@ export interface ReviewerPayload {
 
 export interface BuiltPhase5Context {
   readonly snapshot: RiskContextSnapshot
-  readonly payload: ReviewerPayload
-  readonly serializedPayload: string
+  readonly payload?: ReviewerPayload
+  readonly serializedPayload?: string
+  readonly reviewerFailure?: 'CONTEXT_DEGRADED'
 }
 
 export function buildPhase5Context(input: ContextBuilderInput): BuiltPhase5Context {
+  const local = buildLocalPhase5Context(input)
+  try {
+    const reviewer = buildReviewerPayload(input, local)
+    return Object.freeze({ snapshot: local.snapshot, ...reviewer })
+  } catch {
+    // Local A1 construction must remain independent of reviewer egress.
+    return Object.freeze({ snapshot: local.snapshot, reviewerFailure: 'CONTEXT_DEGRADED' as const })
+  }
+}
+
+export interface LocalPhase5Context {
+  readonly snapshot: RiskContextSnapshot
+  readonly directUser: ReturnType<DirectUserRing['snapshot']>
+  readonly ledger: RiskContextSnapshot['ledger']
+  readonly omissionFlags: readonly string[]
+}
+
+export function buildLocalPhase5Context(input: ContextBuilderInput): LocalPhase5Context {
   const directUser = input.userRing.snapshot(input.session)
   const ledger = readLedger(input.ledger, input.session)
   const snapshot = buildRiskContext({
@@ -65,20 +84,24 @@ export function buildPhase5Context(input: ContextBuilderInput): BuiltPhase5Conte
     ...(ledger.truncated ? ['LEDGER_TRUNCATED'] : []),
     ...(ledger.health === 'DEGRADED' ? ['LEDGER_DEGRADED'] : []),
   ]
+  return Object.freeze({ snapshot, directUser, ledger, omissionFlags: Object.freeze(omissionFlags) })
+}
+
+export function buildReviewerPayload(input: ContextBuilderInput, local: LocalPhase5Context): { readonly payload: ReviewerPayload; readonly serializedPayload: string } {
   const payload: ReviewerPayload = {
     schemaVersion: 1,
     contextBuilderVersion: PHASE5_CONTEXT_VERSION,
     operation: input.seed ?? { unavailable: true },
     deterministicFindings: Object.freeze(input.ruleEvaluation.findings.slice(0, 32).map(item => ({ id: item.id, severity: item.severity, category: item.category, summary: item.summary }))),
     failure: Object.freeze({ retryCount: input.failureSummary.retryCount, recentFailureCount: input.failureSummary.recentFailureCount, sameRootCause: input.failureSummary.sameRootCause, permissionEscalation: input.failureSummary.permissionEscalation, truncated: input.failureSummary.truncated }),
-    directUser: Object.freeze({ messages: Object.freeze([...directUser.messages]), historyOmitted: directUser.historyOmitted }),
-    features: Object.freeze(snapshot.features.features.map(item => ({ id: item.id, value: item.value }))),
-    ledger: Object.freeze({ health: ledger.health, sourceComplete: ledger.sourceComplete, truncated: ledger.truncated, issueCodes: Object.freeze([...ledger.issueCodes].slice(0, 16)) }),
-    degraded: snapshot.degraded,
-    omissionFlags: Object.freeze(omissionFlags),
+    directUser: Object.freeze({ messages: Object.freeze([...local.directUser.messages]), historyOmitted: local.directUser.historyOmitted }),
+    features: projectJudgeFeatures(local.snapshot.features),
+    ledger: Object.freeze({ health: local.ledger.health, sourceComplete: local.ledger.sourceComplete, truncated: local.ledger.truncated, issueCodes: Object.freeze([...local.ledger.issueCodes].slice(0, 16)) }),
+    degraded: local.snapshot.degraded,
+    omissionFlags: local.omissionFlags,
   }
   const bounded = boundPayload(payload)
-  return Object.freeze({ snapshot, payload: bounded.payload, serializedPayload: bounded.serialized })
+  return Object.freeze({ payload: bounded.payload, serializedPayload: bounded.serialized })
 }
 
 function readLedger(ledger: LedgerDiagnostics | undefined, session: Session): RiskContextSnapshot['ledger'] {

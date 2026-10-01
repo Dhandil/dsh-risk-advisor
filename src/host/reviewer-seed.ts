@@ -49,8 +49,10 @@ export function captureReviewerSeed(
   redactor = new SecretRedactor(),
 ): ReviewerSeedCapture {
   let redactionFailed = false
+  const rawToolName = ownDataString(exec as unknown, 'name')
+  const safeToolName = sanitizeToolIdentity(rawToolName)
   const operationKind = evaluation.operationKind
-  const extracted = allowlistedOperationFields(exec.name, exec.arguments, operationKind)
+  const extracted = allowlistedOperationFields(safeToolName, ownDataValue(exec as unknown, 'arguments'), operationKind)
   const operationText = extracted.operationText === undefined
     ? undefined
     : redactBounded(extracted.operationText, TOOL_TEXT_LIMIT, redactor, () => { redactionFailed = true })
@@ -58,10 +60,10 @@ export function captureReviewerSeed(
     .slice(0, MAX_RESOURCES)
     .map(item => redactBounded(item, RESOURCE_LIMIT, redactor, () => { redactionFailed = true }))
     .filter((item): item is string => item !== undefined)
-  const rawToolName = bound(exec.name, TOOL_NAME_LIMIT)
-  const toolName = rawToolName.value
+  const boundedToolName = bound(safeToolName, TOOL_NAME_LIMIT)
+  const toolName = boundedToolName.value
   const total = [toolName, operationText ?? '', ...resourceHints].join('').length
-  const truncated = extracted.truncated || rawToolName.truncated || total > MAX_TOTAL_TEXT
+  const truncated = extracted.truncated || boundedToolName.truncated || total > MAX_TOTAL_TEXT
   const compactResources = truncateTotal(resourceHints, MAX_TOTAL_TEXT - toolName.length - (operationText?.length ?? 0))
   const seed: ReviewerOperationSeed = Object.freeze({
     schemaVersion: 1,
@@ -182,39 +184,43 @@ interface Extraction {
 }
 
 function allowlistedOperationFields(toolName: string, args: unknown, operationKind: RuleOperationKind): Extraction {
-  if (operationKind === 'shell' || /^(?:bash|pwsh|shell|run_shell|command|exec)$/i.test(toolName)) {
-    const command = firstString(args, ['command', 'cmd', 'script', 'shell'])
-    const workdir = firstString(args, ['workdir', 'cwd', 'working_directory'])
+  if ((toolName === 'bash' || toolName === 'pwsh') && operationKind === 'shell') {
+    const command = ownString(args, 'command')
+    const workdir = ownString(args, 'workdir')
     return { ...command === undefined ? {} : { operationText: command }, resourceHints: workdir === undefined ? [] : [workdir], truncated: command !== undefined && command.length > TOOL_TEXT_LIMIT }
   }
-  if (/^(?:read|write|edit|read_file|write_file|edit_file)$/i.test(toolName)) {
-    const path = firstString(args, ['path', 'file_path', 'filePath', 'target'])
+  if ((toolName === 'read' && operationKind === 'filesystem-read') || (toolName === 'write' && operationKind === 'filesystem-write') || (toolName === 'edit' && operationKind === 'filesystem-edit')) {
+    const path = ownString(args, 'file_path')
     return { resourceHints: path === undefined ? [] : [path], truncated: path !== undefined && path.length > RESOURCE_LIMIT }
   }
-  if (/^(?:web_fetch|fetch)$/i.test(toolName)) {
-    const url = firstString(args, ['url', 'uri'])
+  if (toolName === 'web_fetch' && operationKind === 'network-read') {
+    const url = ownString(args, 'url')
     return { ...url === undefined ? {} : { operationText: url }, resourceHints: url === undefined ? [] : [url], truncated: url !== undefined && url.length > TOOL_TEXT_LIMIT }
   }
-  if (/^(?:web_search|search)$/i.test(toolName)) {
-    const queries = firstStringArray(args, ['queries', 'query'])
+  if (toolName === 'web_search' && operationKind === 'network-read') {
+    const queries = ownStringArray(args, 'queries')
     return { resourceHints: queries.slice(0, 4), truncated: queries.length > 4 || queries.some(item => item.length > RESOURCE_LIMIT) }
   }
   return { resourceHints: [], truncated: false }
 }
 
-function firstString(value: unknown, keys: readonly string[]): string | undefined {
-  if (!isPlainObject(value)) return undefined
-  for (const key of keys) if (typeof value[key] === 'string') return value[key]
-  return undefined
+function ownString(value: unknown, key: string): string | undefined {
+  const candidate = ownDataValue(value, key)
+  return typeof candidate === 'string' ? candidate : undefined
 }
 
-function firstStringArray(value: unknown, keys: readonly string[]): string[] {
-  if (!isPlainObject(value)) return []
-  for (const key of keys) {
-    if (typeof value[key] === 'string') return [value[key]]
-    if (Array.isArray(value[key])) return value[key].filter((item): item is string => typeof item === 'string')
+function ownStringArray(value: unknown, key: string): string[] {
+  const candidate = ownDataValue(value, key)
+  if (!Array.isArray(candidate)) return []
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(candidate, 'length')
+  if (lengthDescriptor === undefined || !('value' in lengthDescriptor) || typeof lengthDescriptor.value !== 'number' || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0 || lengthDescriptor.value > 32) return []
+  const result: string[] = []
+  for (let index = 0; index < lengthDescriptor.value; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(candidate, String(index))
+    if (descriptor === undefined || !('value' in descriptor) || typeof descriptor.value !== 'string') return []
+    result.push(descriptor.value)
   }
-  return []
+  return result
 }
 
 function redactBounded(value: string | undefined, limit: number, redactor: SecretRedactor, onFailure: () => void): string | undefined {
@@ -248,6 +254,21 @@ function totalChars(values: readonly string[]): number { return values.reduce((t
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
   try { return Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null } catch { return false }
+}
+function ownDataValue(value: unknown, key: string): unknown {
+  if (!isPlainObject(value)) return undefined
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)
+    return descriptor !== undefined && 'value' in descriptor ? descriptor.value : undefined
+  } catch { return undefined }
+}
+function ownDataString(value: unknown, key: string): string | undefined {
+  const candidate = ownDataValue(value, key)
+  return typeof candidate === 'string' ? candidate : undefined
+}
+function sanitizeToolIdentity(value: string | undefined): string {
+  if (value === undefined || value.length === 0 || value.length > TOOL_NAME_LIMIT || !/^[A-Za-z0-9_.:-]+$/.test(value)) return 'unknown'
+  return value
 }
 function readNumber(value: unknown): number | undefined { return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined }
 function readSeq(event: SessionEvent): number | undefined { return readNumber((event as unknown as { seq?: unknown }).seq) }

@@ -465,8 +465,9 @@ export class ApprovalAssessmentCoordinator {
     const lookup = index.lookup(session, callId)
     const bound = lookup.status === 'FOUND'
     const executionId = bound ? lookup.executionId : undefined
+    const phase5Bound = bound && executionId !== undefined && this.phase5Available()
     const foundationDiagnostic = executionId === undefined ? undefined : this.foundation.get(executionId)
-    const reasons: AssessmentReasonCode[] = ['ASSESSOR_NOT_IMPLEMENTED']
+    const reasons: AssessmentReasonCode[] = phase5Bound ? [] : ['ASSESSOR_NOT_IMPLEMENTED']
     if (lookup.status !== 'FOUND') reasons.push(lookupReason(lookup))
     if (foundationDiagnostic !== undefined && foundationDiagnostic.status === 'DEGRADED') reasons.push('FOUNDATION_DEGRADED')
     if (foundationDiagnostic !== undefined && foundationDiagnostic.status !== 'CAPTURED' && foundationDiagnostic.status !== 'DEGRADED') reasons.push('FOUNDATION_UNAVAILABLE')
@@ -497,11 +498,12 @@ export class ApprovalAssessmentCoordinator {
     next.set(approvalId, record)
     if (byId === undefined) this.recordsBySession.set(session, next)
     this.records.add(record)
-    if (bound && executionId !== undefined && this.phase5Available()) {
+    if (phase5Bound && executionId !== undefined) {
       try {
         const built = this.buildPhase5Context(session, executionId)
         const assessment = createDeterministicAssessment(built.snapshot, assessmentId!, now)
         record.phase5 = { context: built, a1: assessment, latest: assessment, generation: 1, attempted: false, closed: false }
+        if (built.reviewerFailure !== undefined) this.addReason(record, built.reviewerFailure)
         if (this.fastJudgeConfigInvalid) this.addReason(record, 'JUDGE_CONFIG_UNAVAILABLE')
         else if (!this.fastJudgeConfig.enabled) this.addReason(record, 'JUDGE_DISABLED')
         this.scheduleJudge(record)
@@ -612,6 +614,11 @@ export class ApprovalAssessmentCoordinator {
     const phase5 = record.phase5
     if (phase5 === undefined || phase5.attempted || phase5.closed || !this.fastJudgeConfig.enabled) return
     if (this.judge === undefined || this.scheduler === undefined) return
+    if (phase5.context.payload === undefined || phase5.context.serializedPayload === undefined) {
+      this.addReason(record, 'CONTEXT_DEGRADED')
+      phase5.attempted = true
+      return
+    }
     if (phase5.latest.status === 'DEGRADED' || phase5.context.snapshot.degraded) {
       this.addReason(record, 'CONTEXT_DEGRADED')
       phase5.attempted = true

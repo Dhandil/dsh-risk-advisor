@@ -2,6 +2,7 @@ import { BlockAssembler, createUserMessage, type GenerateOptions, type LlmRuntim
 import type { Session } from '@deepseek-ai/dsh-session'
 import { SecretRedactor } from './redactor.ts'
 import type { BuiltPhase5Context } from './context-builder.ts'
+import { projectJudgeFeatures } from './risk-engine.ts'
 import type { RiskVerdict, AuthorizationVerdict, NecessityVerdict, PrivilegeVerdict } from './assessment-aggregator.ts'
 import type { RiskAssessment } from './risk-engine.ts'
 
@@ -88,7 +89,8 @@ export function requestedJudgeDimensions(context: BuiltPhase5Context, assessment
 }
 
 export function serializeJudgeData(context: BuiltPhase5Context, requested: readonly FastJudgeDimension[]): string {
-  const data = { kind: 'risk-advisor-fast-judge-data', schemaVersion: 1, requestedDimensions: requested, reviewerPayload: context.payload, knownFacts: context.snapshot.features.features, prohibitedFeatureIds: context.snapshot.features.features.filter(item => item.strength !== 'INFERRED').map(item => item.id) }
+  if (context.payload === undefined || context.serializedPayload === undefined) throw new RangeError('reviewer payload is unavailable')
+  const data = { kind: 'risk-advisor-fast-judge-data', schemaVersion: 1, requestedDimensions: requested, reviewerPayload: context.payload, knownFacts: projectJudgeFeatures(context.snapshot.features), prohibitedFeatureIds: context.snapshot.features.features.filter(item => item.strength !== 'INFERRED').map(item => item.id) }
   const serialized = JSON.stringify(data)
   if (serialized.length > 24_000) throw new RangeError('reviewer payload exceeds the frozen bound')
   return serialized
@@ -150,7 +152,8 @@ export async function executeFastJudge(
 }
 
 export function parseFastJudgeCandidate(text: string, requested: readonly FastJudgeDimension[], knownFeatureIds: ReadonlySet<string>, redactor = new SecretRedactor()): FastJudgeCandidate {
-  if (text.trim() !== text || text.startsWith('```') || text.endsWith('```')) throw new Error('strict JSON only')
+  if (text.length > 8192 || text.trim() !== text || text.startsWith('```') || text.endsWith('```')) throw new Error('strict JSON only')
+  assertNoDuplicateJsonKeys(text)
   const value: unknown = JSON.parse(text)
   if (!plain(value) || !exactKeys(value, ['schemaVersion', 'results'], ['suggestedAlternatives']) || value.schemaVersion !== 1 || !Array.isArray(value.results) || value.results.length !== requested.length || value.results.length > 4) throw new Error('invalid candidate envelope')
   const results: FastJudgeDimensionResult[] = []
@@ -164,9 +167,9 @@ export function parseFastJudgeCandidate(text: string, requested: readonly FastJu
     if (!Array.isArray(proposedFacts) || proposedFacts.length > 8) throw new Error('invalid proposed facts')
     const facts = proposedFacts.map(item => {
       if (!plain(item) || !exactKeys(item, ['statement', 'status']) || typeof item.statement !== 'string' || item.statement.length > 400 || item.status !== 'HYPOTHESIS') throw new Error('invalid proposed fact')
-      return Object.freeze({ statement: redactOrThrow(redactor, item.statement), status: 'HYPOTHESIS' as const })
+      return Object.freeze({ statement: redactOrThrowBounded(redactor, item.statement, 400), status: 'HYPOTHESIS' as const })
     })
-    results.push(Object.freeze({ dimension: raw.dimension as FastJudgeDimension, verdict: raw.verdict as never, rationale: redactOrThrow(redactor, raw.rationale), referencedFeatureIds: Object.freeze([...raw.referencedFeatureIds] as string[]), proposedFacts: Object.freeze(facts) }))
+    results.push(Object.freeze({ dimension: raw.dimension as FastJudgeDimension, verdict: raw.verdict as never, rationale: redactOrThrowBounded(redactor, raw.rationale, 1200), referencedFeatureIds: Object.freeze([...raw.referencedFeatureIds] as string[]), proposedFacts: Object.freeze(facts) }))
   }
   if (seen.size !== requested.length) throw new Error('missing requested dimension')
   let suggestedAlternatives: readonly { readonly title: string; readonly description: string }[] = Object.freeze([])
@@ -174,7 +177,7 @@ export function parseFastJudgeCandidate(text: string, requested: readonly FastJu
     if (!Array.isArray(value.suggestedAlternatives) || value.suggestedAlternatives.length > 3) throw new Error('invalid suggestions')
     suggestedAlternatives = Object.freeze(value.suggestedAlternatives.map(item => {
       if (!plain(item) || !exactKeys(item, ['title', 'description']) || typeof item.title !== 'string' || item.title.length > 160 || typeof item.description !== 'string' || item.description.length > 800) throw new Error('invalid suggestion')
-      return Object.freeze({ title: redactOrThrow(redactor, item.title), description: redactOrThrow(redactor, item.description) })
+      return Object.freeze({ title: redactOrThrowBounded(redactor, item.title, 160), description: redactOrThrowBounded(redactor, item.description, 800) })
     }))
   }
   return Object.freeze({ schemaVersion: 1, results: Object.freeze(results), suggestedAlternatives })
@@ -224,10 +227,97 @@ export class JudgeScheduler {
 }
 
 interface ScheduledJob { readonly key: string; readonly run: (signal: AbortSignal) => Promise<JudgeExecutionResult>; readonly resolve: (result: JudgeExecutionResult) => void }
-function redactOrThrow(redactor: SecretRedactor, value: string): string { return redactor.redact(value).value }
+function redactOrThrowBounded(redactor: SecretRedactor, value: string, limit: number): string {
+  const redacted = redactor.redact(value).value
+  if (redacted.length > limit) throw new RangeError('redacted Judge field exceeds its bound')
+  return redacted
+}
 function plain(value: unknown): value is Record<string, any> { if (value === null || typeof value !== 'object' || Array.isArray(value)) return false; try { const proto = Object.getPrototypeOf(value); return proto === Object.prototype || proto === null } catch { return false } }
 function exactKeys(value: Record<string, unknown>, required: readonly string[], optional: readonly string[] = []): boolean { const allowed = new Set([...required, ...optional]); const keys = Object.keys(value); return required.every(key => Object.hasOwn(value, key)) && keys.every(key => allowed.has(key)) }
 function validVerdict(dimension: FastJudgeDimension, value: unknown): boolean {
   const map: Record<FastJudgeDimension, readonly string[]> = { RISK: ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL', 'UNKNOWN'], AUTHORIZATION: ['EXPLICITLY_AUTHORIZED', 'PARTIALLY_AUTHORIZED', 'NOT_AUTHORIZED', 'EXPLICITLY_DENIED', 'UNKNOWN'], NECESSITY: ['NECESSARY', 'LIKELY_NECESSARY', 'NOT_NECESSARY', 'UNKNOWN'], PRIVILEGE: ['MINIMAL', 'PROPORTIONATE', 'EXCESSIVE', 'UNKNOWN'] }
   return typeof value === 'string' && map[dimension].includes(value)
+}
+
+function assertNoDuplicateJsonKeys(text: string): void {
+  const state = { index: 0 }
+  scanJsonValue(text, state, 0)
+  skipJsonWhitespace(text, state)
+  if (state.index !== text.length) throw new Error('trailing JSON data')
+}
+
+function scanJsonValue(text: string, state: { index: number }, depth: number): void {
+  if (depth > 32) throw new Error('JSON nesting exceeds bound')
+  skipJsonWhitespace(text, state)
+  const char = text[state.index]
+  if (char === '{') {
+    state.index += 1
+    const keys = new Set<string>()
+    skipJsonWhitespace(text, state)
+    if (text[state.index] === '}') { state.index += 1; return }
+    while (true) {
+      skipJsonWhitespace(text, state)
+      const key = scanJsonString(text, state)
+      if (keys.has(key)) throw new Error('duplicate JSON key')
+      keys.add(key)
+      skipJsonWhitespace(text, state)
+      if (text[state.index] !== ':') throw new Error('missing JSON object colon')
+      state.index += 1
+      scanJsonValue(text, state, depth + 1)
+      skipJsonWhitespace(text, state)
+      if (text[state.index] === '}') { state.index += 1; return }
+      if (text[state.index] !== ',') throw new Error('missing JSON object separator')
+      state.index += 1
+    }
+  }
+  if (char === '[') {
+    state.index += 1
+    skipJsonWhitespace(text, state)
+    if (text[state.index] === ']') { state.index += 1; return }
+    while (true) {
+      scanJsonValue(text, state, depth + 1)
+      skipJsonWhitespace(text, state)
+      if (text[state.index] === ']') { state.index += 1; return }
+      if (text[state.index] !== ',') throw new Error('missing JSON array separator')
+      state.index += 1
+    }
+  }
+  if (char === '"') { scanJsonString(text, state); return }
+  if (text.startsWith('true', state.index)) { state.index += 4; return }
+  if (text.startsWith('false', state.index)) { state.index += 5; return }
+  if (text.startsWith('null', state.index)) { state.index += 4; return }
+  const start = state.index
+  while (state.index < text.length && !/[,\]}\s]/.test(text[state.index]!)) state.index += 1
+  if (state.index === start) throw new Error('invalid JSON value')
+}
+
+function scanJsonString(text: string, state: { index: number }): string {
+  const start = state.index
+  if (text[state.index] !== '"') throw new Error('JSON object key must be a string')
+  state.index += 1
+  while (state.index < text.length) {
+    const char = text[state.index]!
+    if (char === '"') {
+      state.index += 1
+      return JSON.parse(text.slice(start, state.index)) as string
+    }
+    if (char === '\\') {
+      state.index += 1
+      if (state.index >= text.length) throw new Error('unterminated JSON escape')
+      if (text[state.index] === 'u') {
+        const hex = text.slice(state.index + 1, state.index + 5)
+        if (!/^[0-9A-Fa-f]{4}$/.test(hex)) throw new Error('invalid JSON unicode escape')
+        state.index += 5
+      } else if ('"\\/bfnrt'.includes(text[state.index]!)) state.index += 1
+      else throw new Error('invalid JSON escape')
+      continue
+    }
+    if (char < ' ') throw new Error('control character in JSON string')
+    state.index += 1
+  }
+  throw new Error('unterminated JSON string')
+}
+
+function skipJsonWhitespace(text: string, state: { index: number }): void {
+  while (state.index < text.length && /\s/.test(text[state.index]!)) state.index += 1
 }

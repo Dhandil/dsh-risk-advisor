@@ -73,7 +73,8 @@ describe('Phase 1B pinned Host runtime integration', () => {
         executionId: correlation[0]!.lookup.executionId,
         closed: false,
       })
-      expect(assessment.reasonCodes).toContain('ASSESSOR_NOT_IMPLEMENTED')
+      expect(assessment.reasonCodes).not.toContain('ASSESSOR_NOT_IMPLEMENTED')
+      expect(assessment.assessment).toBeDefined()
       expect(assessment.assessmentId).toMatch(/^ra-assessment-[0-9a-f-]{36}$/)
       expect(answererCalls).toBe(1)
       const assessments = ctx.get('riskAdvisorAssessments')
