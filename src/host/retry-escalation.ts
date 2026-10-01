@@ -178,10 +178,10 @@ function optionalBoundedString(fields: Map<string, unknown>, key: string): strin
   return value === undefined ? false : value
 }
 
-function optionalBoundedNumber(fields: Map<string, unknown>, key: string, maximum: number): number | undefined | false {
+function optionalBoundedNumber(fields: Map<string, unknown>, key: string, maximum: number, minimum = 0): number | undefined | false {
   if (!fields.has(key)) return undefined
   const value = fields.get(key)
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= maximum ? value : false
+  return typeof value === 'number' && Number.isFinite(value) && Number.isSafeInteger(value) && value >= minimum && value <= maximum ? value : false
 }
 
 function presence(value: unknown, present: boolean): readonly [number, unknown?] {
@@ -207,9 +207,9 @@ function captureFingerprint(toolName: string, args: unknown): FingerprintCapture
     const fields = ownDataFields(args, ['file_path', 'offset', 'limit'])
     if (fields === undefined) return unsupported('FINGERPRINT_ARGUMENT_SHAPE_UNSUPPORTED')
     const filePath = safeBoundedString(fields.get('file_path'), true)
-    if (filePath === undefined) return unsupported('FINGERPRINT_FILE_PATH_UNSUPPORTED')
-    const offset = optionalBoundedNumber(fields, 'offset', MAX_NUMBER)
-    const limit = optionalBoundedNumber(fields, 'limit', MAX_NUMBER)
+    if (filePath === undefined || filePath.trim().length === 0) return unsupported('FINGERPRINT_FILE_PATH_UNSUPPORTED')
+    const offset = optionalBoundedNumber(fields, 'offset', MAX_NUMBER, 1)
+    const limit = optionalBoundedNumber(fields, 'limit', MAX_NUMBER, 1)
     if (offset === false) return unsupported('FINGERPRINT_OFFSET_UNSUPPORTED')
     if (limit === false) return unsupported('FINGERPRINT_LIMIT_UNSUPPORTED')
     const fingerprint = hashTuple([
@@ -225,15 +225,17 @@ function captureFingerprint(toolName: string, args: unknown): FingerprintCapture
     if (fields === undefined) return unsupported('FINGERPRINT_ARGUMENT_SHAPE_UNSUPPORTED')
     const filePath = safeBoundedString(fields.get('file_path'), true)
     const content = safeBoundedString(fields.get('content'))
-    if (filePath === undefined) return unsupported('FINGERPRINT_FILE_PATH_UNSUPPORTED')
+    if (filePath === undefined || filePath.trim().length === 0) return unsupported('FINGERPRINT_FILE_PATH_UNSUPPORTED')
     if (content === undefined) return unsupported('FINGERPRINT_CONTENT_UNSUPPORTED')
     let requestedPermission: ExplicitSandboxTarget | undefined
-    if (fields.has('sandbox_permissions')) {
+    const hasPermission = fields.has('sandbox_permissions')
+    const hasJustification = fields.has('justification')
+    if (hasPermission !== hasJustification) return unsupported('FINGERPRINT_ESCALATION_PAIR_UNSUPPORTED')
+    if (hasPermission) {
       if (!isExplicitSandboxTarget(fields.get('sandbox_permissions'))) return unsupported('FINGERPRINT_PERMISSION_UNSUPPORTED')
       requestedPermission = fields.get('sandbox_permissions') as ExplicitSandboxTarget
-    }
-    if (fields.has('justification') && safeBoundedString(fields.get('justification')) === undefined) {
-      return unsupported('FINGERPRINT_JUSTIFICATION_UNSUPPORTED')
+      const justification = safeBoundedString(fields.get('justification'))
+      if (justification === undefined || justification.trim().length === 0) return unsupported('FINGERPRINT_JUSTIFICATION_UNSUPPORTED')
     }
     const fingerprint = hashTuple(['v1', 'write', filePath, content])
     if (fingerprint === undefined) return unsupported('FINGERPRINT_HASH_UNAVAILABLE')
@@ -250,23 +252,25 @@ function captureFingerprint(toolName: string, args: unknown): FingerprintCapture
     ])
     if (fields === undefined) return unsupported('FINGERPRINT_ARGUMENT_SHAPE_UNSUPPORTED')
     const command = safeBoundedString(fields.get('command'), true)
-    if (command === undefined) return unsupported('FINGERPRINT_COMMAND_UNSUPPORTED')
+    if (command === undefined || command.trim().length === 0) return unsupported('FINGERPRINT_COMMAND_UNSUPPORTED')
     const description = optionalBoundedString(fields, 'description')
-    const timeoutMs = optionalBoundedNumber(fields, 'timeoutMs', MAX_TIMEOUT)
+    const timeoutMs = optionalBoundedNumber(fields, 'timeoutMs', MAX_TIMEOUT, 1)
     const workdir = optionalBoundedString(fields, 'workdir')
-    if (description === false) return unsupported('FINGERPRINT_DESCRIPTION_UNSUPPORTED')
+    if (description === false || description === undefined || description.trim().length === 0) return unsupported('FINGERPRINT_DESCRIPTION_UNSUPPORTED')
     if (timeoutMs === false) return unsupported('FINGERPRINT_TIMEOUT_UNSUPPORTED')
     if (workdir === false) return unsupported('FINGERPRINT_WORKDIR_UNSUPPORTED')
     if (fields.has('run_in_background') && typeof fields.get('run_in_background') !== 'boolean') {
       return unsupported('FINGERPRINT_BACKGROUND_UNSUPPORTED')
     }
     let requestedPermission: ExplicitSandboxTarget | undefined
-    if (fields.has('sandbox_permissions')) {
+    const hasPermission = fields.has('sandbox_permissions')
+    const hasJustification = fields.has('justification')
+    if (hasPermission !== hasJustification) return unsupported('FINGERPRINT_ESCALATION_PAIR_UNSUPPORTED')
+    if (hasPermission) {
       if (!isExplicitSandboxTarget(fields.get('sandbox_permissions'))) return unsupported('FINGERPRINT_PERMISSION_UNSUPPORTED')
       requestedPermission = fields.get('sandbox_permissions') as ExplicitSandboxTarget
-    }
-    if (fields.has('justification') && safeBoundedString(fields.get('justification')) === undefined) {
-      return unsupported('FINGERPRINT_JUSTIFICATION_UNSUPPORTED')
+      const justification = safeBoundedString(fields.get('justification'))
+      if (justification === undefined || justification.trim().length === 0) return unsupported('FINGERPRINT_JUSTIFICATION_UNSUPPORTED')
     }
     const fingerprint = hashTuple([
       'v1', toolName, command,
@@ -587,7 +591,9 @@ export class RetryEscalationAnalyzer {
     if (record.nearestPriorOrdinal !== undefined) {
       const prior = this.findRecord(state, record.nearestPriorOrdinal)
       if (record.nearestPriorExpired || prior === undefined) reasons.push('NEAREST_MATCH_UNAVAILABLE')
-      else if (this.directPrior(record, this.clock()) === undefined) reasons.push('NEAREST_MATCH_BLOCKED')
+      else if (prior.evidenceState === 'SETTLED' && prior.outcome?.status === 'SUCCESS') {
+        // A complete nearest success is an intentional blocker, not degraded evidence.
+      } else if (this.directPrior(record, this.clock()) === undefined) reasons.push('NEAREST_MATCH_BLOCKED')
     }
     if (state.truncated) reasons.push('HISTORY_TRUNCATED')
     const degraded = reasons.some(reason => reason === 'NEAREST_MATCH_UNAVAILABLE' || reason === 'NEAREST_MATCH_BLOCKED' || reason === 'HISTORY_TRUNCATED')

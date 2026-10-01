@@ -107,6 +107,33 @@ describe('Phase 3 retry/escalation analyzer', () => {
     for (const id of ['extra', 'accessor', 'oversized', 'unknown']) expect(analyzer.diagnostics.get(id).status).toBe('UNSUPPORTED')
   })
 
+  it('F1 rejects pinned value-level malformed inputs and requires valid escalation pairs', () => {
+    const owner = session('p3-f1-values')
+    const analyzer = new RetryEscalationAnalyzer()
+    observe(analyzer, owner, 'read-space', 'read', { file_path: '   ' })
+    observe(analyzer, owner, 'write-space', 'write', { file_path: '  ', content: 'x' })
+    observe(analyzer, owner, 'offset-zero', 'read', { file_path: 'a', offset: 0 })
+    observe(analyzer, owner, 'limit-negative', 'read', { file_path: 'a', limit: -1 })
+    observe(analyzer, owner, 'command-space', 'bash', { command: '   ', description: 'valid' })
+    observe(analyzer, owner, 'description-missing', 'bash', { command: 'echo safe' })
+    observe(analyzer, owner, 'description-space', 'bash', { command: 'echo safe', description: '  ' })
+    observe(analyzer, owner, 'timeout-zero', 'bash', { command: 'echo safe', description: 'valid', timeoutMs: 0 })
+    observe(analyzer, owner, 'timeout-negative', 'bash', { command: 'echo safe', description: 'valid', timeoutMs: -1 })
+    observe(analyzer, owner, 'permission-without-justification', 'bash', { command: 'echo safe', description: 'valid', sandbox_permissions: 'workspace-write' })
+    observe(analyzer, owner, 'justification-without-permission', 'bash', { command: 'echo safe', description: 'valid', justification: 'why' })
+    observe(analyzer, owner, 'justification-space', 'bash', { command: 'echo safe', description: 'valid', sandbox_permissions: 'workspace-write', justification: '  ' })
+    for (const id of [
+      'read-space', 'write-space', 'offset-zero', 'limit-negative', 'command-space', 'description-missing',
+      'description-space', 'timeout-zero', 'timeout-negative', 'permission-without-justification',
+      'justification-without-permission', 'justification-space',
+    ]) expect(analyzer.diagnostics.get(id).status).toBe('UNSUPPORTED')
+
+    const validPermission = { command: 'echo safe', description: 'valid description', sandbox_permissions: 'workspace-write', justification: 'valid reason' }
+    observe(analyzer, owner, 'valid-permission-1', 'bash', validPermission, failure('TOOL_TIMEOUT'))
+    observe(analyzer, owner, 'valid-permission-2', 'bash', { ...validPermission, sandbox_permissions: 'danger-full-access', justification: 'different valid reason' })
+    expect(analyzer.diagnostics.get('valid-permission-2')).toMatchObject({ retryOf: 'valid-permission-1', permissionEscalation: true })
+  })
+
   it('P3-06/P3-07 binds only the nearest earlier proven failure and blocks older failures with success or pending evidence', () => {
     const owner = session('p3-nearest')
     const analyzer = new RetryEscalationAnalyzer()
@@ -114,6 +141,7 @@ describe('Phase 3 retry/escalation analyzer', () => {
     observe(analyzer, owner, 'old-failure', 'read', args, failure('TOOL_TIMEOUT'))
     observe(analyzer, owner, 'nearest-success', 'read', args, success())
     observe(analyzer, owner, 'blocked-by-success', 'read', args, failure('TOOL_TIMEOUT'))
+    expect(analyzer.diagnostics.get('blocked-by-success')).toMatchObject({ status: 'READY' })
     expect(analyzer.diagnostics.get('blocked-by-success').retryOf).toBeUndefined()
 
     observe(analyzer, owner, 'pending', 'read', { file_path: 'b' })
@@ -203,7 +231,7 @@ describe('Phase 3 retry/escalation analyzer', () => {
   it('P3-15/P3-16 treats shell process failure as eligible and conflicts fail closed', () => {
     const owner = session('p3-shell-failure')
     const analyzer = new RetryEscalationAnalyzer()
-    const args = { command: 'pnpm test' }
+    const args = { command: 'pnpm test', description: 'run tests' }
     observe(analyzer, owner, 'shell-1', 'bash', args, shell(7))
     observe(analyzer, owner, 'shell-2', 'bash', args)
     expect(analyzer.diagnostics.get('shell-2')).toMatchObject({ retryOf: 'shell-1' })
@@ -221,20 +249,20 @@ describe('Phase 3 retry/escalation analyzer', () => {
 
   it('P3-17/P3-19 computes structured permission escalation, equality, narrowing, and unknown', () => {
     const owner = session('p3-permission')
-    const args = { command: 'echo safe', sandbox_permissions: 'workspace-write' }
+    const args = { command: 'echo safe', description: 'run safe command', sandbox_permissions: 'workspace-write', justification: 'required reason' }
     const wider = new RetryEscalationAnalyzer()
     observe(wider, owner, 'perm-1', 'bash', args, failure('TOOL_TIMEOUT'))
-    observe(wider, owner, 'perm-2', 'bash', { command: 'echo safe', sandbox_permissions: 'danger-full-access' })
+    observe(wider, owner, 'perm-2', 'bash', { command: 'echo safe', description: 'another description', sandbox_permissions: 'danger-full-access', justification: 'another required reason' })
     expect(wider.diagnostics.get('perm-2').permissionEscalation).toBe(true)
 
     const narrower = new RetryEscalationAnalyzer()
-    observe(narrower, owner, 'narrow-1', 'bash', { command: 'echo safe', sandbox_permissions: 'danger-full-access' }, failure('TOOL_TIMEOUT'))
-    observe(narrower, owner, 'narrow-2', 'bash', { command: 'echo safe', sandbox_permissions: 'workspace-write' })
+    observe(narrower, owner, 'narrow-1', 'bash', { command: 'echo safe', description: 'run safe command', sandbox_permissions: 'danger-full-access', justification: 'required reason' }, failure('TOOL_TIMEOUT'))
+    observe(narrower, owner, 'narrow-2', 'bash', { command: 'echo safe', description: 'run safe command', sandbox_permissions: 'workspace-write', justification: 'required reason' })
     expect(narrower.diagnostics.get('narrow-2').permissionEscalation).toBe(false)
 
     const unknown = new RetryEscalationAnalyzer()
-    observe(unknown, owner, 'mode-1', 'bash', { command: 'echo safe' }, shell(7, 'read-only'))
-    observe(unknown, owner, 'mode-2', 'bash', { command: 'echo safe' })
+    observe(unknown, owner, 'mode-1', 'bash', { command: 'echo safe', description: 'run safe command' }, shell(7, 'read-only'))
+    observe(unknown, owner, 'mode-2', 'bash', { command: 'echo safe', description: 'run safe command' })
     expect(unknown.diagnostics.get('mode-2').permissionEscalation).toBe('unknown')
     expect(wider.diagnostics.get('perm-2').permissionEscalation).not.toBe('unknown')
   })
@@ -242,12 +270,12 @@ describe('Phase 3 retry/escalation analyzer', () => {
   it('P3-18 does not infer failures or permissions from approval/reason/stderr text', () => {
     const owner = session('p3-no-text')
     const analyzer = new RetryEscalationAnalyzer()
-    observe(analyzer, owner, 'text-1', 'bash', { command: 'echo safe' }, {
+    observe(analyzer, owner, 'text-1', 'bash', { command: 'echo safe', description: 'run safe command' }, {
       isError: true,
       content: [{ type: 'text', text: 'TOOL_TIMEOUT private stderr' }],
       error: { message: 'approval rejected: danger-full-access' },
     } as unknown as ToolExecutionResult)
-    observe(analyzer, owner, 'text-2', 'bash', { command: 'echo safe' })
+    observe(analyzer, owner, 'text-2', 'bash', { command: 'echo safe', description: 'run safe command' })
     const summary = analyzer.diagnostics.get('text-2')
     expect(summary.retryOf).toBe('text-1')
     expect(summary.sameRootCause).toBe('unknown')
