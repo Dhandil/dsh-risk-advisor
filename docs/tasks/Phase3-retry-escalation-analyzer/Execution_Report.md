@@ -2,7 +2,7 @@
 
 ## Outcome
 
-`PHASE3_PUBLISHED_READY_FOR_REVIEW`
+`PHASE3_REPAIR_PUBLISHED_READY_FOR_REVIEW`
 
 Codex completed the bounded Phase 3 implementation and delivery handoff. Independent final acceptance remains the responsibility of ChatGPT Web. No Acceptance Report was generated and no acceptance decision was made.
 
@@ -12,7 +12,8 @@ Codex completed the bounded Phase 3 implementation and delivery handoff. Indepen
 - Branch: `main`
 - Start HEAD / synchronized `origin/main`: `00835fbd588f432e0749e88ac984c4fd08121048`
 - Required start commit contained: `00835fbd588f432e0749e88ac984c4fd08121048`
-- Final executable/tested SHA: `c08c1d341b2b2729815c42a5543394cce1efb51c`
+- Historical Phase 3 executable/tested SHA: `c08c1d341b2b2729815c42a5543394cce1efb51c`
+- Final repair executable/tested SHA: `620ed7b7293b9186aed1067bbe0d4187cc73a34b`
 - Final report-only remote SHA: recorded by the post-push verification in the completion handoff after this report-only publication.
 - Pinned Harness: `D:\Harness\deepseek-harness @ ddefc45fbc7f8e46dd73185e68295696d1297887`
 - Harness mutation count: `0`
@@ -21,13 +22,18 @@ The plugin was fetched and fast-forward synchronized normally. No reset, clean, 
 
 ## Changed-file manifest
 
-Executable implementation commit (`c08c1d341b2b2729815c42a5543394cce1efb51c`):
+Historical executable implementation commit (`c08c1d341b2b2729815c42a5543394cce1efb51c`):
 
 - `package.json` — added `test:p3` and included it in the complete test chain.
 - `src/host/retry-escalation.ts` — added the private, bounded exact-live fingerprint/relation analyzer and read-only summary service.
 - `src/index.ts` — extended the existing correlation hook to pass the exact final result, installed one analyzer per Host generation, and provided `riskAdvisorFailureChain` without adding an identity owner.
 - `tests/p3-retry-escalation.unit.spec.ts` — fingerprint safety, relation ordering, root-cause, permission, bounds, TTL, conflict, disposal, recovery and privacy proof.
 - `tests/p3-runtime.integration.spec.ts` — genuine pinned `Context + SessionStore + ToolRuntime + ApprovalService` exact-live integration and Native Approval noninterference proof.
+
+Final F1–F2 repair executable commit (`620ed7b7293b9186aed1067bbe0d4187cc73a34b`):
+
+- `src/host/retry-escalation.ts` — mirrored the pinned adapter value constraints and corrected nearest-success status handling.
+- `tests/p3-retry-escalation.unit.spec.ts` — added malformed value, escalation-pair, valid paired permission, and nearest-success `READY` proofs.
 
 Report-only publication file:
 
@@ -89,9 +95,9 @@ F-006 and F-013 remain `PARTIAL`; no cross-plane or durable guessed relation was
 
 ## Tests and quality gates
 
-Focused Phase 3:
+Final focused Phase 3:
 
-- `pnpm run test:p3`: 2 files, 16 tests passed.
+- `pnpm run test:p3`: 2 files, 17 tests passed.
 - Includes controlled adapter safety, exact-live nearest relation, overlap/session isolation, five-minute boundary, backward-only chain, max-eight truncation, same-root-cause matrix, shell process failure, conflict fail-closed, permission escalation, bounds, TTL, disposal/recovery, privacy, and real Host integration.
 
 Affected inherited suites:
@@ -113,8 +119,8 @@ Static/export/privacy gates:
 
 Final fresh complete regression, run exactly once on the executable SHA above:
 
-- `pnpm test`: 18 test files, 132 tests passed on `c08c1d341b2b2729815c42a5543394cce1efb51c`.
-- R1: 9; R2: 16; R3: 17; R4: 21; R5: 3; P1A: 13; P1B: 14; P1C: 8; P2: 15; P3: 16.
+- `pnpm test`: 18 test files, 133 tests passed on `620ed7b7293b9186aed1067bbe0d4187cc73a34b`.
+- R1: 9; R2: 16; R3: 17; R4: 21; R5: 3; P1A: 13; P1B: 14; P1C: 8; P2: 15; P3: 17.
 - The inherited R1 fixture-fault console output occurred only inside passing fault-containment tests.
 
 ## Side effects and prohibited scope
@@ -138,3 +144,36 @@ HEAD == origin/main == git ls-remote origin refs/heads/main
 ```
 
 The exact final remote SHA and this equality are recorded in the completion handoff after report-only publication. This is an implementation handoff for independent ChatGPT Web review, not an acceptance record.
+
+## Final Repair — F1–F2
+
+### Repair state
+
+- Repair start / synchronized remote SHA: `90993bb7283f7c8d1d9c66f909ba573dc89e2d65`.
+- Reviewed historical executable SHA: `c08c1d341b2b2729815c42a5543394cce1efb51c`.
+- New executable/tested SHA: `620ed7b7293b9186aed1067bbe0d4187cc73a34b`.
+- Scope: F1 pinned adapter value constraints and F2 nearest-success status correction only.
+- Handoff: `PHASE3_REPAIR_PUBLISHED_READY_FOR_REVIEW`.
+
+### F1 — fail closed on pinned value-level malformed input
+
+The controlled adapters now reject whitespace-only `read`/`write` paths, non-positive `read` offsets/limits, whitespace-only shell commands, missing or whitespace-only shell descriptions, non-positive shell timeouts, and malformed escalation pairs. `sandbox_permissions` and `justification` must be both absent or both present; when present, the permission is a pinned target and the justification is bounded and non-empty after trimming. Paired permission/justification values remain excluded from fingerprint identity, and no justification text is retained.
+
+The repair mirrors only the small public value constraints visible at pre-execute. It does not import tool-private Harness validators, invent a deployment-specific read cap, parse shell syntax, or change Harness Core.
+
+Focused F1 proof covers whitespace paths/commands, zero/negative numeric values, missing/blank descriptions, timeout bounds, each escalation-pair failure, blank justification, and valid paired permission fields that still match by the same fingerprint.
+
+### F2 — nearest successful match is a normal blocker
+
+The summary projection now distinguishes a retained, settled nearest success from incomplete or conflicted evidence. An old failure followed by a nearest matching success followed by a current execution has no `retryOf` and remains `status='READY'`. Pending, unknown, conflicted, missing, expired, or history-truncated nearest evidence remains degraded/truncated as required. The nearest-only, exact-live, settled-before-capture, five-minute, conflict, and backward-only gates are unchanged.
+
+### Final repair evidence
+
+- P3 focused repair suite: 2 files, 17 tests passed.
+- Directly affected P2: 15 passed; R4: 21 passed.
+- `pnpm run typecheck`, build, Host export smoke, Client loader smoke, declaration/root-export audit, `pnpm pack --dry-run --json`, `git diff --check`, scope, privacy and secret gates: passed.
+- One fresh complete `pnpm test` run on `620ed7b7293b9186aed1067bbe0d4187cc73a34b`: 18 files, 133 tests passed.
+- F-006/F-013 remain `PARTIAL`; inherited NOT_RUN/NOT_VALIDATED states remain unchanged.
+- Harness remains `ddefc45fbc7f8e46dd73185e68295696d1297887` with mutation count `0`.
+- No Phase 4 or later behavior was implemented; no Native Approval or Phase 1/2 behavior was changed.
+- The final remote SHA and `HEAD == origin/main == git ls-remote origin refs/heads/main` equality are recorded in the completion handoff after this report-only publication.
