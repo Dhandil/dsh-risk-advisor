@@ -61,6 +61,7 @@ function redactCredentialUrls(value: string): string {
 }
 
 function hasCredentialMaterial(value: string): boolean {
-  return /https?:\/\/[^\s<>"]+:[^\s@<>]*@/i.test(value)
+  const authority = /^https?:\/\/([^\s\/?#<>"]*)/i.exec(value)?.[1] ?? ''
+  return authority.includes('@')
     || /[?&](?:token|key|secret|password|credential|auth|api[_-]?key)=/i.test(value)
 }

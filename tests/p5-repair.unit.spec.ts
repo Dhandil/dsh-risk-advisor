@@ -97,7 +97,14 @@ describe('Phase 5 F1 reviewer seed and redaction repair', () => {
 
   it('fails closed for malformed credential URLs and user-message secrets', () => {
     const redactor = new SecretRedactor()
+    expect(() => redactor.redact('https://credential@bad[host/path')).toThrow()
     expect(() => redactor.redact('https://user:password@bad[host/path?token=secret')).toThrow()
+    expect(() => redactor.redact('https://bad[host/path?token=secret')).toThrow()
+    expect(redactor.redact('https://bad[host/path@ordinary').value).toBe('https://bad[host/path@ordinary')
+    const valid = redactor.redact('https://user:password@example.test/path?token=secret&safe=yes').value
+    expect(valid).toContain('[REDACTED]')
+    expect(valid).not.toContain('password')
+    expect(redactor.redact(valid).value).toBe(valid)
     const captured = captureReviewerSeed('repair-url', fakeExecution('web_fetch', { url: 'https://user:password@bad[host/path?token=secret' }), evaluation({ operationKind: 'network-read', externalEffect: true, networkEffect: 'read' }))
     expect(captured.redactionFailed).toBe(true)
     expect(JSON.stringify(captured.seed)).not.toContain('password')
@@ -179,6 +186,10 @@ describe('Phase 5 F2 deterministic features and provenance repair', () => {
     const featureIds = new Set(context.features.features.map(item => item.id))
     const assessment = createDeterministicAssessment(context, 'repair-assessment', 1)
     for (const item of assessment.findings) for (const featureId of item.basisFeatureIds) expect(featureIds.has(featureId)).toBe(true)
+    const dimensions = new Map(assessment.findings.map(item => [item.code, item.dimension]))
+    for (const code of ['DESTRUCTIVE_RECURSIVE_DELETE', 'SYSTEM_SERVICE_MUTATION', 'CREDENTIAL_RESOURCE_ACCESS', 'NETWORK_EXTERNAL_WRITE', 'INSTALL_PACKAGE_MUTATION', 'REVERSIBILITY_EVIDENCE_UNAVAILABLE']) expect(dimensions.get(code)).toBe('RISK')
+    expect(dimensions.get('PERMISSION_ESCALATION_RETRY')).toBe('PRIVILEGE')
+    for (const code of ['SHELL_SEMANTICS_AMBIGUOUS', 'UNKNOWN_TOOL']) expect(dimensions.get(code)).toBe('EVIDENCE_QUALITY')
     expect(assessment.aggregate.policyFlags).toMatchObject({ privilegeEscalation: true, repeatedFailure: true, repeatedEscalation: true })
   })
 

@@ -352,7 +352,7 @@ function evidenceSummary(context: RiskContextSnapshot, dimensions: { readonly ri
 }
 
 function findingDimension(finding: RuleFinding): DimensionName {
-  return finding.category === 'permission' ? 'PRIVILEGE' : finding.category === 'workspace-boundary' || finding.category === 'path-alias' || finding.category === 'shell-ambiguity' || finding.category === 'unknown-tool' || finding.category === 'reversibility' ? 'EVIDENCE_QUALITY' : 'RISK'
+  return finding.category === 'permission' ? 'PRIVILEGE' : finding.category === 'workspace-boundary' || finding.category === 'path-alias' || finding.category === 'shell-ambiguity' || finding.category === 'unknown-tool' ? 'EVIDENCE_QUALITY' : 'RISK'
 }
 function featureIdsForFinding(finding: RuleFinding): string[] {
   if (finding.category === 'permission') return finding.id === 'PERMISSION_ESCALATION_RETRY'
