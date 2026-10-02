@@ -2,40 +2,40 @@
 
 ## Outcome
 
-`PHASE8_PUBLISHED_READY_FOR_REVIEW`
+`PHASE8_REPAIR_PUBLISHED_READY_FOR_REVIEW`
 
-Phase 8 Bounded Evidence Collector implementation is published for independent review. Codex did not create an Acceptance Report and did not declare `PHASE8_ACCEPTED`.
+The Phase 8 final-review repair is published for independent review. Codex did not create an Acceptance Report and did not declare `PHASE8_ACCEPTED`.
 
 ## Baseline and scope
 
 - Repository: `Dhandil/dsh-risk-advisor`, branch `main`.
-- Phase 8 starting remote: `a6de19b7605e849b573da28b95fe1c1a31700829`.
+- Repair starting remote: `35ac1be5f6b76152a6d90aff0fa766ed0ae4f405` (required ancestor confirmed).
 - Harness baseline: `ddefc45fbc7f8e46dd73185e68295696d1297887`.
-- Harness Core was read-only; no tracked or staged Harness mutation was observed.
+- Harness Core remained read-only; tracked and staged Harness mutation remained `0`.
 - Phase 9 was not started.
 - Native Approval authority, Phase 4 Rule Engine semantics, Phase 5 P0–P9/Judge semantics, and Phase 6 V1/V2 behavior were preserved.
 
 ## Implementation/Tested SHA
 
-`95ad73906d6cf5cce55f7def40f46dd688150bc6`
+`6b6f10d37dcc4fc8a2685c4496be6f2ec9829df5`
 
-This commit contains the executable/source/test/package/benchmark implementation. After the Full run, no executable, test, configuration, package, or benchmark semantic drift was introduced.
+This is the exact executable/source/test/package/benchmark repair commit on which the fresh complete Full was run. After that Full passed, no executable, test, configuration, package, or benchmark semantic drift was introduced.
 
-## Implemented bounded surface
+## Final-review repairs
 
-- Host-private raw target seed with own-data-property checks, shared `shell-analysis.ts` planning, one-shot consumption, five-minute TTL, 128/session and 512/global bounds, and session/plugin cleanup.
-- Public `ctx.fs` read-only seam for canonical resolution, containment, lstat/stat, bounded directory metadata, and bounded package manifest facts. No `writeText` or `editText` call was added.
-- Fixed local Git checker with bounded boolean output, argv-array path handling, no remote/network interaction, and no retained Git text.
-- Immutable path-free `EvidenceSnapshotV1`, bounded evidence scheduler, timeout ownership, capability generation fencing, cancellation, and disposal drain.
-- Deterministic Evidence feature overlay and A3 merge: same ExecutionId, supersession, preserved Judge provenance, unchanged authorization/necessity, non-decreasing hard risk, narrow reversible/minimum-scope rules, and checkpoint `unknown`.
-- Strict Bridge V3 (`rules | fast | evidence | complete`) with V1/V2 compatibility and client polling through `fast`/`evidence` until `complete`.
-- No additional Approval action, hidden Evidence Tool, custom Risk Advisor Session event, or Phase 9 implementation.
+- Closed tool-seed schemas with per-tool pinned key allowlists, own-data-property/accessor rejection, fail-closed unknown-tool handling, and TTL-first consumption.
+- Replaced the local Git evidence path with a product-owned bounded checker: workspace-relative containment, safe pathspec handling, hardened local-only Git invocation, exact closed JSON booleans, and no raw output/remotes/config retention.
+- Enforced shared evidence budgets: 20 items, 5 file reads, 64 KiB per file, 64 KiB total evidence text, and 200 directory entries.
+- Kept evidence collection gated by a supported local question and material evidence; no-material collection retains the latest A1/A2 instead of manufacturing A3.
+- Closed rollback/minimum-scope semantics: read-only evidence cannot create reversibility; only direct write/edit and safe local evidence can support the frozen claims; outside-workspace mutation floors risk at HIGH without changing authorization or necessity.
+- Added session/global snapshot bounds, raw-state cleanup, scheduler timeout ownership, capability replacement generation fencing, detach/dispose drain, and late-result fencing.
+- Replaced marker simulation with disposable real-local Phase 8 execution paths and a real product scheduler, without provider/network/registry/Git-remote calls.
 
 ## Verification results
 
 ### Focused and inherited suites
 
-- Phase 8 focused: 4 files, 9 tests — PASS.
+- Phase 8 expanded focused: 5 files, 16 tests — PASS.
 - Phase 7: 6 files, 26 tests — PASS.
 - Phase 6: 5 files, 27 tests — PASS.
 - Phase 5: 4 files, 23 tests — PASS.
@@ -53,39 +53,38 @@ This commit contains the executable/source/test/package/benchmark implementation
 
 ### Static, build, package, and privacy gates
 
-- TypeScript declaration/typecheck: PASS.
+- `pnpm run typecheck`: PASS.
 - Host build: PASS.
-- Host runtime export check: PASS.
-- Client declaration/export audit, including V3 and 1000ms polling symbols: PASS.
+- Host runtime export and Client loader/export checks: PASS.
+- Declaration/root-export audit, including V3 and polling symbols: PASS.
 - `pnpm pack --dry-run --json`: PASS.
 - `git diff --check`: PASS.
-- Scope/privacy checks: PASS.
-- No provider, external network, registry, or Git remote runtime calls: PASS.
-- No custom Risk Advisor Session events or deprecated Session readers: PASS.
-- Harness mutation check: PASS (`0` tracked/staged mutations).
+- Explicit scope/privacy scans: PASS; no Phase 8 write API, deprecated Session reader, custom Risk Advisor Session event, remote network call, or remote Git operation.
+- Provider calls, external network calls, registry calls, and Git remote calls: `0`.
+- Harness Core mutations: `0`.
 
 ### Real-local benchmarks
 
 - Phase 7 smoke/full benchmarks: PASS.
 - Phase 8 smoke/full benchmarks: PASS.
-- Real disposable local filesystem paths covered: mkdir, small copy, near-1MiB copy, local Git repository/clean tracked target, and local Node resolution.
-- Scheduler evidence: concurrency `2`, pending bound `8`, timeout ownership and late settle covered.
+- Phase 8 used disposable real-local filesystem and Git fixtures through the product path: mkdir, small copy, near-1 MiB copy, clean tracked repository target, dirty/untracked/ignored states, outside target, valid/oversized package evidence, directory budget, and local Node resolution.
+- Scheduler evidence: timeout `5000 ms`, concurrency `2`, pending bound `8`, saturation and owned late settlement covered.
 - Benchmark labels: `LOCAL_EVIDENCE_ONLY`, `NETWORK_NOT_USED`, `PROVIDER_NOT_USED`, `REGISTRY_NOT_USED`, `GIT_REMOTE_NOT_USED`.
 
 ### Fresh complete Full
 
 Command: `pnpm test`
 
-Result: PASS, exit code `0`, on the exact Implementation/Tested SHA above.
+Result: PASS, exit code `0`, run exactly once on the exact Implementation/Tested SHA above.
 
 - 39 test files passed.
 - 235 tests passed.
 - R1–R5, P1A–P1C, P2–P7, and P8 all passed.
 
-## Drift and release notes
+## Drift and publication
 
-The workspace still contains pre-existing untracked user drift (`lib/`, `node_modules/`, `pnpm-lock.yaml`, `.vitest-cache/`, and historical/local documentation). These paths were not staged or committed. No reset, clean, Harness update, or destructive cleanup was performed.
-
-## Publication checkpoint
-
-The executable commit above is followed only by this report/docs checkpoint. Push and final remote SHA verification are recorded in the publication handoff after this report commit.
+- The executable candidate was committed before Full and had no tracked or staged drift.
+- After Full, only this `Execution_Report.md` was changed.
+- Pre-existing untracked user drift (`.vitest-cache/`, historical/local documentation, `lib/`, `node_modules/`, and `pnpm-lock.yaml`) was preserved and not staged.
+- No reset, clean, destructive cleanup, Harness update, or Harness Core modification was performed.
+- The final report commit is the only post-Full change; its SHA is the final remote/report SHA reported with the publication verification.
