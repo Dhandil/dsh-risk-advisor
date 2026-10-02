@@ -13,11 +13,14 @@ describe('Phase 8 real local evidence benchmark smoke', () => {
       expect.objectContaining({ state: 'untracked', versionControlled: false }),
       expect.objectContaining({ state: 'ignored', checker: expect.objectContaining({ ignored: true }) }),
     ]))
+    expect(output.paths.git[0].fsmonitorDisabled).toBe(true)
     expect(output.paths.outside[0]).toMatchObject({ workspaceContained: false, contentRead: false })
     expect(output.paths.package[0]).toMatchObject({ status: 'COMPLETE', valid: true })
     expect(output.paths.packageOverLimit[0].reasonCodes).toContain('PACKAGE_MANIFEST_TOO_LARGE')
     expect(output.paths.directoryBudget[0]).toMatchObject({ retainedEntries: 200 })
     expect(output.timeout).toMatchObject({ result: 'TIMEOUT', activeAfterTimeout: 1, ownedUntilSettle: true })
     expect(output.saturation).toMatchObject({ maxConcurrent: 2, maxPending: 8, saturated: 1, realScheduler: true })
+    expect(output.minimumScope).toMatchObject({ 'workspace-write': { privilege: 'PROPORTIONATE', reversible: true }, 'danger-full-access': { privilege: 'EXCESSIVE', reversible: true } })
+    expect(output.staleGeneration).toEqual({ oldStatus: 'CANCELLED', newStatus: 'COMPLETE', oldSuccessPublished: false })
   }, 600000)
 })

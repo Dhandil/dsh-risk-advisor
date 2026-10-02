@@ -28,7 +28,7 @@ const TOOL_ARGUMENT_KEYS: Readonly<Record<string, readonly string[]>> = Object.f
   write: Object.freeze(['file_path', 'content', 'sandbox_permissions', 'justification']),
   edit: Object.freeze(['file_path', 'old_string', 'new_string', 'replace_all', 'sandbox_permissions', 'justification']),
   bash: Object.freeze(['command', 'description', 'timeoutMs', 'workdir', 'run_in_background', 'sandbox_permissions', 'justification']),
-  pwsh: Object.freeze(['command', 'description', 'timeoutMs', 'workdir', 'run_in_background']),
+  pwsh: Object.freeze(['command', 'description', 'timeoutMs', 'workdir', 'run_in_background', 'sandbox_permissions', 'justification']),
 })
 
 function fields(value: unknown, allowed: readonly string[]): Record<string, unknown> | undefined {

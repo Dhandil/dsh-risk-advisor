@@ -53,6 +53,73 @@ async function collect(runtime, session, id, name, args) {
 
 async function localGit(root, args) { return await run('git', args, { cwd: root, maxBuffer: 8192 }) }
 
+function deferred() {
+  let resolve
+  const promise = new Promise(value => { resolve = value })
+  return { promise, resolve }
+}
+
+function riskContext(requestedPermission) {
+  const findings = requestedPermission === 'danger-full-access' ? [{ id: 'PERMISSION_DANGER_FULL_ACCESS', category: 'permission', severity: 'high', summary: 'requested width', hard: true }] : []
+  const feature = (id, value) => ({ id, value, source: 'DETERMINISTIC', strength: 'DETERMINISTIC' })
+  return {
+    schemaVersion: 1,
+    contextId: `p8-benchmark-${requestedPermission}`,
+    executionId: `p8-benchmark-${requestedPermission}`,
+    seed: { schemaVersion: 1, executionId: `p8-benchmark-${requestedPermission}`, toolName: 'write', operationText: 'write', resourceHints: [], requestedPermission, truncated: false },
+    ruleEvaluation: { schemaVersion: 1, rulesetVersion: 'phase4-v1', executionId: `p8-benchmark-${requestedPermission}`, status: 'READY', operationKind: 'filesystem-write', parserConfidence: 'high', mutating: true, externalEffect: false, networkEffect: 'none', requestedPermission, workspaceContained: 'unknown', sandboxCovered: 'unknown', reversible: 'unknown', failureContext: { isRetry: false, retryCount: 0, recentFailureCount: 0, sameRootCause: 'unknown', permissionEscalation: 'unknown', degraded: false }, findings, reasonCodes: [] },
+    failureSummary: { executionId: `p8-benchmark-${requestedPermission}`, retryCount: 0, recentFailureCount: 0, sameRootCause: 'unknown', permissionEscalation: 'unknown', truncated: false, reasonCodes: [] },
+    directUser: { messages: [], historyOmitted: false, degraded: false },
+    ledger: { health: 'HEALTHY', sourceComplete: true, truncated: false, issueCodes: [] },
+    features: { schemaVersion: 1, features: [feature('scope.canonicalTargetsKnown', 'unknown'), feature('scope.workspaceOnly', 'unknown'), feature('scope.outsideWorkspace', false), feature('scope.pathAliasObserved', 'unknown'), feature('scope.targetCountKnown', 'unknown'), feature('recovery.rollbackMechanismKnown', 'unknown'), feature('recovery.reversible', 'unknown'), feature('privilege.minimumScopeEvidenceAvailable', false), feature('privilege.requestedScope', requestedPermission === 'danger-full-access' ? 'unrestricted' : 'workspace')] },
+    degraded: false,
+    historyOmitted: false,
+  }
+}
+
+function riskAssessment(context) {
+  const dimension = (name, verdict, source = 'UNKNOWN') => ({ dimension: name, verdict, source, evidenceQuality: 'MEDIUM', basisFeatureIds: [], basisEventIds: [], reasons: [] })
+  return { schemaVersion: 1, assessmentId: `a1-${context.executionId}`, executionId: context.executionId, contextId: context.contextId, createdAt: 1, status: 'PARTIAL', dimensions: { risk: dimension('RISK', 'LOW', 'RULE'), authorization: dimension('AUTHORIZATION', 'UNKNOWN'), necessity: dimension('NECESSITY', 'UNKNOWN'), privilege: dimension('PRIVILEGE', 'UNKNOWN'), alternatives: dimension('ALTERNATIVES', 'NO_KNOWN_SAFER_ALTERNATIVE', 'RULE'), evidenceQuality: dimension('EVIDENCE_QUALITY', 'MEDIUM', 'RULE') }, aggregate: { recommendation: 'NEED_MORE_INFORMATION', hazardLevel: 'LOW', attention: 'ELEVATED', primaryReasonCodes: [] }, findings: [], alternatives: [], uncertainties: [], evidence: { featureIds: [], eventIds: [], counts: { authoritative: 0, deterministic: 0, inferred: 0, judge: 0 }, ledgerHealth: 'HEALTHY' }, provenance: { rulesetVersion: 'phase4-v1', featureSchemaVersion: 1, contextBuilderVersion: 'phase5-context-v1', aggregatorVersion: 'phase5-aggregator-v1', judge: { invoked: false, dimensions: [] } } }
+}
+
+function evidenceSnapshot(executionId) {
+  return { schemaVersion: 1, evidenceId: `evidence-${executionId}`, executionId, status: 'COMPLETE', observedAt: 1, facts: { targetCountKnown: true, canonicalTargetsKnown: true, workspaceContained: true, pathAliasObserved: false, versionControlled: true, exactTargetsClean: true, checkpointAvailable: 'unknown', rollbackMechanismKnown: true, packageManifestPresent: 'unknown', packageManifestValid: 'unknown', lifecycleScriptsPresent: 'unknown' }, counts: { evidenceItems: 1, fileReads: 0, evidenceChars: 0, directoryEntries: 0 }, truncated: false, reasonCodes: [] }
+}
+
+async function minimumScopeProof(overlayEvidenceContext, mergeEvidenceAssessment) {
+  const results = {}
+  for (const permission of ['workspace-write', 'danger-full-access']) {
+    const base = riskContext(permission)
+    const evidence = overlayEvidenceContext(base, evidenceSnapshot(base.executionId))
+    const merged = mergeEvidenceAssessment(riskAssessment(base), base, evidence, evidenceSnapshot(base.executionId), `a3-${permission}`, 2)
+    results[permission] = { privilege: merged.dimensions.privilege.verdict, reversible: evidence.features.features.find(item => item.id === 'recovery.reversible')?.value }
+  }
+  return results
+}
+
+async function staleGenerationProof(EvidenceCollector, root) {
+  const session = { id: 'p8-stale-session', header: { cwd: root } }
+  const gate = deferred()
+  const started = deferred()
+  const target = value => ({ targetKey: value, displayPath: value })
+  const oldFs = { resolve: async (value, options = {}) => target(value.startsWith('/') ? value : `${options.cwd ?? '/workspace'}/${value}`), processPath: value => value.displayPath, contains: () => true, lstat: async () => { started.resolve(); await gate.promise; return { version: '1', type: 'file', size: 1 } }, stat: async () => ({ version: '1', type: 'file', size: 1 }), readBytes: async () => new Uint8Array(), listDir: async () => [] }
+  const runtime = new EvidenceCollector()
+  runtime.attachFs(oldFs)
+  const oldExecution = execution(session, 'write', { file_path: 'stale.txt', content: 'x' }, 'stale-old')
+  runtime.seeds.capture(oldExecution, 'stale-old')
+  const oldResult = new Promise(resolve => runtime.collect('stale-old', resolve))
+  await started.promise
+  runtime.attachFs(makeFs(root))
+  await writeFile(join(root, 'fresh.txt'), 'fresh')
+  const newExecution = execution(session, 'write', { file_path: 'fresh.txt', content: 'x' }, 'stale-new')
+  runtime.seeds.capture(newExecution, 'stale-new')
+  const newResult = new Promise(resolve => runtime.collect('stale-new', resolve))
+  gate.resolve()
+  const [oldSnapshot, newSnapshot] = await Promise.all([oldResult, newResult])
+  await runtime.dispose()
+  return { oldStatus: oldSnapshot.status, newStatus: newSnapshot.status, oldSuccessPublished: oldSnapshot.status === 'COMPLETE' }
+}
+
 export async function main({ smoke = true } = {}) {
   const samples = smoke ? 1 : 2
   const root = await mkdtemp(join(tmpdir(), 'dsh-risk-advisor-p8-'))
@@ -62,6 +129,10 @@ export async function main({ smoke = true } = {}) {
   const started = performance.now()
   const { EvidenceCollector } = await import('../src/host/evidence-collector.ts')
   const { EvidenceScheduler } = await import('../src/host/evidence-scheduler.ts')
+  const { mergeEvidenceAssessment, overlayEvidenceContext } = await import('../src/host/risk-engine.ts')
+  const minimumScope = await minimumScopeProof(overlayEvidenceContext, mergeEvidenceAssessment)
+  let previousFsmonitorSentinel = process.env.P8_FSMONITOR_SENTINEL
+  const fsmonitorSentinel = join(root, 'fsmonitor-sentinel.txt')
   try {
     await writeFile(join(root, 'tracked.txt'), 'tracked')
     await localGit(root, ['init', '--quiet'])
@@ -69,6 +140,8 @@ export async function main({ smoke = true } = {}) {
     await localGit(root, ['config', 'user.name', 'Phase 8 Benchmark'])
     await localGit(root, ['add', 'tracked.txt'])
     await localGit(root, ['commit', '--quiet', '-m', 'benchmark'])
+    process.env.P8_FSMONITOR_SENTINEL = fsmonitorSentinel
+    await localGit(root, ['config', 'core.fsmonitor', "node -e \"require('node:fs').writeFileSync(process.env.P8_FSMONITOR_SENTINEL,'executed')\""])
     await writeFile(join(root, 'package.json'), JSON.stringify({ name: 'phase8-fixture', version: '1.0.0', scripts: { prepare: 'echo bounded' } }))
     await writeFile(join(root, '.gitignore'), 'ignored.txt\n')
     await writeFile(join(root, 'untracked.txt'), 'untracked')
@@ -106,7 +179,7 @@ export async function main({ smoke = true } = {}) {
       states.push({ state: 'untracked', versionControlled: untracked.facts.versionControlled, exactTargetsClean: untracked.facts.exactTargetsClean, checker: observations.at(-1) })
       const ignored = await collect(runtime, session, `git-ignored-${i}`, 'write', { file_path: 'ignored.txt', content: 'ignored' })
       states.push({ state: 'ignored', versionControlled: ignored.facts.versionControlled, exactTargetsClean: ignored.facts.exactTargetsClean, checker: observations.at(-1) })
-      paths.git.push({ operation: 'git-local-product-checker', states, realProductExecution: true })
+      paths.git.push({ operation: 'git-local-product-checker', states, fsmonitorDisabled: !(await stat(fsmonitorSentinel).then(() => true).catch(() => false)), realProductExecution: true })
 
       const outsideEvidence = await collect(runtime, session, `outside-${i}`, 'write', { file_path: join(outside, 'outside.txt'), content: 'outside' })
       paths.outside.push({ operation: 'outside-metadata-only', status: outsideEvidence.status, workspaceContained: outsideEvidence.facts.workspaceContained, contentRead: outsideEvidence.counts.fileReads > 0, realProductExecution: true })
@@ -130,6 +203,8 @@ export async function main({ smoke = true } = {}) {
       paths.nodeResolve.push({ operation: 'node-resolve', status: require.resolve('benchmark-local', { paths: [root] }) ? 'MATCHED' : 'UNKNOWN', realLocalExecution: true })
     }
 
+    const staleGeneration = await staleGenerationProof(EvidenceCollector, root)
+
     const timeoutScheduler = new EvidenceScheduler(1, 1, 5000)
     let settled = false
     const timeoutStarted = performance.now()
@@ -145,8 +220,10 @@ export async function main({ smoke = true } = {}) {
     const saturation = { maxConcurrent, maxPending: 8, saturated: saturationResults.filter(item => !item.ok && item.reason === 'SATURATED').length, realScheduler: true }
     await saturationScheduler.dispose()
     await runtime.dispose()
-    return Object.freeze({ run: Object.freeze({ benchmark: 'R5_PHASE8_LOCAL_EVIDENCE', mode: smoke ? 'SMOKE' : 'FULL', samples, labels: ['LOCAL_EVIDENCE_ONLY', 'NETWORK_NOT_USED', 'PROVIDER_NOT_USED', 'REGISTRY_NOT_USED', 'GIT_REMOTE_NOT_USED'], realLocalExecution: true, elapsedMs: performance.now() - started }), paths, timeout, saturation, nonClaims: Object.freeze({ provider: 'PROVIDER_NOT_USED', network: 'NETWORK_NOT_USED', registry: 'REGISTRY_NOT_USED', gitRemote: 'GIT_REMOTE_NOT_USED' }) })
+    return Object.freeze({ run: Object.freeze({ benchmark: 'R5_PHASE8_LOCAL_EVIDENCE', mode: smoke ? 'SMOKE' : 'FULL', samples, labels: ['LOCAL_EVIDENCE_ONLY', 'NETWORK_NOT_USED', 'PROVIDER_NOT_USED', 'REGISTRY_NOT_USED', 'GIT_REMOTE_NOT_USED'], realLocalExecution: true, elapsedMs: performance.now() - started }), paths, minimumScope, staleGeneration, timeout, saturation, nonClaims: Object.freeze({ provider: 'PROVIDER_NOT_USED', network: 'NETWORK_NOT_USED', registry: 'REGISTRY_NOT_USED', gitRemote: 'GIT_REMOTE_NOT_USED' }) })
   } finally {
+    if (previousFsmonitorSentinel === undefined) delete process.env.P8_FSMONITOR_SENTINEL
+    else process.env.P8_FSMONITOR_SENTINEL = previousFsmonitorSentinel
     await rm(root, { recursive: true, force: true })
     await rm(outside, { recursive: true, force: true })
   }

@@ -11,6 +11,7 @@ interface ShellRunResult { readonly exitCode: number | null; readonly stdout?: {
 interface ShellCapability { readonly sandboxMode?: SandboxMode; readonly resolve: (request: Record<string, unknown>) => unknown; readonly run: (spec: unknown) => Promise<ShellRunResult> }
 interface MutableCounts { evidenceItems: number; fileReads: number; evidenceChars: number; directoryEntries: number }
 interface Entry { readonly snapshot: EvidenceSnapshotV1; readonly session: Session; readonly createdAt: number }
+interface CancellationEntry { readonly session?: Session; readonly createdAt: number }
 
 const MAX_DIR_ENTRIES = 200
 const MAX_PACKAGE_BYTES = 64 * 1024
@@ -24,6 +25,10 @@ const TTL_MS = 5 * 60 * 1000
 
 /** Product-owned local-only checker. Paths are data and become Git pathspecs only inside this execution world. */
 const GIT_CHECKER = `const fs=require('node:fs');const cp=require('node:child_process');const path=require('node:path');const root=process.env.RA_WORKSPACE;const raw=Object.keys(process.env).filter(k=>/^RA_TARGET_[0-7]$/.test(k)).sort().map(k=>process.env[k]).filter(v=>typeof v==='string'&&v.length>0);const nul=process.platform==='win32'?'NUL':'/dev/null';const env={...process.env,GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:nul,GIT_CONFIG_SYSTEM:nul,GIT_TERMINAL_PROMPT:'0',GIT_OPTIONAL_LOCKS:'0',GIT_PAGER:'cat',PAGER:'cat',GIT_CONFIG_COUNT:'0',GIT_EXTERNAL_DIFF:'',GIT_TRACE:'0'};const run=(args)=>{try{const out=cp.spawnSync('git',args,{cwd:root,env,encoding:'utf8',stdio:['ignore','pipe','ignore'],timeout:4000,windowsHide:true});return {code:typeof out.status==='number'?out.status:null,ok:out.error===undefined&&out.signal===null}}catch{return {code:null,ok:false}}};let inside=false;try{const out=cp.spawnSync('git',['rev-parse','--is-inside-work-tree'],{cwd:root,env,encoding:'utf8',stdio:['ignore','pipe','ignore'],timeout:4000,windowsHide:true});inside=out.status===0&&out.stdout==='true\\n'}catch{};const spec=(value)=>{try{const rr=fs.realpathSync.native(root);const tt=fs.realpathSync.native(value);const rel=path.relative(rr,tt);if(!rel||path.isAbsolute(rel)||rel==='..'||rel.startsWith('..'+path.sep)||rel.startsWith(':')||/[?*\\[\\]]/.test(rel))return null;return rel.split(path.sep).join('/')}catch{return null}};const specs=inside&&typeof root==='string'?raw.map(spec):[];const valid=inside&&specs.length===raw.length&&specs.every(v=>v!==null);let tracked=false,ignored=false,clean=false;if(valid){tracked=specs.every(p=>run(['ls-files','--error-unmatch','--',p]).code===0);ignored=specs.some(p=>run(['check-ignore','--quiet','--',p]).code===0);clean=tracked&&specs.every(p=>run(['diff','--no-ext-diff','--no-textconv','--quiet','--',p]).code===0&&run(['diff','--no-ext-diff','--no-textconv','--cached','--quiet','--',p]).code===0)}process.stdout.write(JSON.stringify({repositoryAvailable:inside,tracked,ignored,clean}))`
+
+const GIT_CHECKER_WITH_FSMONITOR_DISABLED = GIT_CHECKER
+  .replace("cp.spawnSync('git',args", "cp.spawnSync('git',['-c','core.fsmonitor=false',...args]")
+  .replace("cp.spawnSync('git',['rev-parse'", "cp.spawnSync('git',['-c','core.fsmonitor=false','rev-parse'")
 
 function emptyCounts(): MutableCounts { return { evidenceItems: 0, fileReads: 0, evidenceChars: 0, directoryEntries: 0 } }
 
@@ -98,7 +103,9 @@ export class BoundedEvidenceRuntime {
   private recordsBySession = new WeakMap<Session, Set<ExecutionId>>()
   private readonly jobsBySession = new WeakMap<Session, Set<ExecutionId>>()
   private readonly disposedSessions = new WeakSet<Session>()
-  private readonly cancelled = new Set<ExecutionId>()
+  private readonly cancelled = new Map<ExecutionId, CancellationEntry>()
+  private cancelledBySession = new WeakMap<Session, Set<ExecutionId>>()
+  private readonly executionSessions = new Map<ExecutionId, Session>()
   private fs: FileSystem | undefined
   private fsGeneration = 0
   private shell: ShellCapability | undefined
@@ -135,14 +142,17 @@ export class BoundedEvidenceRuntime {
   canCollect(executionId: ExecutionId): boolean { return this.active && this.fs !== undefined && this.seeds.hasSupportedEvidenceQuestion(executionId) }
 
   cancel(executionId: ExecutionId): void {
-    this.cancelled.add(executionId)
+    this.sweep()
+    this.markCancelled(executionId, this.executionSessions.get(executionId) ?? this.seeds.sessionOf(executionId))
     this.scheduler.cancel(executionId)
   }
 
   collect(executionId: ExecutionId, onComplete?: (snapshot: EvidenceSnapshotV1) => void): void {
-    if (!this.active || this.cancelled.has(executionId)) return
+    if (!this.active) return
+    if (this.isCancelled(executionId)) { this.seeds.takeById(executionId); return }
     const seed = this.seeds.takeById(executionId)
     if (seed === undefined || this.disposedSessions.has(seed.session)) return
+    this.executionSessions.set(executionId, seed.session)
     const fs = this.fs
     const fsGeneration = this.fsGeneration
     const shell = this.shell
@@ -152,10 +162,11 @@ export class BoundedEvidenceRuntime {
     sessionJobs.add(executionId); this.jobsBySession.set(seed.session, sessionJobs)
     const start = this.lifecycle.then(async () => {
       if (!this.active || this.disposedSessions.has(seed.session) || scheduler !== this.scheduler || fsGeneration !== this.fsGeneration || fs !== this.fs) return undefined
-      return scheduler.enqueue(executionId, signal => this.run(seed, fs, fsGeneration, shell, shellGeneration, signal))
+      return scheduler.enqueue(executionId, signal => this.run(seed, fs, fsGeneration, shell, shellGeneration, scheduler, signal))
     })
     void start.then(outcome => {
       sessionJobs.delete(executionId)
+      this.executionSessions.delete(executionId)
       if (outcome === undefined || !this.active || this.disposedSessions.has(seed.session)) return
       let snapshot: EvidenceSnapshotV1
       if (outcome.ok) snapshot = outcome.value
@@ -174,6 +185,9 @@ export class BoundedEvidenceRuntime {
     this.seeds.disposeSession(session)
     for (const id of [...this.recordsBySession.get(session) ?? []]) this.removeRecord(id)
     this.recordsBySession.delete(session)
+    for (const id of [...this.cancelledBySession.get(session) ?? []]) this.removeCancellation(id)
+    this.cancelledBySession.delete(session)
+    for (const [id, owner] of this.executionSessions) if (owner === session) this.executionSessions.delete(id)
   }
 
   async dispose(): Promise<void> {
@@ -184,7 +198,7 @@ export class BoundedEvidenceRuntime {
     this.scheduler = new EvidenceScheduler(2, 8, 5000)
     this.lifecycle = this.lifecycle.then(() => scheduler.dispose())
     await this.lifecycle
-    this.records.clear(); this.recordsBySession = new WeakMap(); this.fs = undefined; this.shell = undefined
+    this.records.clear(); this.recordsBySession = new WeakMap(); this.cancelled.clear(); this.cancelledBySession = new WeakMap(); this.executionSessions.clear(); this.fs = undefined; this.shell = undefined
   }
 
   private rotateScheduler(): Promise<void> {
@@ -214,18 +228,45 @@ export class BoundedEvidenceRuntime {
   private sweep(): void {
     const now = this.clock()
     for (const [id, item] of this.records) if (!Number.isFinite(now) || now - item.createdAt >= this.ttlMs) this.removeRecord(id)
+    for (const [id, item] of this.cancelled) if (!Number.isFinite(now) || now - item.createdAt >= this.ttlMs) this.removeCancellation(id)
   }
 
-  private async run(seed: EvidenceTargetSeed, fs: FileSystem | undefined, fsGeneration: number, shell: ShellCapability | undefined, shellGeneration: number, signal: AbortSignal): Promise<EvidenceSnapshotV1> {
+  private isCancelled(executionId: ExecutionId): boolean {
+    this.sweep()
+    return this.cancelled.has(executionId)
+  }
+
+  private markCancelled(executionId: ExecutionId, session: Session | undefined): void {
+    this.removeCancellation(executionId)
+    while (this.cancelled.size >= MAX_RECORDS) this.removeCancellation(this.cancelled.keys().next().value as ExecutionId)
+    this.cancelled.set(executionId, { ...(session === undefined ? {} : { session }), createdAt: this.clock() })
+    if (session !== undefined) {
+      const ids = this.cancelledBySession.get(session) ?? new Set<ExecutionId>()
+      ids.add(executionId)
+      this.cancelledBySession.set(session, ids)
+    }
+  }
+
+  private removeCancellation(executionId: ExecutionId): void {
+    const item = this.cancelled.get(executionId)
+    if (item === undefined) return
+    this.cancelled.delete(executionId)
+    if (item.session !== undefined) this.cancelledBySession.get(item.session)?.delete(executionId)
+  }
+
+  private async run(seed: EvidenceTargetSeed, fs: FileSystem | undefined, fsGeneration: number, shell: ShellCapability | undefined, shellGeneration: number, scheduler: EvidenceScheduler, signal: AbortSignal): Promise<EvidenceSnapshotV1> {
     const now = this.clock()
+    const stale = () => signal.aborted || !this.active || scheduler !== this.scheduler || fsGeneration !== this.fsGeneration || fs !== this.fs || shellGeneration !== this.shellGeneration || shell !== this.shell
+    const staleResult = (reasonCodes: readonly EvidenceReasonCode[] = []) => result(seed.executionId, 'CANCELLED', this.clock(), UNKNOWN_EVIDENCE_FACTS, emptyCounts(), ['EVIDENCE_CANCELLED', ...reasonCodes])
     if (fs === undefined) return result(seed.executionId, 'UNAVAILABLE', now, UNKNOWN_EVIDENCE_FACTS, emptyCounts(), ['FS_CAPABILITY_UNAVAILABLE'])
+    if (stale()) return staleResult(['FS_GENERATION_STALE'])
     if (seed.explicitWorkdir && (seed.toolName === 'bash' || seed.toolName === 'pwsh')) return result(seed.executionId, 'PARTIAL', now, { ...UNKNOWN_EVIDENCE_FACTS, targetCountKnown: seed.exactTargetCount, checkpointAvailable: 'unknown' }, emptyCounts(), ['EXPLICIT_WORKDIR_UNRESOLVED', 'CHECKPOINT_CAPABILITY_UNAVAILABLE'])
     const counts = emptyCounts(); const reasons: EvidenceReasonCode[] = ['CHECKPOINT_CAPABILITY_UNAVAILABLE']; const limits = budget(counts, reasons); const facts = { ...UNKNOWN_EVIDENCE_FACTS }
     try {
       const cwd = seed.session.header.cwd
       if (typeof cwd !== 'string' || cwd.length === 0) return result(seed.executionId, 'UNAVAILABLE', now, facts, counts, ['TARGET_RESOLUTION_FAILED', ...reasons])
       const workspace = await fs.resolve(cwd, { signal })
-      if (fsGeneration !== this.fsGeneration || fs !== this.fs) return result(seed.executionId, 'CANCELLED', now, facts, counts, ['FS_GENERATION_STALE'])
+      if (stale()) return result(seed.executionId, 'CANCELLED', this.clock(), facts, counts, ['EVIDENCE_CANCELLED', 'FS_GENERATION_STALE'])
       const targetResults: Array<{ target: FsTarget; stat: FsInfo; lstat: FsPathInfo }> = []
       let contained: boolean | 'unknown' = seed.requestedPaths.length === 0 ? 'unknown' : true
       let alias: boolean | 'unknown' = seed.requestedPaths.length === 0 ? 'unknown' : false
@@ -234,8 +275,11 @@ export class BoundedEvidenceRuntime {
         if (!limits.item()) break
         try {
           const li = await fs.lstat(raw, { cwd }, signal)
+          if (stale()) return result(seed.executionId, 'CANCELLED', this.clock(), facts, counts, ['EVIDENCE_CANCELLED', 'FS_GENERATION_STALE'])
           const target = await fs.resolve(raw, { cwd, signal })
+          if (stale()) return result(seed.executionId, 'CANCELLED', this.clock(), facts, counts, ['EVIDENCE_CANCELLED', 'FS_GENERATION_STALE'])
           const stat = await fs.stat(target, signal)
+          if (stale()) return result(seed.executionId, 'CANCELLED', this.clock(), facts, counts, ['EVIDENCE_CANCELLED', 'FS_GENERATION_STALE'])
           if (li === undefined || stat === undefined) { contained = 'unknown'; alias = 'unknown'; reasons.push('TARGET_MISSING'); continue }
           if (li.type === 'symlink') alias = true
           if (!fs.contains(workspace, target)) { contained = false; if (!reasons.includes('OUTSIDE_WORKSPACE')) reasons.push('OUTSIDE_WORKSPACE') }
@@ -247,13 +291,18 @@ export class BoundedEvidenceRuntime {
       if (!targetKnown && seed.requestedPaths.length > 0 && !reasons.includes('TARGET_RESOLUTION_FAILED')) reasons.push('TARGET_RESOLUTION_FAILED')
       Object.assign(facts, { targetCountKnown: targetKnown, canonicalTargetsKnown: canonicalKnown, workspaceContained: contained, pathAliasObserved: alias })
       for (const item of targetResults) if (item.stat.type === 'directory' && contained === true) {
-        try { limits.directory((await fs.listDir(item.target, signal)).length) }
+        try {
+          const entries = await fs.listDir(item.target, signal)
+          if (stale()) return result(seed.executionId, 'CANCELLED', this.clock(), facts, counts, ['EVIDENCE_CANCELLED', 'FS_GENERATION_STALE'])
+          limits.directory(entries.length)
+        }
         catch { if (!reasons.includes('TARGET_STAT_FAILED')) reasons.push('TARGET_STAT_FAILED') }
       }
       if (seed.packageRelevant && contained !== false) await this.collectPackage(fs, cwd, signal, facts, limits)
+      if (stale()) return result(seed.executionId, 'CANCELLED', this.clock(), facts, counts, ['EVIDENCE_CANCELLED', 'FS_GENERATION_STALE'])
       if ((seed.operationClass === 'direct-file' || seed.operationClass === 'simple-shell-file') && shell !== undefined && targetResults.length > 0 && contained === true) {
         const git = await this.collectGit(shell, fs, workspace, targetResults.map(item => item.target), seed.session, signal)
-        if (shellGeneration !== this.shellGeneration || shell !== this.shell) return result(seed.executionId, 'CANCELLED', now, facts, counts, ['SHELL_GENERATION_STALE'])
+        if (stale()) return result(seed.executionId, 'CANCELLED', this.clock(), facts, counts, ['EVIDENCE_CANCELLED', 'SHELL_GENERATION_STALE'])
         if (git === undefined) reasons.push('GIT_CHECKER_UNKNOWN')
         else Object.assign(facts, { versionControlled: git.repositoryAvailable ? git.tracked : false, exactTargetsClean: git.repositoryAvailable ? git.clean : 'unknown', rollbackMechanismKnown: git.repositoryAvailable && git.tracked && git.clean && targetResults.length === 1 && (seed.toolName === 'write' || seed.toolName === 'edit') })
       }
@@ -261,6 +310,7 @@ export class BoundedEvidenceRuntime {
       const fatal = ['TARGET_RESOLUTION_FAILED', 'TARGET_STAT_FAILED', 'OUTSIDE_WORKSPACE', 'TARGET_MISSING', 'EVIDENCE_ITEM_LIMIT', 'FILE_READ_LIMIT', 'FILE_SIZE_LIMIT', 'EVIDENCE_CHAR_LIMIT', 'DIRECTORY_ENTRY_LIMIT', 'PACKAGE_MANIFEST_TOO_LARGE'] as const
       const evidenceComplete = seed.packageRelevant ? facts.packageManifestPresent !== 'unknown' : targetKnown
       const complete = evidenceComplete && (seed.packageRelevant || contained !== 'unknown') && !reasons.some(code => fatal.includes(code as typeof fatal[number]))
+      if (stale()) return result(seed.executionId, 'CANCELLED', this.clock(), facts, counts, ['EVIDENCE_CANCELLED', 'FS_GENERATION_STALE'])
       return result(seed.executionId, complete ? 'COMPLETE' : 'PARTIAL', now, facts, counts, reasons, limits.truncated || reasons.length > 1)
     } catch { return result(seed.executionId, 'PARTIAL', now, facts, counts, ['TARGET_RESOLUTION_FAILED', ...reasons], true) }
   }
@@ -290,7 +340,7 @@ export class BoundedEvidenceRuntime {
     try {
       const env: Record<string, string> = { RA_WORKSPACE: fs.processPath(workspace) }
       targets.slice(0, 8).forEach((target, index) => { env[`RA_TARGET_${index}`] = fs.processPath(target) })
-      const spec = shell.resolve({ command: `node -e ${JSON.stringify(GIT_CHECKER)}`, workdir: fs.processPath(workspace), timeoutMs: 5000, stdoutMaxBytes: MAX_OUTPUT_BYTES, signal, env, sandboxMode: 'read-only', session })
+      const spec = shell.resolve({ command: `node -e ${JSON.stringify(GIT_CHECKER_WITH_FSMONITOR_DISABLED)}`, workdir: fs.processPath(workspace), timeoutMs: 5000, stdoutMaxBytes: MAX_OUTPUT_BYTES, signal, env, sandboxMode: 'read-only', session })
       const output = await shell.run(spec)
       if (output.exitCode !== 0 || output.timedOut || output.aborted || output.stdout?.truncated) return undefined
       return parseCheckerOutput(safeOutput(output.stdout?.text))

@@ -59,7 +59,8 @@ export class EvidenceScheduler {
     const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => { timedOut = true; controller.abort(); reject(new Error('EVIDENCE_TIMEOUT')) }, this.timeoutMs) })
     try {
       const value = await Promise.race([work, timeout])
-      if (!timedOut) job.resolve({ ok: true, value })
+      if (!timedOut && !controller.signal.aborted && !this.disposed) job.resolve({ ok: true, value })
+      else if (!timedOut) job.resolve({ ok: false, reason: 'CANCELLED' })
       return work.catch(() => undefined)
     } catch (error) {
       if (timedOut) job.resolve({ ok: false, reason: 'TIMEOUT' })

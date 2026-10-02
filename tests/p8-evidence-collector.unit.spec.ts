@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile, lstat, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve as resolvePath, relative } from 'node:path'
@@ -130,6 +130,8 @@ describe('Phase 8 bounded collector', () => {
       await execFileAsync('git', ['config', 'user.name', 'Phase 8'], { cwd: root })
       await execFileAsync('git', ['add', 'tracked.txt'], { cwd: root })
       await execFileAsync('git', ['commit', '--quiet', '-m', 'fixture'], { cwd: root })
+      const fsmonitorSentinel = join(root, 'fsmonitor-sentinel.txt')
+      await execFileAsync('git', ['config', 'core.fsmonitor', "node -e \"require('node:fs').writeFileSync(process.env.P8_FSMONITOR_SENTINEL,'executed')\""], { cwd: root, env: { ...process.env, P8_FSMONITOR_SENTINEL: fsmonitorSentinel } })
       await writeFile(join(root, '.gitignore'), 'ignored.txt\n')
       await writeFile(join(root, 'untracked.txt'), 'u')
       await writeFile(join(root, 'ignored.txt'), 'i')
@@ -153,6 +155,7 @@ describe('Phase 8 bounded collector', () => {
       expect(snapshots.dirty.facts.exactTargetsClean).toBe(false)
       expect(snapshots.untracked.facts.versionControlled).toBe(false)
       expect(snapshots.ignored.facts.versionControlled).toBe(false)
+      expect(await stat(fsmonitorSentinel).then(() => true).catch(() => false)).toBe(false)
       await collector.dispose()
     } finally { await rm(root, { recursive: true, force: true }) }
   }, 30000)
@@ -182,4 +185,34 @@ describe('Phase 8 bounded collector', () => {
       await collector.dispose()
     } finally { await rm(root, { recursive: true, force: true }) }
   }, 60000)
+
+  it('keeps cancellation tombstones bounded, session-owned, and terminal', async () => {
+    const collector = new EvidenceCollector()
+    for (let i = 0; i < 700; i += 1) collector.cancel(`native-${i}`)
+    const state = collector as unknown as { cancelled: Map<string, unknown> }
+    expect(state.cancelled.size).toBeLessThanOrEqual(512)
+
+    const s = session()
+    const blocked = execution(s)
+    collector.seeds.capture(blocked, 'blocked')
+    collector.cancel('blocked')
+    expect(state.cancelled.has('blocked')).toBe(true)
+    const complete = vi.fn()
+    collector.collect('blocked', complete)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(complete).not.toHaveBeenCalled()
+
+    const sessionOnly = new EvidenceCollector()
+    const sessionExecution = execution(s)
+    sessionOnly.seeds.capture(sessionExecution, 'session-owned')
+    sessionOnly.cancel('session-owned')
+    const sessionState = sessionOnly as unknown as { cancelled: Map<string, unknown> }
+    expect(sessionState.cancelled.has('session-owned')).toBe(true)
+    sessionOnly.disposeSession(s)
+    expect(sessionState.cancelled.size).toBe(0)
+    await sessionOnly.dispose()
+    expect(state.cancelled.size).toBeLessThanOrEqual(512)
+    await collector.dispose()
+    expect(state.cancelled.size).toBe(0)
+  })
 })

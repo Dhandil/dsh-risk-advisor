@@ -292,11 +292,13 @@ export function overlayEvidenceContext(base: RiskContextSnapshot, snapshot: Evid
   set('recovery.versionControlled', facts.versionControlled)
   set('recovery.exactTargetsClean', facts.exactTargetsClean)
   set('recovery.checkpointAvailable', facts.checkpointAvailable)
-  const safeLocalMutation = base.ruleEvaluation.mutating === true
+  const operationSideEffect = base.ruleEvaluation.findings.some(item => item.category === 'system-change' || item.category === 'destructive' || item.category === 'network' || item.category === 'credential' || item.category === 'install' || item.category === 'shell-ambiguity' || item.category === 'unknown-tool' || item.id === 'PERMISSION_PRIVILEGE_ELEVATION' || item.id === 'PERMISSION_ACCESS_CONTROL_MUTATION' || item.id === 'PERMISSION_ESCALATION_RETRY')
+  const safeLocalMutation = base.ruleEvaluation.status === 'READY'
+    && base.ruleEvaluation.parserConfidence === 'high'
+    && base.ruleEvaluation.mutating === true
     && base.ruleEvaluation.externalEffect === false
     && base.ruleEvaluation.networkEffect === 'none'
-    && base.ruleEvaluation.requestedPermission !== 'danger-full-access'
-    && !base.ruleEvaluation.findings.some(item => ['system-change', 'permission', 'network', 'credential', 'install'].includes(item.category))
+    && !operationSideEffect
   const writeEdit = base.seed?.toolName === 'write' || base.seed?.toolName === 'edit'
   const reversible = facts.rollbackMechanismKnown === true && writeEdit && safeLocalMutation
   const rollback = writeEdit && safeLocalMutation ? facts.rollbackMechanismKnown : facts.rollbackMechanismKnown === false ? false : 'unknown'

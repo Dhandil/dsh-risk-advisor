@@ -6,10 +6,11 @@ import { ApprovalAssessmentCoordinator } from '../src/host/assessment-envelope.t
 import { EvidenceCollector } from '../src/host/evidence-collector.ts'
 import { mergeEvidenceAssessment, overlayEvidenceContext, type RiskAssessment, type RiskContextSnapshot } from '../src/host/risk-engine.ts'
 import type { EvidenceSnapshotV1 } from '../src/host/evidence-types.ts'
+import type { RuleFinding } from '../src/host/rule-engine.ts'
 
-function context(toolName: string, outside: boolean): RiskContextSnapshot {
+function context(toolName: string, outside: boolean, requestedPermission: 'workspace-write' | 'danger-full-access' = 'workspace-write', findings: readonly RuleFinding[] = []): RiskContextSnapshot {
   const ruleEvaluation = {
-    schemaVersion: 1, rulesetVersion: 'phase4-v1', executionId: 'e1', status: 'READY', operationKind: toolName === 'write' ? 'filesystem-write' : 'shell', parserConfidence: 'high', mutating: true, externalEffect: false, networkEffect: 'none', requestedPermission: undefined, workspaceContained: 'unknown', sandboxCovered: 'unknown', reversible: 'unknown', failureContext: { isRetry: false, retryCount: 0, recentFailureCount: 0, sameRootCause: 'unknown', permissionEscalation: 'unknown', degraded: false }, findings: [], reasonCodes: [],
+    schemaVersion: 1, rulesetVersion: 'phase4-v1', executionId: 'e1', status: 'READY', operationKind: toolName === 'write' ? 'filesystem-write' : 'shell', parserConfidence: 'high', mutating: true, externalEffect: false, networkEffect: 'none', requestedPermission, workspaceContained: 'unknown', sandboxCovered: 'unknown', reversible: 'unknown', failureContext: { isRetry: false, retryCount: 0, recentFailureCount: 0, sameRootCause: 'unknown', permissionEscalation: 'unknown', degraded: false }, findings, reasonCodes: [],
   } as never
   const features = [
     { id: 'scope.canonicalTargetsKnown', value: 'unknown' as const, source: 'DETERMINISTIC' as const, strength: 'DETERMINISTIC' as const },
@@ -20,8 +21,9 @@ function context(toolName: string, outside: boolean): RiskContextSnapshot {
     { id: 'recovery.rollbackMechanismKnown', value: 'unknown' as const, source: 'DETERMINISTIC' as const, strength: 'DETERMINISTIC' as const },
     { id: 'recovery.reversible', value: 'unknown' as const, source: 'DETERMINISTIC' as const, strength: 'DETERMINISTIC' as const },
     { id: 'privilege.minimumScopeEvidenceAvailable', value: false, source: 'DETERMINISTIC' as const, strength: 'DETERMINISTIC' as const },
+    { id: 'privilege.requestedScope', value: requestedPermission === 'danger-full-access' ? 'unrestricted' : 'workspace', source: 'DETERMINISTIC' as const, strength: 'DETERMINISTIC' as const },
   ]
-  return { schemaVersion: 1, contextId: 'c1', executionId: 'e1', seed: { schemaVersion: 1, executionId: 'e1', toolName, operationText: toolName, resourceHints: [], requestedPermission: 'workspace-write', truncated: false } as never, ruleEvaluation, failureSummary: { executionId: 'e1', retryCount: 0, recentFailureCount: 0, sameRootCause: 'unknown', permissionEscalation: 'unknown', truncated: false, reasonCodes: [] } as never, directUser: { messages: [], historyOmitted: false, degraded: false } as never, ledger: { health: 'HEALTHY', sourceComplete: true, truncated: false, issueCodes: [] }, features: { schemaVersion: 1, features }, degraded: false, historyOmitted: false }
+  return { schemaVersion: 1, contextId: 'c1', executionId: 'e1', seed: { schemaVersion: 1, executionId: 'e1', toolName, operationText: toolName, resourceHints: [], requestedPermission, truncated: false } as never, ruleEvaluation, failureSummary: { executionId: 'e1', retryCount: 0, recentFailureCount: 0, sameRootCause: 'unknown', permissionEscalation: 'unknown', truncated: false, reasonCodes: [] } as never, directUser: { messages: [], historyOmitted: false, degraded: false } as never, ledger: { health: 'HEALTHY', sourceComplete: true, truncated: false, issueCodes: [] }, features: { schemaVersion: 1, features }, degraded: false, historyOmitted: false }
 }
 
 function snapshot(facts: Partial<EvidenceSnapshotV1['facts']>): EvidenceSnapshotV1 {
@@ -82,5 +84,34 @@ describe('Phase 8 final review repairs', () => {
     expect(merged.dimensions.risk.verdict).toBe('HIGH')
     expect(merged.dimensions.authorization.verdict).toBe('UNKNOWN')
     expect(merged.dimensions.necessity.verdict).toBe('UNKNOWN')
+  })
+
+  it('classifies proven local scope against requested permission width without treating the width as a side effect', () => {
+    const workspace = context('write', false, 'workspace-write')
+    const workspaceEvidence = overlayEvidenceContext(workspace, snapshot({ versionControlled: 'unknown' }))
+    const workspaceAssessment = mergeEvidenceAssessment(assessment(workspace), workspace, workspaceEvidence, snapshot({ versionControlled: 'unknown' }), 'a-workspace', 2)
+    expect(workspaceAssessment.dimensions.privilege.verdict).toBe('PROPORTIONATE')
+    expect(workspaceEvidence.features.features.find(item => item.id === 'recovery.reversible')?.value).toBe(true)
+
+    const danger = context('write', false, 'danger-full-access', [{ id: 'PERMISSION_DANGER_FULL_ACCESS', category: 'permission', severity: 'high', summary: 'requested width', hard: true }])
+    const dangerEvidence = overlayEvidenceContext(danger, snapshot({ versionControlled: 'unknown' }))
+    const dangerAssessment = mergeEvidenceAssessment(assessment(danger), danger, dangerEvidence, snapshot({ versionControlled: 'unknown' }), 'a-danger', 2)
+    expect(dangerEvidence.features.features.find(item => item.id === 'privilege.minimumScopeEvidenceAvailable')?.value).toBe(true)
+    expect(dangerAssessment.dimensions.privilege.verdict).toBe('EXCESSIVE')
+    expect(dangerEvidence.features.features.find(item => item.id === 'recovery.reversible')?.value).toBe(true)
+  })
+
+  it('does not prove minimum scope for actual elevation, destructive, network, or unsupported findings', () => {
+    const blocked = [
+      [{ id: 'PERMISSION_PRIVILEGE_ELEVATION', category: 'permission' }],
+      [{ id: 'PERMISSION_ACCESS_CONTROL_MUTATION', category: 'permission' }],
+      [{ id: 'DESTRUCTIVE_RECURSIVE_DELETE', category: 'destructive' }],
+      [{ id: 'NETWORK_EXTERNAL_WRITE', category: 'network' }],
+      [{ id: 'UNKNOWN_TOOL', category: 'unknown-tool' }],
+    ] as const
+    for (const [finding] of blocked) {
+      const value = overlayEvidenceContext(context('write', false, 'workspace-write', [{ ...finding, severity: 'high', summary: 'blocked', hard: true } as RuleFinding]), snapshot({ versionControlled: 'unknown' }))
+      expect(value.features.features.find(item => item.id === 'privilege.minimumScopeEvidenceAvailable')?.value).toBe(false)
+    }
   })
 })
