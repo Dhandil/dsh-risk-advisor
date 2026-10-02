@@ -69,18 +69,24 @@ export class PresentationStore {
   start(): void {
     if (this.started || this.disposed) return
     this.started = true
+    if (this.graceStartedAt === undefined) this.graceStartedAt = this.safeNow()
     void this.readNow()
   }
 
-  dispose(): void {
-    if (this.disposed) return
-    this.disposed = true
+  stop(): void {
+    if (!this.started) return
     this.started = false
     this.storeGeneration += 1
     this.requestGeneration += 1
     this.clearScheduled()
     this.request?.abort()
     this.request = undefined
+  }
+
+  dispose(): void {
+    if (this.disposed) return
+    this.disposed = true
+    this.stop()
     this.unsubscribeGeneration?.()
     this.unsubscribeGeneration = undefined
     this.listeners.clear()
@@ -105,8 +111,8 @@ export class PresentationStore {
 
   private applyResult(result: BrowserBridgeClientResult): void {
     if (result.kind === 'NOT_FOUND') {
-      if (this.graceStartedAt === undefined) this.graceStartedAt = this.safeNow()
-      if (this.safeNow() - this.graceStartedAt >= NOT_FOUND_GRACE_MS) {
+      const graceStartedAt = this.graceStartedAt ?? this.safeNow()
+      if (this.safeNow() - graceStartedAt >= NOT_FOUND_GRACE_MS) {
         this.publish({ status: 'UNAVAILABLE', reason: 'NO_ACTIVE_EXECUTION' })
         this.clearScheduled()
       } else {

@@ -652,7 +652,15 @@ export class ApprovalAssessmentCoordinator {
     const phase5 = record.phase5
     if (phase5 === undefined || phase5.attempted || phase5.closed) return
     if (!this.fastJudgeConfig.enabled) { phase5.stage = 'complete'; return }
-    if (this.judge === undefined || this.scheduler === undefined) { phase5.stage = 'complete'; this.addReason(record, 'JUDGE_CAPABILITY_UNAVAILABLE'); return }
+    if (this.judge === undefined || this.scheduler === undefined) {
+      // Dynamic LLM attachment remains an allowed Phase-5 path. Keep this
+      // record in the non-terminal stage so a later attach can publish A2 and
+      // Browser polling cannot observe `complete` before that possibility is
+      // closed.
+      phase5.stage = 'fast'
+      this.addReason(record, 'JUDGE_CAPABILITY_UNAVAILABLE')
+      return
+    }
     if (phase5.context.payload === undefined || phase5.context.serializedPayload === undefined) {
       this.addReason(record, 'CONTEXT_DEGRADED')
       phase5.attempted = true

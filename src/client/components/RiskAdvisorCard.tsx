@@ -23,15 +23,32 @@ function ReadyCard({ view, t }: { readonly view: RiskAdvisorBridgeViewV2; readon
   const assessment = view.assessment!
   return <section data-testid="risk-advisor-card" data-ra-status="READY">
     <header><strong>{t('advisory.title')}</strong><span>{t('advisory.disclaimer')}</span><span data-testid="risk-advisor-ready-state">{t('state.ready')}</span></header>
-    <div data-testid="risk-advisor-operation"><strong>{view.operation!.title}</strong><span>{view.operation!.summary}</span></div>
-    <div data-testid="risk-advisor-summary"><span>{t('risk')}: {assessment.aggregate.hazardLevel}</span><span>{t('recommendation')}: {assessment.aggregate.recommendation}</span></div>
+    <div data-testid="risk-advisor-operation"><strong>{view.operation!.title}</strong><span>{view.operation!.summary}</span><OperationDetails operation={view.operation!} t={t} /></div>
+    <div data-testid="risk-advisor-summary">
+      <span>{t('risk')}: {assessment.aggregate.hazardLevel}</span>
+      <span>{t('recommendation')}: {assessment.aggregate.recommendation}</span>
+      {assessment.status === 'PARTIAL' ? <span data-testid="risk-advisor-assessment-status">{t('status.partial')}</span> : null}
+      {assessment.status === 'DEGRADED' ? <span data-testid="risk-advisor-assessment-status">{t('status.degraded')}</span> : null}
+      {assessment.aggregate.primaryReasonCodes[0] === undefined ? null : <span data-testid="risk-advisor-primary-reason">{t('primaryReason')}: {assessment.aggregate.primaryReasonCodes[0]}</span>}
+    </div>
     <DimensionDetails dimensions={assessment.dimensions} t={t} />
     <BoundedList title={t('findings')} items={assessment.findings.map(item => `${item.title}: ${item.detail}`)} testId="risk-advisor-findings" />
     <BoundedList title={t('uncertainties')} items={assessment.uncertainties.map(item => `${item.code}: ${item.description}`)} testId="risk-advisor-uncertainties" />
     <div data-testid="risk-advisor-source">{assessment.judgeAssisted ? t('judgeAssisted') : t('rulesOnly')}</div>
-    <div data-testid="risk-advisor-failure-context"><strong>{t('failureContext')}</strong><span>{view.failureContext!.retryCount}/{view.failureContext!.recentFailureCount}</span></div>
+    <details data-testid="risk-advisor-failure-context"><summary>{t('failureContext')}</summary><span>{t('failureDetails')}</span><span>{view.failureContext!.retryCount}/{view.failureContext!.recentFailureCount}</span><span>{t('sameRootCause')}: {displayUnknown(view.failureContext!.sameRootCause, t)}</span><span>{t('permissionEscalation')}: {displayUnknown(view.failureContext!.permissionEscalation, t)}</span><span>{t('truncated')}: {view.failureContext!.truncated ? 'true' : 'false'}</span></details>
+    <div data-testid="risk-advisor-evidence"><span>{t('ledgerHealth')}: {assessment.evidence.ledgerHealth}</span><span>{t('evidenceQuality')}: {assessment.dimensions.evidenceQuality.verdict} / {assessment.dimensions.evidenceQuality.evidenceQuality}</span></div>
     <AlternativeList alternatives={assessment.alternatives} t={t} />
   </section>
+}
+
+function OperationDetails({ operation, t }: { readonly operation: NonNullable<RiskAdvisorBridgeViewV2['operation']>; readonly t: CardProps['t'] }): ReactNode {
+  return <details data-testid="risk-advisor-operation-details"><summary>{t('operationDetails')}</summary>
+    <div><strong>{t('resources')}</strong>{operation.resources.map(resource => <span data-testid="risk-advisor-resource" key={`${resource.kind}:${resource.label}`}>{resource.kind}: {resource.label}</span>)}</div>
+    {operation.requestedPermission === undefined ? null : <span>{t('requestedPermission')}: {operation.requestedPermission}</span>}
+    <span>{t('workspaceContained')}: {operation.workspaceContained}</span>
+    <span>{t('sandboxCovered')}: {operation.sandboxCovered}</span>
+    <span>{t('reversible')}: {operation.reversible}</span>
+  </details>
 }
 
 function DimensionDetails({ dimensions, t }: { readonly dimensions: ReadyAssessment['dimensions']; readonly t: CardProps['t'] }): ReactNode {
@@ -42,6 +59,8 @@ function DimensionDetails({ dimensions, t }: { readonly dimensions: ReadyAssessm
 function Dimension({ label, dimension }: { readonly label: string; readonly dimension: BrowserDimension }): ReactNode {
   return <details data-testid={`risk-advisor-dimension-${label}`}><summary>{label}: {dimension.verdict}</summary><span>{dimension.source} / {dimension.evidenceQuality}</span>{dimension.reasons.map(reason => <div key={`${reason.code}:${reason.message}`}>{reason.code}: {reason.message}</div>)}</details>
 }
+
+function displayUnknown(value: boolean | 'unknown', t: CardProps['t']): string { return value === 'unknown' ? t('unknown') : value ? 'true' : 'false' }
 
 function BoundedList({ title, items, testId }: { readonly title: string; readonly items: readonly string[]; readonly testId: string }): ReactNode {
   if (items.length === 0) return null

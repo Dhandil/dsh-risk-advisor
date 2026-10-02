@@ -13,17 +13,23 @@ export class PresentationClient {
     this.bridge = createRiskAdvisorBridgeClient(connection.rpc)
   }
 
-  acquire(sessionId: string, callId: string): PresentationStore {
+  /** Render-pure source lookup. It never starts polling or changes ownership. */
+  getSource(sessionId: string, callId: string): PresentationStore {
     if (this.disposed) throw new Error('presentation client disposed')
     const key = `${sessionId}\u0000${callId}`
     let entry = this.stores.get(key)
     if (entry === undefined) {
       entry = { store: new PresentationStore(this.bridge, sessionId, callId, this.connection), refs: 0 }
       this.stores.set(key, entry)
-      entry.store.start()
     }
-    entry.refs += 1
     return entry.store
+  }
+
+  /** Commit-phase ownership. Every retain has one matching release. */
+  retain(sessionId: string, callId: string): void {
+    const entry = this.entryFor(sessionId, callId)
+    entry.refs += 1
+    if (entry.refs === 1) entry.store.start()
   }
 
   release(sessionId: string, callId: string): void {
@@ -31,10 +37,7 @@ export class PresentationClient {
     const entry = this.stores.get(key)
     if (entry === undefined) return
     entry.refs -= 1
-    if (entry.refs <= 0) {
-      entry.store.dispose()
-      this.stores.delete(key)
-    }
+    if (entry.refs <= 0) { entry.refs = 0; entry.store.stop() }
   }
 
   dispose(): void {
@@ -42,5 +45,15 @@ export class PresentationClient {
     this.disposed = true
     for (const entry of this.stores.values()) entry.store.dispose()
     this.stores.clear()
+  }
+
+  private entryFor(sessionId: string, callId: string): Entry {
+    const key = `${sessionId}\u0000${callId}`
+    const existing = this.stores.get(key)
+    if (existing !== undefined) return existing
+    if (this.disposed) throw new Error('presentation client disposed')
+    const entry = { store: new PresentationStore(this.bridge, sessionId, callId, this.connection), refs: 0 }
+    this.stores.set(key, entry)
+    return entry
   }
 }

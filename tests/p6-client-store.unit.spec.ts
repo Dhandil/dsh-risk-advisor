@@ -30,6 +30,92 @@ describe('Phase 6 session/call presentation store', () => {
     vi.useRealTimers()
   })
 
+  it('counts a slow first NOT_FOUND response from the first active read', async () => {
+    vi.useFakeTimers()
+    let now = 0
+    const first = Promise.withResolvers<BrowserBridgeClientResult>()
+    let calls = 0
+    const bridge: RiskAdvisorBridgeClient = {
+      active: vi.fn(() => { calls += 1; return calls === 1 ? first.promise : Promise.resolve({ kind: 'NOT_FOUND' as const }) }),
+      assessment: vi.fn(async () => ({ kind: 'NOT_FOUND' as const })),
+    }
+    const store = new PresentationStore(bridge, 'session', 'call', undefined, { now: () => now })
+    store.start()
+    expect(bridge.active).toHaveBeenCalledTimes(1)
+    now = 2_500
+    first.resolve({ kind: 'NOT_FOUND' })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(store.getSnapshot().status).toBe('ANALYZING')
+    now = 3_000
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    await Promise.resolve()
+    expect(store.getSnapshot()).toMatchObject({ status: 'UNAVAILABLE', reason: 'NO_ACTIVE_EXECUTION' })
+    store.dispose()
+    vi.useRealTimers()
+  })
+
+  it('preserves grace across connection reset but starts a new binding window for a new call', async () => {
+    vi.useFakeTimers()
+    let now = 0
+    const pending: Array<(value: BrowserBridgeClientResult) => void> = []
+    const bridge: RiskAdvisorBridgeClient = { active: vi.fn(() => new Promise(resolve => pending.push(resolve))), assessment: vi.fn(async () => ({ kind: 'NOT_FOUND' as const })) }
+    let reset: (() => void) | undefined
+    let generation = 1
+    const connection = { rpc: { call: vi.fn() }, generation: { getSnapshot: () => generation, subscribe: (listener: () => void) => { reset = listener; return () => {} } } }
+    const store = new PresentationStore(bridge, 'session', 'call', connection, { now: () => now })
+    store.start()
+    generation = 2
+    reset!()
+    now = 2_500
+    pending[0]!({ kind: 'NOT_FOUND' })
+    await Promise.resolve()
+    pending[1]!({ kind: 'NOT_FOUND' })
+    await Promise.resolve()
+    await Promise.resolve()
+    now = 3_000
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    pending[2]!({ kind: 'NOT_FOUND' })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(store.getSnapshot()).toMatchObject({ status: 'UNAVAILABLE', reason: 'NO_ACTIVE_EXECUTION' })
+    const next = new PresentationStore(bridge, 'session', 'new-call', undefined, { now: () => now })
+    next.start()
+    pending[2]!({ kind: 'NOT_FOUND' })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(next.getSnapshot().status).toBe('ANALYZING')
+    store.dispose()
+    next.dispose()
+    vi.useRealTimers()
+  })
+
+  it('does not overlap active reads and bypasses grace for ambiguity or terminal transport failure', async () => {
+    const pending = Promise.withResolvers<BrowserBridgeClientResult>()
+    let active = 0
+    let maxActive = 0
+    const bridge: RiskAdvisorBridgeClient = {
+      active: vi.fn(async () => { active += 1; maxActive = Math.max(maxActive, active); const value = await pending.promise; active -= 1; return value }),
+      assessment: vi.fn(async () => ({ kind: 'NOT_FOUND' as const })),
+    }
+    const store = new PresentationStore(bridge, 'session', 'call')
+    store.start()
+    await Promise.resolve()
+    expect(maxActive).toBe(1)
+    pending.resolve({ kind: 'AMBIGUOUS', reasonCodes: ['MULTIPLE_ACTIVE_APPROVALS'] })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(store.getSnapshot()).toMatchObject({ status: 'UNAVAILABLE', reason: 'AMBIGUOUS_EXECUTION' })
+    expect(active).toBe(0)
+    store.dispose()
+
+    const failed = new PresentationStore({ active: vi.fn(async () => ({ kind: 'UNAVAILABLE' as const, reason: 'PROTOCOL_INVALID' as const })), assessment: vi.fn(async () => ({ kind: 'NOT_FOUND' as const })) }, 'session', 'failed')
+    failed.start()
+    await Promise.resolve()
+    expect(failed.getSnapshot()).toMatchObject({ status: 'UNAVAILABLE', reason: 'PROTOCOL_INVALID' })
+    failed.dispose()
+  })
+
   it('polls fast A1 and publishes A2, then stops on complete', async () => {
     vi.useFakeTimers()
     const bridge = bridgeWith([{ kind: 'VIEW', view: view('fast', 'a1') }, { kind: 'VIEW', view: view('complete', 'a2') }])

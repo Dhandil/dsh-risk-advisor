@@ -6,6 +6,21 @@ export type RiskAdvisorLocaleKey =
   | 'state.ready'
   | 'state.unavailable'
   | 'state.cancelled'
+  | 'status.partial'
+  | 'status.degraded'
+  | 'primaryReason'
+  | 'operationDetails'
+  | 'resources'
+  | 'requestedPermission'
+  | 'workspaceContained'
+  | 'sandboxCovered'
+  | 'reversible'
+  | 'unknown'
+  | 'ledgerHealth'
+  | 'failureDetails'
+  | 'sameRootCause'
+  | 'permissionEscalation'
+  | 'truncated'
   | 'risk'
   | 'recommendation'
   | 'authorization'
@@ -40,6 +55,21 @@ export const en = {
   'state.analyzing': 'ANALYZING',
   'state.ready': 'ASSESSMENT READY',
   'state.cancelled': 'CANCELLED',
+  'status.partial': 'PARTIAL',
+  'status.degraded': 'DEGRADED',
+  primaryReason: 'Primary reason',
+  operationDetails: 'Operation details',
+  resources: 'Resources',
+  requestedPermission: 'Requested permission',
+  workspaceContained: 'Workspace containment',
+  sandboxCovered: 'Sandbox coverage',
+  reversible: 'Recovery / reversibility',
+  unknown: 'unknown',
+  ledgerHealth: 'Ledger / evidence health',
+  failureDetails: 'Failure context details',
+  sameRootCause: 'Same root cause',
+  permissionEscalation: 'Permission escalation',
+  truncated: 'Truncated',
   risk: 'Risk',
   recommendation: 'Recommendation',
   authorization: 'Authorization',
@@ -67,6 +97,21 @@ export const zh = {
   'state.analyzing': '分析中',
   'state.ready': '评估就绪',
   'state.cancelled': '已取消',
+  'status.partial': 'PARTIAL（部分）',
+  'status.degraded': 'DEGRADED（降级）',
+  primaryReason: '主要原因',
+  operationDetails: '操作详情',
+  resources: '资源',
+  requestedPermission: '请求权限',
+  workspaceContained: '工作区包含性',
+  sandboxCovered: '沙箱覆盖',
+  reversible: '恢复性 / 可逆性',
+  unknown: 'unknown',
+  ledgerHealth: 'Ledger / 证据健康度',
+  failureDetails: '失败上下文详情',
+  sameRootCause: '相同根因',
+  permissionEscalation: '权限升级',
+  truncated: '已截断',
   risk: '风险',
   recommendation: '建议',
   authorization: '授权',

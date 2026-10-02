@@ -1,4 +1,4 @@
-import { Component, useEffect, useMemo, type ReactNode } from 'react'
+import { Component, useEffect, type ReactNode } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { commandForSnapshot } from './command.ts'
 import type { PresentationClient } from './presentation-client.ts'
@@ -25,8 +25,14 @@ function UnavailableCard({ t }: { readonly t: RiskAdvisorDetailProps['t'] }): Re
 
 function AdvisoryBody(props: RiskAdvisorDetailProps): ReactNode {
   const client = props.presentationClient
-  const store = useMemo(() => client === undefined || props.callId === undefined ? undefined : client.acquire(String(props.sessionId), String(props.callId)), [client, props.sessionId, props.callId])
-  useEffect(() => store === undefined ? undefined : () => client!.release(String(props.sessionId), String(props.callId)), [client, props.sessionId, props.callId, store])
+  const callId = typeof props.callId === 'string' && props.callId.length > 0 ? props.callId : undefined
+  const store = client === undefined || callId === undefined ? undefined : client.getSource(String(props.sessionId), callId)
+  useEffect(() => {
+    if (client === undefined || callId === undefined) return
+    client.retain(String(props.sessionId), callId)
+    return () => { client.release(String(props.sessionId), callId) }
+  }, [client, props.sessionId, callId])
+  if (callId === undefined) return null
   return store === undefined ? <UnavailableCard t={props.t} /> : <RiskAdvisorCard store={store} t={props.t} />
 }
 
