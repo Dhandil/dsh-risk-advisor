@@ -118,14 +118,18 @@ function digest(value: string): string | undefined {
 }
 
 export function isValidBranchName(value: string): boolean {
+  const components = value.split('/')
   return value.length > 0
     && value.length <= 256
     && !value.startsWith('-')
+    && !value.startsWith('/')
+    && !value.endsWith('/')
+    && !value.includes('//')
     && !value.includes('..')
     && !value.includes('@{')
-    && !/[\s~^:?*[\\]/.test(value)
+    && !/[\s\u0000-\u001f~^:?*[\\]/.test(value)
     && !value.endsWith('.')
-    && !value.endsWith('/')
+    && components.every(component => component.length > 0 && !component.startsWith('.') && !component.endsWith('.lock') && !component.endsWith('.'))
 }
 
 function packageName(value: string): boolean {

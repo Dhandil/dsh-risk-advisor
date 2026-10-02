@@ -203,18 +203,25 @@ function verifierCommand(effect: ExpectedEffect): string {
   }
 }
 
+function exactGitStdout(value: string): string | undefined {
+  if (value.endsWith('\r\n')) return value.slice(0, -2)
+  if (value.endsWith('\n')) return value.slice(0, -1)
+  return value
+}
+
 function shellResultRecord(effect: ExpectedEffect, result: ShellRunResult, start: number, expected?: string): VerificationRecordV1 {
   if (result.timedOut) return record(effect, 'UNKNOWN', 'unknown', 'low', ['VERIFIER_TIMEOUT'], start)
   if (result.aborted) return record(effect, 'UNKNOWN', 'unknown', 'low', ['VERIFIER_ABORTED'], start)
   if (result.stdout.truncated || result.stdout.text.length > MAX_OUTPUT_BYTES) return record(effect, 'UNKNOWN', 'unknown', 'low', ['VERIFIER_OUTPUT_TRUNCATED'], start)
-  const output = result.stdout.text.trim()
   if (expected !== undefined) {
-    if (result.exitCode !== 0 || output.length === 0 || output.length > 256) return record(effect, 'UNKNOWN', 'unknown', 'low', ['VERIFIER_RESULT_UNSUPPORTED'], start)
+    const output = exactGitStdout(result.stdout.text)
+    if (result.exitCode !== 0 || output === undefined || output.length === 0 || output.length > 256) return record(effect, 'UNKNOWN', 'unknown', 'low', ['VERIFIER_RESULT_UNSUPPORTED'], start)
     if (!isValidBranchName(output)) return record(effect, 'UNKNOWN', 'unknown', 'low', ['VERIFIER_RESULT_UNSUPPORTED'], start)
     return output === expected
       ? record(effect, 'MATCHED', true, 'medium', ['POSTCONDITION_MATCHED'], start)
       : record(effect, 'MISMATCHED', false, 'medium', ['POSTCONDITION_MISMATCH'], start)
   }
+  const output = result.stdout.text.trim()
   if (result.exitCode !== 0 || (output !== 'MATCHED' && output !== 'MISMATCHED')) return record(effect, 'UNKNOWN', 'unknown', 'low', ['VERIFIER_RESULT_UNSUPPORTED'], start)
   return output === 'MATCHED'
     ? record(effect, 'MATCHED', true, 'medium', ['POSTCONDITION_MATCHED'], start)

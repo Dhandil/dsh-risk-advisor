@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { runInNewContext } from 'node:vm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { ToolExecution } from '@deepseek-ai/dsh-tools'
 import { ExpectedEffectRegistry } from '../src/host/expected-effect.ts'
@@ -20,6 +21,41 @@ function shellFixture(output: string, mode: 'unsandboxed' | 'sandboxed' = 'unsan
       return { exitCode: 0, timedOut: false, aborted: false, stdout: { text: output, truncated: false }, stderr: { text: '', truncated: false } }
     },
   }
+}
+
+function stat(kind: 'file' | 'symlink' | 'directory' | 'special', size: number) {
+  return {
+    size,
+    mtimeMs: 1,
+    dev: 1,
+    ino: 1,
+    isSymbolicLink: () => kind === 'symlink',
+    isFile: () => kind === 'file',
+  }
+}
+
+function executeProductCopyChecker(spec: Record<string, unknown>, fixture: {
+  readonly lstat: (path: string) => ReturnType<typeof stat>
+  readonly read: (path: string) => Buffer
+}): string {
+  const command = String(spec.command)
+  expect(command.startsWith('node -e ')).toBe(true)
+  const source = JSON.parse(command.slice('node -e '.length)) as string
+  let output = ''
+  const exit = Symbol('checker-exit')
+  const sandbox = {
+    require: (name: string) => name === 'node:fs' ? {
+      lstatSync: fixture.lstat,
+      readFileSync: fixture.read,
+    } : undefined,
+    process: {
+      env: spec.env,
+      stdout: { write: (value: string) => { output += value } },
+      exit: () => { throw exit },
+    },
+  }
+  try { runInNewContext(source, sandbox) } catch (error) { if (error !== exit) throw error }
+  return output
 }
 
 describe('Phase 7 bounded postcondition verifier', () => {
@@ -109,7 +145,16 @@ describe('Phase 7 bounded postcondition verifier', () => {
   })
 
   it('fails closed for malformed Git output and preserves a valid-but-different branch as mismatch', async () => {
-    for (const [id, output, expected] of [['git-malformed', 'not a branch?', 'main'], ['git-different', 'other-branch', 'main']] as const) {
+    for (const [id, output, expected, status] of [
+      ['git-malformed', 'not a branch?', 'main', 'UNKNOWN'],
+      ['git-different', 'other-branch', 'main', 'MISMATCHED'],
+      ['git-space', ' main ', 'main', 'UNKNOWN'],
+      ['git-multiline', 'main\nother', 'main', 'UNKNOWN'],
+      ['git-valid-newline', 'main\n', 'main', 'MATCHED'],
+      ['git-invalid-dot', '.foo', 'main', 'UNKNOWN'],
+      ['git-invalid-slash', 'foo//bar', 'main', 'UNKNOWN'],
+      ['git-invalid-lock', 'foo.lock', 'main', 'UNKNOWN'],
+    ] as const) {
       const registry = new ExpectedEffectRegistry()
       const value = exec('bash', { command: 'git switch main', description: 'fixture' }, id)
       registry.capture(value, id)
@@ -117,7 +162,7 @@ describe('Phase 7 bounded postcondition verifier', () => {
       verifier.attach(shellFixture(output))
       verifier.observeResult(value, { isError: false, value: { kind: 'foreground', exitCode: 0 }, content: [] })
       await new Promise(resolve => setTimeout(resolve, 0))
-      expect(verifier.store.diagnostics.get(id)?.status).toBe(expected === 'main' && output === 'other-branch' ? 'MISMATCHED' : 'UNKNOWN')
+      expect(verifier.store.diagnostics.get(id)?.status).toBe(status)
       await verifier.dispose()
     }
   })
@@ -158,28 +203,73 @@ describe('Phase 7 bounded postcondition verifier', () => {
     await verifier.dispose()
   })
 
-  it('keeps copy access/race markers UNKNOWN and reserves mismatch for coherent absence/difference', async () => {
-    for (const [id, output, status] of [
-      ['copy-equal', 'MATCHED', 'MATCHED'],
-      ['copy-different', 'MISMATCHED', 'MISMATCHED'],
-      ['copy-absent', 'MISMATCHED', 'MISMATCHED'],
-      ['copy-eacces', 'UNKNOWN', 'UNKNOWN'],
-      ['copy-eperm', 'UNKNOWN', 'UNKNOWN'],
-      ['copy-race', 'UNKNOWN', 'UNKNOWN'],
-    ] as const) {
+  it('fences and drains an active old policy generation before attachGeneration replacement', async () => {
+    const registry = new ExpectedEffectRegistry()
+    const oldRun = Promise.withResolvers<unknown>()
+    let oldAborted = false
+    const oldShell = shellFixture('MATCHED', 'sandboxed', async spec => {
+      const signal = spec.signal as AbortSignal | undefined
+      signal?.addEventListener('abort', () => { oldAborted = true }, { once: true })
+      return oldRun.promise
+    })
+    const oldPolicy = { resolve: () => ({ mode: 'workspace-write' as const, workspaceRoot: 'D:\\Harness\\old-policy' }) }
+    const verifier = new PostconditionVerifier(registry)
+    verifier.attach(oldShell, oldPolicy)
+    const old = exec('bash', { command: 'git switch main', description: 'replacement-old' }, 'replacement-old')
+    registry.capture(old, 'replacement-old')
+    verifier.observeResult(old, { isError: false, value: { kind: 'foreground', exitCode: 0, sandbox: { mode: 'workspace-write', denied: false } }, content: [] })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    const policyCalls: unknown[] = []
+    const newPolicy = { resolve: (request: unknown) => { policyCalls.push(request); return { mode: 'workspace-write' as const, workspaceRoot: 'D:\\Harness\\new-policy' } } }
+    let replaced = false
+    const replacement = verifier.attachGeneration(oldShell, newPolicy).then(() => { replaced = true })
+    await Promise.resolve()
+    expect(replaced).toBe(false)
+    expect(oldAborted).toBe(true)
+    oldRun.resolve({ exitCode: 0, timedOut: false, aborted: false, stdout: { text: 'main', truncated: false }, stderr: { text: '', truncated: false } })
+    await replacement
+    expect(replaced).toBe(true)
+
+    const current = exec('bash', { command: 'git switch main', description: 'replacement-new' }, 'replacement-new')
+    registry.capture(current, 'replacement-new')
+    verifier.observeResult(current, { isError: false, value: { kind: 'foreground', exitCode: 0, sandbox: { mode: 'workspace-write', denied: false } }, content: [] })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(policyCalls).toHaveLength(1)
+    expect(verifier.store.diagnostics.get('replacement-old')).toMatchObject({ status: 'UNKNOWN', reasonCodes: ['VERIFIER_ABORTED'] })
+    expect(verifier.store.diagnostics.get('replacement-new')).toMatchObject({ status: 'MATCHED' })
+    await verifier.dispose()
+  })
+
+  it('executes the product COPY_CHECKER against every frozen local classification', async () => {
+    const cases = [
+      ['copy-equal', 'MATCHED', () => ({ lstat: () => stat('file', 4), read: () => Buffer.from('same') })],
+      ['copy-different', 'MISMATCHED', () => ({ lstat: () => stat('file', 4), read: (path: string) => path.includes('source') ? Buffer.from('same') : Buffer.from('diff') })],
+      ['copy-absent', 'MISMATCHED', () => ({ lstat: (path: string) => { if (path.includes('destination')) throw Object.assign(new Error('missing'), { code: 'ENOENT' }); return stat('file', 4) }, read: () => Buffer.from('same') })],
+      ['copy-eacces', 'UNKNOWN', () => ({ lstat: (path: string) => { if (path.includes('destination')) throw Object.assign(new Error('denied'), { code: 'EACCES' }); return stat('file', 4) }, read: () => Buffer.from('same') })],
+      ['copy-eperm', 'UNKNOWN', () => ({ lstat: (path: string) => { if (path.includes('destination')) throw Object.assign(new Error('forbidden'), { code: 'EPERM' }); return stat('file', 4) }, read: () => Buffer.from('same') })],
+      ['copy-race', 'UNKNOWN', () => ({ lstat: () => stat('file', 4), read: (path: string) => { if (path.includes('destination')) throw Object.assign(new Error('race'), { code: 'ENOENT' }); return Buffer.from('same') } })],
+      ['copy-source-access', 'UNKNOWN', () => ({ lstat: () => stat('file', 4), read: () => { throw Object.assign(new Error('source denied'), { code: 'EACCES' }) } })],
+      ['copy-source-missing', 'UNKNOWN', () => ({ lstat: () => { throw Object.assign(new Error('source missing'), { code: 'ENOENT' }) }, read: () => Buffer.from('same') })],
+      ['copy-source-symlink', 'UNKNOWN', () => ({ lstat: () => stat('symlink', 4), read: () => Buffer.from('same') })],
+      ['copy-dest-symlink', 'UNKNOWN', () => ({ lstat: (path: string) => stat(path.includes('destination') ? 'symlink' : 'file', 4), read: () => Buffer.from('same') })],
+      ['copy-directory', 'UNKNOWN', () => ({ lstat: () => stat('directory', 4), read: () => Buffer.from('same') })],
+      ['copy-special', 'UNKNOWN', () => ({ lstat: () => stat('special', 4), read: () => Buffer.from('same') })],
+      ['copy-exact-1MiB', 'MATCHED', () => ({ lstat: () => stat('file', 1024 * 1024), read: () => Buffer.alloc(1024 * 1024, 7) })],
+      ['copy-over-1MiB', 'UNKNOWN', () => ({ lstat: () => stat('file', 1024 * 1024 + 1), read: () => Buffer.alloc(8) })],
+    ] as const
+    for (const [id, expectedStatus, fixtureFactory] of cases) {
       const registry = new ExpectedEffectRegistry()
       const value = exec('bash', { command: 'cp source.txt destination.txt', description: 'fixture' }, id)
       registry.capture(value, id)
-      const shell = shellFixture(output)
+      const shell = shellFixture('ignored', 'unsandboxed', async spec => ({ exitCode: 0, timedOut: false, aborted: false, stdout: { text: executeProductCopyChecker(spec, fixtureFactory()), truncated: false }, stderr: { text: '', truncated: false } }))
       const verifier = new PostconditionVerifier(registry)
       verifier.attach(shell)
       verifier.observeResult(value, { isError: false, value: { kind: 'foreground', exitCode: 0 }, content: [] })
       await new Promise(resolve => setTimeout(resolve, 0))
-      expect(verifier.store.diagnostics.get(id)).toMatchObject({ status, semanticSuccess: status === 'MATCHED' ? true : status === 'MISMATCHED' ? false : 'unknown' })
-      if (id === 'copy-equal') {
-        expect(String(shell.calls[0]!.command)).toContain("e&&e.code==='ENOENT'?'MISMATCHED':'UNKNOWN'")
-        expect(String(shell.calls[0]!.command)).toContain('same=')
-      }
+      expect(verifier.store.diagnostics.get(id)).toMatchObject({ status: expectedStatus, semanticSuccess: expectedStatus === 'MATCHED' ? true : expectedStatus === 'MISMATCHED' ? false : 'unknown' })
+      expect(JSON.stringify(verifier.store.diagnostics.get(id))).not.toMatch(/source\.txt|destination\.txt|EACCES|EPERM/)
       await verifier.dispose()
     }
   })

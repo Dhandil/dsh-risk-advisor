@@ -111,6 +111,31 @@ describe('Phase 7 ExpectedEffect capture', () => {
     const pwshPath = exec('pwsh', { command: 'mkdir C:\\temp\\out', description: 'fixture' }, 'pwsh-path')
     registry.capture(pwshPath, 'pwsh-path')
     expect(registry.take(pwshPath)).toBeUndefined()
+
+    for (const [name, tool, command] of [
+      ['bash-var', 'bash', 'mkdir $HOME/out'],
+      ['bash-tilde', 'bash', 'mkdir ~/out'],
+      ['bash-copy-vars', 'bash', 'cp $SRC $DST'],
+      ['bash-git-var', 'bash', 'git switch $BRANCH'],
+      ['bash-quoted-var', 'bash', 'git switch "$BRANCH"'],
+      ['pwsh-var', 'pwsh', 'mkdir $name'],
+      ['pwsh-git-var', 'pwsh', 'git switch $branch'],
+    ] as const) {
+      const value = exec(tool, { command, description: 'expansion must be rejected' }, name)
+      registry.capture(value, name)
+      expect(registry.take(value)).toBeUndefined()
+    }
+    expect(parseSimpleShell("mkdir 'it''s'", 'pwsh')).toBeUndefined()
+    expect(parseSimpleShell("mkdir 'static name'", 'pwsh')).toMatchObject({ args: ['static name'] })
+  })
+
+  it('uses a conservative Git branch grammar for capture inputs', () => {
+    const registry = new ExpectedEffectRegistry()
+    for (const branch of ['.foo', '/foo', 'foo//bar', 'foo.lock', 'foo/.bar', 'foo/part.lock', 'foo.']) {
+      const value = exec('bash', { command: `git switch ${branch}`, description: 'invalid branch' }, `invalid-${branch}`)
+      registry.capture(value, `invalid-${branch}`)
+      expect(registry.take(value)).toBeUndefined()
+    }
   })
 
   it('removes every raw lookup path on TTL expiry, session disposal, terminal take, and full disposal', () => {
@@ -140,6 +165,21 @@ describe('Phase 7 ExpectedEffect capture', () => {
   })
 
   it('bounds active raw effects to 128 per Session and 512 globally without invoking hostile getters', () => {
+    const singleRegistry = new ExpectedEffectRegistry()
+    const singleSession = { id: 'single-bound', header: { cwd: 'D:\\Harness\\p7-fixture' } } as unknown as Session
+    const singleExecutions: ToolExecution[] = []
+    for (let index = 0; index < 129; index += 1) {
+      const value = exec('edit', { file_path: `single-${index}.txt`, old_string: `old-${index}`, new_string: `new-${index}` }, `single-${index}`, singleSession)
+      singleExecutions.push(value)
+      singleRegistry.capture(value, `single-${index}`)
+    }
+    expect(singleRegistry.take(singleExecutions[0]!)).toBeUndefined()
+    expect(singleExecutions.slice(1).filter(value => singleRegistry.take(value) !== undefined)).toHaveLength(128)
+    const otherSession = { id: 'other-bound', header: { cwd: 'D:\\Harness\\p7-fixture' } } as unknown as Session
+    const other = exec('edit', { file_path: 'other.txt', old_string: 'old', new_string: 'new' }, 'other-session', otherSession)
+    singleRegistry.capture(other, 'other-session')
+    expect(singleRegistry.take(other)).toBeDefined()
+
     const registry = new ExpectedEffectRegistry()
     const sessions = Array.from({ length: 5 }, (_, index) => ({ id: `bound-${index}`, header: { cwd: 'D:\\Harness\\p7-fixture' } } as unknown as Session))
     const executions: ToolExecution[] = []

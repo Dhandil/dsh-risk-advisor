@@ -183,12 +183,13 @@ function splitShell(command: string, dialect: Dialect): { segments: ShellSegment
   return { segments, ambiguous, unsupported }
 }
 
-function tokenizeSegment(segment: string, dialect: Dialect): { tokens: string[]; ambiguous: boolean } {
+function tokenizeSegment(segment: string, dialect: Dialect): { tokens: string[]; ambiguous: boolean; expansion: boolean } {
   const tokens: string[] = []
   let current = ''
   let quote: 'single' | 'double' | undefined
   let escaped = false
   let ambiguous = false
+  let expansion = false
   const push = () => { if (current.length > 0) tokens.push(current); current = '' }
   for (let index = 0; index < segment.length; index += 1) {
     const char = segment[index]!
@@ -202,6 +203,9 @@ function tokenizeSegment(segment: string, dialect: Dialect): { tokens: string[];
       continue
     }
     if (char === "'" && quote !== 'double') {
+      if (dialect === 'pwsh' && quote === 'single' && segment[index + 1] === "'") {
+        ambiguous = true
+      }
       quote = quote === 'single' ? undefined : 'single'
       continue
     }
@@ -213,11 +217,16 @@ function tokenizeSegment(segment: string, dialect: Dialect): { tokens: string[];
       push()
       continue
     }
+    if (char === '$' && quote !== 'single') {
+      const next = segment[index + 1]
+      if (next !== undefined && !/\s/.test(next)) expansion = true
+    }
+    if (dialect === 'bash' && quote === undefined && char === '~' && current.length === 0) expansion = true
     current += char
   }
   if (quote !== undefined || escaped) ambiguous = true
   push()
-  return { tokens, ambiguous }
+  return { tokens, ambiguous, expansion }
 }
 
 function hasFlag(tokens: readonly string[], ...flags: string[]): boolean {
@@ -432,7 +441,7 @@ export function parseSimpleShell(command: string, dialect: Dialect): SimpleShell
   const split = splitShell(command, dialect)
   if (split.segments.length !== 1 || split.ambiguous || split.unsupported) return undefined
   const tokenized = tokenizeSegment(split.segments[0]!.text, dialect)
-  if (tokenized.ambiguous || split.segments[0]!.pipedFrom || tokenized.tokens.length === 0) return undefined
+  if (tokenized.ambiguous || tokenized.expansion || split.segments[0]!.pipedFrom || tokenized.tokens.length === 0) return undefined
   const parsed = commandToken(tokenized.tokens)
   if (parsed.command === undefined || parsed.assignments.length > 0) return undefined
   const wrapper = transparentWrapper(parsed.command, parsed.args, dialect)
