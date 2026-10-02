@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { DeepJudgeScheduler } from '../src/host/deep-judge-scheduler.ts'
+import { executeDeepJudge, normalizeDeepJudgeConfig } from '../src/host/deep-judge.ts'
+import type { DeepJudgeSubagentRuntimeLike } from '../src/host/deep-judge-subagent.ts'
+
+const capabilities = Object.freeze({ agentOptions: true, outputSchema: true, depthLimit: true, toolFilter: true, persona: true })
 
 describe('Phase 9 scheduler lifecycle', () => {
   it('keeps duplicate keys fenced, bounds saturation, and drains on dispose', async () => {
@@ -29,6 +33,34 @@ describe('Phase 9 scheduler lifecycle', () => {
     scheduler.cancel('cancel', 'DEEP_JUDGE_NATIVE_DECISION')
     await expect(result).resolves.toMatchObject({ ok: false, failure: 'DEEP_JUDGE_ABORTED' })
     expect(settled).toBe(true)
+    await scheduler.dispose()
+  })
+
+  it('holds the active slot through an abort-ignoring late start and late disposal', async () => {
+    let release!: () => void
+    const startGate = new Promise<void>(resolve => { release = resolve })
+    let disposed = 0
+    const runtime: DeepJudgeSubagentRuntimeLike = {
+      getProvider: () => ({ name: 'spawn', capabilities, inheritsParentContext: false }),
+      start: async () => {
+        await startGate
+        return { result: Promise.resolve({ stopReason: 'completed', structured: {} }), dispose: async () => { disposed += 1 } }
+      },
+    }
+    const config = normalizeDeepJudgeConfig({ enabled: true, isolationMode: 'trusted-parent-composition', timeoutMs: 10 })
+    const scheduler = new DeepJudgeScheduler(1, 1)
+    const first = scheduler.enqueue('late', signal => executeDeepJudge(runtime, {}, '{}', ['AUTHORIZATION'], new Set(), config, signal))
+    await new Promise(resolve => setTimeout(resolve, 25))
+    let firstSettled = false
+    void first.then(() => { firstSettled = true })
+    const queued = scheduler.enqueue('queued', async () => ({ ok: true as const }))
+    expect(scheduler.activeCount).toBe(1)
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(firstSettled).toBe(false)
+    release()
+    await expect(first).resolves.toMatchObject({ ok: false, failure: 'DEEP_JUDGE_TIMEOUT' })
+    expect(disposed).toBe(1)
+    await expect(queued).resolves.toMatchObject({ ok: true })
     await scheduler.dispose()
   })
 })

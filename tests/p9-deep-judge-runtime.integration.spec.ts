@@ -11,7 +11,7 @@ function runtime(result: unknown, requests: DeepJudgeSubagentStartRequestLike[],
     start: async (_name, request) => {
       requests.push(request)
       return {
-        result: Promise.resolve({ structured: result, stopReason: 'stop' }),
+        result: Promise.resolve({ structured: result, stopReason: 'completed' }),
         dispose: async () => { disposed.count += 1 },
       }
     },
@@ -35,12 +35,25 @@ describe('Phase 9 structural public-seam integration', () => {
     const disposed = { count: 0 }
     const badRuntime: DeepJudgeSubagentRuntimeLike = {
       getProvider: () => ({ name: 'spawn', capabilities, inheritsParentContext: false }),
-      start: async () => ({ result: Promise.resolve({ stopReason: 'stop' }), dispose: async () => { disposed.count += 1 } }),
+      start: async () => ({ result: Promise.resolve({ stopReason: 'completed' }), dispose: async () => { disposed.count += 1 } }),
     }
     await expect(executeDeepJudge(badRuntime, {}, '{}', ['AUTHORIZATION'], new Set(), config, new AbortController().signal)).resolves.toMatchObject({ ok: false, failure: 'DEEP_JUDGE_INVALID_OUTPUT' })
     expect(disposed.count).toBe(1)
     const unsupported = { getProvider: () => ({ name: 'spawn', capabilities: { ...capabilities, persona: false }, inheritsParentContext: false }), start: async () => ({}) as DeepJudgeSubagentRunLike }
     await expect(executeDeepJudge(unsupported, {}, '{}', ['AUTHORIZATION'], new Set(), config, new AbortController().signal)).resolves.toMatchObject({ failure: 'DEEP_JUDGE_PROVIDER_UNSUPPORTED' })
+  })
+
+  it('rejects structured partial results and disposal failures without publishing A4', async () => {
+    const partial: DeepJudgeSubagentRuntimeLike = {
+      getProvider: () => ({ name: 'spawn', capabilities, inheritsParentContext: false }),
+      start: async () => ({ result: Promise.resolve({ stopReason: 'max-tokens', structured: { schemaVersion: 1, results: [] } }), dispose: async () => undefined }),
+    }
+    await expect(executeDeepJudge(partial, {}, '{}', ['AUTHORIZATION'], new Set(), config, new AbortController().signal)).resolves.toMatchObject({ ok: false, failure: 'DEEP_JUDGE_RESULT_FAILED' })
+    const disposeFailure: DeepJudgeSubagentRuntimeLike = {
+      getProvider: () => ({ name: 'spawn', capabilities, inheritsParentContext: false }),
+      start: async () => ({ result: Promise.resolve({ stopReason: 'completed', structured: { schemaVersion: 1, results: [{ dimension: 'AUTHORIZATION', verdict: 'EXPLICITLY_AUTHORIZED', rationale: 'bounded', referencedFeatureIds: [] }], suggestedAlternatives: [] } }), dispose: async () => { throw new Error('dispose failure') } }),
+    }
+    await expect(executeDeepJudge(disposeFailure, {}, '{}', ['AUTHORIZATION'], new Set(), config, new AbortController().signal)).resolves.toMatchObject({ ok: false, failure: 'DEEP_JUDGE_STREAM_ERROR' })
   })
 
   it('times out with bounded ownership and disposes returned work', async () => {

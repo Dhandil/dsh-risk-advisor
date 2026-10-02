@@ -128,9 +128,9 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
     if (llm !== undefined) assessments.attachJudge(llm)
     judgeCtx.effect(() => () => assessments.detachJudge(), 'risk-advisor-fast-judge-capability')
   })
-  ctx.inject(['subagents'], subagentCtx => {
+  ctx.inject(['subagents'], async subagentCtx => {
     const runtime = getSubagentsCapability(subagentCtx)
-    if (runtime !== undefined) assessments.attachSubagents(runtime)
+    if (runtime !== undefined) await assessments.attachSubagents(runtime)
     subagentCtx.effect(() => () => assessments.detachSubagents(), 'risk-advisor-deep-judge-capability')
   })
   ctx.inject(['shell'], shellCtx => {

@@ -324,6 +324,13 @@ export function mergeDeepJudgeAssessment(base: RiskAssessment, context: RiskCont
       : dimension('ALTERNATIVES', 'UNKNOWN', 'JUDGE', dimensions.alternatives.evidenceQuality, dimensions.alternatives.basisFeatureIds, ['MODEL_SUGGESTION_UNVERIFIED'], 'Deep Judge alternatives are suggestions only and remain unverified.'),
   })
   const status = assessmentStatus(context, finalDimensions)
+  const semanticUncertaintyByDimension: Partial<Record<DimensionName, string>> = {
+    RISK: 'RISK_SEMANTICS_UNRESOLVED',
+    AUTHORIZATION: 'AUTHORIZATION_SEMANTICS_UNRESOLVED',
+    NECESSITY: 'NECESSITY_UNRESOLVED',
+    PRIVILEGE: 'MINIMUM_PRIVILEGE_UNRESOLVED',
+  }
+  const filledDimensions = new Set(candidate.results.filter(item => candidate.dimensions.includes(item.dimension)).map(item => item.dimension as DimensionName))
   const hypotheses = candidate.results.flatMap(item => item.proposedFacts.map((fact, index) => ({
     uncertaintyId: `deep-judge-hypothesis-${item.dimension.toLowerCase()}-${index + 1}`,
     code: 'DEEP_JUDGE_HYPOTHESIS',
@@ -331,6 +338,19 @@ export function mergeDeepJudgeAssessment(base: RiskAssessment, context: RiskCont
     impact: 'LOW' as const,
     resolvable: true,
   })))
+  const deepJudgeUsed: AssessmentUncertainty = {
+    uncertaintyId: 'uncertainty-deep_judge_used',
+    code: 'DEEP_JUDGE_USED',
+    description: 'Deep Judge supplied bounded semantic gap-fill metadata after deterministic Phase-8 evidence.',
+    impact: 'LOW',
+    resolvable: false,
+  }
+  const uncertainties = base.uncertainties.filter(item => {
+    const dimension = item.dimension
+    const code = dimension === undefined ? undefined : semanticUncertaintyByDimension[dimension]
+    return !(code !== undefined && filledDimensions.has(dimension!) && item.code === code)
+  })
+  const judgeCount = Object.values(finalDimensions).filter(item => item.source === 'JUDGE' || item.source === 'MIXED').length
   return deepFreeze({
     ...base,
     assessmentId,
@@ -339,8 +359,8 @@ export function mergeDeepJudgeAssessment(base: RiskAssessment, context: RiskCont
     dimensions: finalDimensions,
     aggregate: aggregateAssessment({ ...finalDimensions, assessmentStatus: status }),
     alternatives: Object.freeze(alternatives),
-    uncertainties: Object.freeze([...uncertaintiesFor(context, finalDimensions, ['DEEP_JUDGE_USED']), ...hypotheses]),
-    evidence: evidenceSummary(context, finalDimensions),
+    uncertainties: Object.freeze([...uncertainties, deepJudgeUsed, ...hypotheses]),
+    evidence: Object.freeze({ ...base.evidence, counts: Object.freeze({ ...base.evidence.counts, judge: judgeCount }) }),
     provenance: {
       ...base.provenance,
       deepJudge: { invoked: true as const, providerName: 'spawn' as const, dimensions: Object.freeze(candidate.dimensions), ...(model === undefined ? {} : { model }) },
