@@ -2,13 +2,14 @@
 
 ## Outcome
 
-`PHASE7_REPAIR_PUBLISHED_READY_FOR_REVIEW`
+`PHASE7_REPAIR2_PUBLISHED_READY_FOR_REVIEW`
 
 This report records implementation and execution evidence only. Final acceptance is reserved for independent ChatGPT review. No `Acceptance_Report.md` was created and Phase 8 was not started.
 
 ## Frozen baseline and scope
 
-- Plugin start and required remote baseline: `37b450d4a057216e7d6150a8d370992e1348f60c`.
+- Repair 2 start and required remote baseline: `551335ee299ab7e979ee3695bbf8b305907db47e`.
+- Earlier Phase 7 implementation baseline: `37b450d4a057216e7d6150a8d370992e1348f60c` (retained as chronology).
 - Phase 7 Preflight: `cf5fb20d868c5145c983764108dd57de3a9999ec`.
 - Phase 7 Architecture Freeze: `fc0ed814e5f06e720f56a62eba19ce55100f6dd2`.
 - Phase 7 Implementation Instructions: `37b450d4a057216e7d6150a8d370992e1348f60c`.
@@ -18,11 +19,13 @@ This report records implementation and execution evidence only. Final acceptance
 
 ## Implementation / Tested SHA
 
-Executable implementation, tests, package scripts, and bounded local benchmark evidence were committed as:
+Repair 2 executable implementation, tests, package script, and bounded local benchmark evidence were committed as:
 
-`cacda91fafa0acc827e3aa7192c307390c140a0c`
+`7766d1f8dae770f01357d5e3279638f80919b80f`
 
-Repair start SHA: `3f4b8e22cc454365ab2df96228bb4fd9526177d2`.
+Repair 2 start SHA: `551335ee299ab7e979ee3695bbf8b305907db47e`.
+
+The preceding Repair 1 executable SHA `cacda91fafa0acc827e3aa7192c307390c140a0c` remains preserved as history.
 
 The post-commit working tree contained only pre-existing protected untracked drift (`.vitest-cache/`, historical/current docs, `lib/`, `node_modules/`, and `pnpm-lock.yaml`). No intended executable, test, config, package, or benchmark drift remained.
 
@@ -46,19 +49,19 @@ All gates passed in the required order.
 
 | Gate | Result |
 |---|---:|
-| Phase 7 focused (`test:p7`) | 5 files, 23 tests PASS |
+| Phase 7 focused (`test:p7`) | 6 files, 26 tests PASS |
 | Phase 4 parser-equivalence / regression (`test:p4`) | 2 files, 17 tests PASS |
 | Phase 3 (`test:p3`) | 2 files, 17 tests PASS |
 | Phase 2 (`test:p2`) | 2 files, 15 tests PASS |
 | Phase 6 (`test:p6`) | 5 files, 27 tests PASS |
 | Phase 5 (`test:p5`) | 4 files, 23 tests PASS |
+| Phase 1A (`test:p1a`) | 2 files, 13 tests PASS |
+| Phase 1B (`test:p1b`) | 2 files, 14 tests PASS |
+| Phase 1C (`test:p1c`) | 1 file, 8 tests PASS |
 | R1 (`test:r1`) | 2 files, 9 tests PASS |
 | R2 (`test:r2`) | 2 files, 16 tests PASS |
 | R3 (`test:r3`) | 2 files, 17 tests PASS |
 | R4 (`test:r4`) | 2 files, 21 tests PASS |
-| Phase 1A (`test:p1a`) | 2 files, 13 tests PASS |
-| Phase 1B (`test:p1b`) | 2 files, 14 tests PASS |
-| Phase 1C (`test:p1c`) | 1 file, 8 tests PASS |
 | `pnpm typecheck` | PASS |
 | `pnpm run build` | PASS |
 | Host export smoke | PASS (`apply` / `inject`) |
@@ -66,34 +69,36 @@ All gates passed in the required order.
 | Root declaration/private export audit | PASS |
 | `pnpm pack --dry-run --json` | PASS |
 | `git diff --check` | PASS |
-| Scope/privacy/no-network/no-custom-session-event audit | PASS |
+| Scope/privacy/secret/no-network/no-custom-session-event/deprecated-reader audit | PASS |
 | Harness tracked mutation audit | PASS, tracked diff `0` |
 | Phase 7 local verifier benchmark smoke | 1 file, 1 test PASS |
 | Phase 7 local verifier benchmark full | 1 file, 1 test PASS |
 
-The verifier benchmark is explicitly `LOCAL_VERIFIER_ONLY`; provider, registry, network, and Git remote calls were not made. Fixture command strings are test evidence only, not external calls.
+The verifier benchmark is explicitly `R5_PHASE7_REAL_LOCAL_VERIFIER`. It used disposable local filesystem fixtures, a local Git repository with no remote, a local resolvable package, and actual product checker execution. Provider, registry, external network, and external Git remote calls were not made. Fixture command strings are test evidence only, not external calls.
 
-## Final Repair F1–F6
+## Final Repair 2 — remaining F3/F6 blockers
 
-The final review repair was limited to the frozen Phase 7 scope.
+Repair 2 was limited to the frozen Phase 7 scope and preserved all previously passing Repair 1 behavior.
 
-- F1: ExpectedEffect uses one atomic removal primitive for the execution-id map, execution-object WeakMap, session index, and disposed guard. TTL/session disposal/terminal one-shot take/full dispose remove all raw lookup paths. Active effects are capped at 128 per Session and 512 globally; eviction and hostile accessor proof are in the expanded P7 suite.
-- F2: scheduler timeout publishes one logical UNKNOWN but keeps the underlying promise in the owned active slot until settlement. `fenceAndDrain()` aborts and joins generation work. Async verifier detach/dispose now drains; sandboxPolicy is nested under shell lifecycle, and unload/replacement fences the old generation before new policy use.
-- F3: the single shared shell tokenizer is dialect-aware for PowerShell backslashes. Git recognition is exactly checkout/`-b` and switch/`-c`; wrong pairings and option-looking mkdir/copy operands are rejected. Git exit-0 output is branch-grammar validated; malformed output is UNKNOWN. Pwsh unsupported path forms fail closed.
-- F4: the fixed copy checker distinguishes confirmed destination ENOENT from access/provider/read/race errors. Only coherent bounded regular-file equality/difference or confirmed absence produces a hard result; symlink, directory, special, oversize, and race cases are UNKNOWN. No raw error/path/output is retained.
-- F5: retry evidence selected at B capture is stored as an immutable sanitized snapshot. Later A verification conflict can affect future captures but cannot erase B's captured `retryOf` or failure context; duplicate verification remains idempotent.
-- F6: P7 focused evidence is now 5 files / 23 tests and includes lifecycle cleanup, bounds, scheduler quiescence, capability/policy generation, exact grammar, Git output, copy classifications, conflict immutability, privacy, and non-interference. The expanded benchmark executes direct write/edit, mkdir, small copy, near-1MiB copy, Git, positive Node resolution, timeout, and saturation paths.
+- F1/F2 preserved: ExpectedEffect lifecycle remains atomic and bounded; scheduler timeout, capability detach, policy replacement, and disposal remain quiescent and joined.
+- F3 operand fidelity: the shared dialect-aware parser now rejects Bash `$VAR`/tilde, PowerShell variable expansion and ambiguous doubled-quote/path forms; static quoted literals remain capturable. Git capture accepts only the frozen checkout/direct + `-b` and switch/direct + `-c` grammar, and rejects option-looking or invalid branch names.
+- F3 stdout fidelity: Git exit-0 output is accepted only as the exact branch name with at most one terminal newline. Spaces, multiline/polluted output, malformed names, and invalid branch grammar produce `UNKNOWN`; no broad `.trim()` path is used for Git.
+- F3 lifecycle proof: a single Session's 129th ExpectedEffect evicts the oldest and leaves exactly 128 active entries; the expanded test also proves another Session is not evicted.
+- F3 policy-generation proof: replacement under an active verifier load aborts and drains the old generation before new policy use; stale old results remain fenced and the new policy is the only policy invoked after replacement.
+- F4 copy proof: the focused suite executes the product-owned `COPY_CHECKER` source against equal, unequal, absent, EACCES, EPERM, race, access, missing, symlink, directory, special, exact-1MiB, and over-1MiB classifications. Only coherent bounded regular-file equality/difference or confirmed destination absence is hard; all access/provider/read/race and unsupported cases are `UNKNOWN`.
+- F5 preserved: retry evidence selected at B capture remains an immutable sanitized snapshot; later A verification conflict can affect future captures but cannot erase B's captured `retryOf` or failure context.
+- F6 expanded proof: P7 focused evidence is now 6 files / 26 tests, including the direct approval/A3/Browser/custom-Session-event/deprecated-reader non-interference gate. The real local benchmark executes direct write/edit, actual mkdir, small copy, actual near-1MiB copy, local Git, positive local Node resolution, real frozen timeout, and saturation.
 
 ## Fresh complete regression
 
-After the repaired executable commit above, exactly one fresh complete `pnpm test` was run at that exact SHA. It passed:
+After Repair 2 executable commit `7766d1f8dae770f01357d5e3279638f80919b80f`, exactly one fresh complete `pnpm test` was run at that exact SHA. It passed:
 
-- 34 test files PASS.
-- 223 tests PASS.
+- 35 test files PASS.
+- 226 tests PASS.
 - Included R1–R5, P1A–P1C, P2–P7 in the package full-test chain.
 - No executable/test/config/package/benchmark semantic drift occurred after the Full run.
 
-The historical `25c9326f0c8863cd994698e220edbeaba7bed804` / 216-test Full remains chronology only; the repair evidence and Tested SHA are the values above.
+The historical `25c9326f0c8863cd994698e220edbeaba7bed804` / 216-test Full and Repair 1 `34`-file / `223`-test Full remain chronology only; the Repair 2 evidence and Tested SHA are the values above.
 
 ## Boundary and privacy evidence
 
@@ -108,12 +113,27 @@ The historical `25c9326f0c8863cd994698e220edbeaba7bed804` / 216-test Full remain
 - Same-or-narrower verifier sandbox and world checks are enforced; unsupported or ambiguous shell contexts fail closed to `unknown`.
 - Existing open/partial/not-run/not-validated evidence was not upgraded. In particular, real-provider latency/policy remains undetermined, true cold restart remains not run, native PTC remains not run, live browser remains not run, WebWorker remains not validated, and Phase 8/9 remain not implemented.
 
+### Repair 2 bounded local benchmark evidence
+
+| Path | Evidence |
+|---|---|
+| direct write/edit | Actual Tool Contract result paths; no post-read |
+| mkdir | Actual disposable directory; product checker executed once; `MATCHED` |
+| small copy | Actual bounded regular files; product checker executed once; `MATCHED` |
+| near-1MiB copy | Actual `1,048,575`-byte files; product checker executed once; `MATCHED` |
+| Git | Disposable local repository, no remote; exact branch output; `MATCHED` |
+| Node resolution | Disposable local `node_modules/benchmark-local`; positive `require.resolve`; `MATCHED` |
+| timeout | Real frozen timeout elapsed at least `5000ms`; published `VERIFIER_TIMEOUT`; active slot remained `1` until settle |
+| saturation | Ten real scheduler jobs completed under max concurrency `2`; queue saturation remained at pending limit `8` |
+
+The focused product-checker matrix additionally proves the exact `1 MiB` boundary and `>1 MiB` fail-closed classification. The benchmark creates and removes only a disposable OS temp directory.
+
 ## Publication
 
-The report is the only post-Full change. The docs-only publication commit was pushed to `origin/main`; final remote equality was verified with:
+The report is the only post-Full change. The docs-only publication commit is pushed to `origin/main`; final remote equality is verified with:
 
 ```text
 HEAD == origin/main == git ls-remote origin refs/heads/main
 ```
 
-The final remote/report SHA is the docs-only commit containing this report. The diff from the Tested SHA to that publication SHA is docs/evidence only.
+The final remote/report SHA is the docs-only publication commit containing this report. The diff from Tested SHA `7766d1f8dae770f01357d5e3279638f80919b80f` to that publication SHA is docs/evidence only. No `Acceptance_Report.md` was created and no accepted baseline was advanced.
