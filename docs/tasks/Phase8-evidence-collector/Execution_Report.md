@@ -2,14 +2,14 @@
 
 ## Outcome
 
-`PHASE8_REPAIR_PUBLISHED_READY_FOR_REVIEW`
+`PHASE8_REPAIR2_PUBLISHED_READY_FOR_REVIEW`
 
 The Phase 8 final-review repair is published for independent review. Codex did not create an Acceptance Report and did not declare `PHASE8_ACCEPTED`.
 
 ## Baseline and scope
 
 - Repository: `Dhandil/dsh-risk-advisor`, branch `main`.
-- Repair starting remote: `35ac1be5f6b76152a6d90aff0fa766ed0ae4f405` (required ancestor confirmed).
+- Repair 2 starting remote: `c4cc759d8689c0188f9f7b36993b7e14dbe14818` (required ancestor confirmed).
 - Harness baseline: `ddefc45fbc7f8e46dd73185e68295696d1297887`.
 - Harness Core remained read-only; tracked and staged Harness mutation remained `0`.
 - Phase 9 was not started.
@@ -17,9 +17,9 @@ The Phase 8 final-review repair is published for independent review. Codex did n
 
 ## Implementation/Tested SHA
 
-`6b6f10d37dcc4fc8a2685c4496be6f2ec9829df5`
+`0516d950a4bc8c2c485cecf32db8fedd6c4be035`
 
-This is the exact executable/source/test/package/benchmark repair commit on which the fresh complete Full was run. After that Full passed, no executable, test, configuration, package, or benchmark semantic drift was introduced.
+This is the exact Repair 2 executable/source/test/package/benchmark commit on which the fresh complete Full was run. After that Full passed, no executable, test, configuration, package, or benchmark semantic drift was introduced.
 
 ## Final-review repairs
 
@@ -30,12 +30,13 @@ This is the exact executable/source/test/package/benchmark repair commit on whic
 - Closed rollback/minimum-scope semantics: read-only evidence cannot create reversibility; only direct write/edit and safe local evidence can support the frozen claims; outside-workspace mutation floors risk at HIGH without changing authorization or necessity.
 - Added session/global snapshot bounds, raw-state cleanup, scheduler timeout ownership, capability replacement generation fencing, detach/dispose drain, and late-result fencing.
 - Replaced marker simulation with disposable real-local Phase 8 execution paths and a real product scheduler, without provider/network/registry/Git-remote calls.
+- Completed Repair 2: pinned PowerShell sandbox/justification schema, permission-width-independent minimum-scope proof, explicit `core.fsmonitor=false` Git hardening, stale success fencing across abort-ignoring fs/shell replacement, and bounded Session/TTL/global cancellation tombstones.
 
 ## Verification results
 
 ### Focused and inherited suites
 
-- Phase 8 expanded focused: 5 files, 16 tests — PASS.
+- Phase 8 expanded focused: 5 files, 21 tests — PASS.
 - Phase 7: 6 files, 26 tests — PASS.
 - Phase 6: 5 files, 27 tests — PASS.
 - Phase 5: 4 files, 23 tests — PASS.
@@ -68,6 +69,7 @@ This is the exact executable/source/test/package/benchmark repair commit on whic
 - Phase 7 smoke/full benchmarks: PASS.
 - Phase 8 smoke/full benchmarks: PASS.
 - Phase 8 used disposable real-local filesystem and Git fixtures through the product path: mkdir, small copy, near-1 MiB copy, clean tracked repository target, dirty/untracked/ignored states, outside target, valid/oversized package evidence, directory budget, and local Node resolution.
+- Repair 2 benchmark proof: workspace-write minimum scope `PROPORTIONATE`, danger-full-access minimum scope `EXCESSIVE`, clean local Git inspection with fsmonitor sentinel unexecuted, and replacement-under-load with old generation `CANCELLED` and new generation `COMPLETE`.
 - Scheduler evidence: timeout `5000 ms`, concurrency `2`, pending bound `8`, saturation and owned late settlement covered.
 - Benchmark labels: `LOCAL_EVIDENCE_ONLY`, `NETWORK_NOT_USED`, `PROVIDER_NOT_USED`, `REGISTRY_NOT_USED`, `GIT_REMOTE_NOT_USED`.
 
@@ -77,8 +79,8 @@ Command: `pnpm test`
 
 Result: PASS, exit code `0`, run exactly once on the exact Implementation/Tested SHA above.
 
-- 39 test files passed.
-- 235 tests passed.
+- 40 test files passed.
+- 247 tests passed.
 - R1–R5, P1A–P1C, P2–P7, and P8 all passed.
 
 ## Drift and publication
