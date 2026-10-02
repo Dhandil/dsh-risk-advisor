@@ -36,7 +36,7 @@ export function presentRiskAssessment(assessment: RiskAssessment): BrowserRiskAs
       title: bound(item.title, 160), description: bound(item.description, 800), source: item.source, verification: item.verification,
     })),
     evidence: { ledgerHealth: assessment.evidence.ledgerHealth },
-    judgeAssisted: assessment.provenance.judge.invoked,
+    judgeAssisted: assessment.provenance.judge.invoked || assessment.provenance.deepJudge?.invoked === true,
     ...(assessment.supersedesAssessmentId === undefined ? {} : { supersedesAssessmentId: bound(assessment.supersedesAssessmentId, 256) }),
   })
 }

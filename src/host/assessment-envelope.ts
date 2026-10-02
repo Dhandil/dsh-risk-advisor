@@ -17,6 +17,7 @@ import { buildPhase5Context, type BuiltPhase5Context } from './context-builder.t
 import {
   createDeterministicAssessment,
   mergeJudgeAssessment,
+  mergeDeepJudgeAssessment,
   mergeEvidenceAssessment,
   overlayEvidenceContext,
   type RiskAssessment,
@@ -32,14 +33,25 @@ import {
   type FastJudgeConfig,
   type NormalizedFastJudgeConfig,
 } from './fast-judge.ts'
+import {
+  buildDeepJudgePayload,
+  executeDeepJudge,
+  normalizeDeepJudgeConfig,
+  requestedDeepJudgeDimensions,
+  type DeepJudgeConfig,
+  type NormalizedDeepJudgeConfig,
+} from './deep-judge.ts'
+import { DeepJudgeParentBindingStore } from './deep-judge-parent.ts'
+import { DeepJudgeScheduler } from './deep-judge-scheduler.ts'
+import type { DeepJudgeSubagentRuntimeLike } from './deep-judge-subagent.ts'
 import { phase6View, type Phase6PresentationSource } from './presentation/presentation-source.ts'
-import type { RiskAdvisorBridgeViewV2, RiskAdvisorBridgeViewV3 } from '../bridge-contract.ts'
+import type { RiskAdvisorBridgeViewV2, RiskAdvisorBridgeViewV3, RiskAdvisorBridgeViewV4 } from '../bridge-contract.ts'
 
 export type AssessmentAssociation = 'BOUND' | 'UNBOUND' | 'AMBIGUOUS'
 export type AssessmentStatus = 'pending' | 'unavailable' | 'cancelled' | 'not-found'
 export type AssessmentStage = 'not-started'
 export type Phase5AssessmentStatus = 'COMPLETE' | 'PARTIAL' | 'DEGRADED'
-export type Phase5AssessmentStage = 'rules' | 'fast' | 'evidence' | 'complete'
+export type Phase5AssessmentStage = 'rules' | 'fast' | 'evidence' | 'deep' | 'complete'
 export type AssessmentReasonCode =
   | 'ASSESSOR_NOT_IMPLEMENTED'
   | 'FOUNDATION_DEGRADED'
@@ -72,6 +84,21 @@ export type AssessmentReasonCode =
   | 'EVIDENCE_CAPABILITY_UNAVAILABLE'
   | 'EVIDENCE_PENDING'
   | 'EVIDENCE_COLLECTION_DEGRADED'
+  | 'DEEP_JUDGE_CAPABILITY_UNAVAILABLE'
+  | 'DEEP_JUDGE_DISABLED'
+  | 'DEEP_JUDGE_CONFIG_UNAVAILABLE'
+  | 'DEEP_JUDGE_PROVIDER_UNSUPPORTED'
+  | 'DEEP_JUDGE_PARENT_UNAVAILABLE'
+  | 'DEEP_JUDGE_ROUTE_UNAVAILABLE'
+  | 'DEEP_JUDGE_QUEUE_SATURATED'
+  | 'DEEP_JUDGE_TIMEOUT'
+  | 'DEEP_JUDGE_STREAM_ERROR'
+  | 'DEEP_JUDGE_ABORTED'
+  | 'DEEP_JUDGE_INVALID_OUTPUT'
+  | 'DEEP_JUDGE_REDACTION_FAILED'
+  | 'DEEP_JUDGE_SUPERSEDED'
+  | 'DEEP_JUDGE_NATIVE_DECISION'
+  | 'DEEP_JUDGE_GENERATION_DISPOSED'
 
 export interface ApprovalAssessmentShell {
   readonly schemaVersion: 1
@@ -137,7 +164,7 @@ export type OpenAssessmentQuery =
   | { readonly kind: 'NOT_FOUND' }
 
 export type Phase6PresentationQuery =
-  | { readonly kind: 'VIEW'; readonly view: RiskAdvisorBridgeViewV2 | RiskAdvisorBridgeViewV3 }
+  | { readonly kind: 'VIEW'; readonly view: RiskAdvisorBridgeViewV2 | RiskAdvisorBridgeViewV3 | RiskAdvisorBridgeViewV4 }
   | { readonly kind: 'NOT_FOUND' }
   | { readonly kind: 'AMBIGUOUS' }
 
@@ -167,6 +194,7 @@ export interface AssessmentCoordinatorOptions {
   readonly failureChain?: FailureChainDiagnostics
   readonly ledger?: LedgerDiagnostics
   readonly fastJudge?: FastJudgeConfig
+  readonly deepJudge?: DeepJudgeConfig
   readonly evidence?: EvidenceCollector
 }
 
@@ -185,6 +213,7 @@ interface Phase5Record {
   latest: RiskAssessment
   readonly generation: number
   attempted: boolean
+  deepAttempted: boolean
   closed: boolean
   stage: Phase5AssessmentStage
   evidence?: EvidenceSnapshotV1
@@ -280,10 +309,15 @@ export class ApprovalAssessmentCoordinator {
   private readonly ledger: LedgerDiagnostics | undefined
   private readonly fastJudgeConfig: NormalizedFastJudgeConfig
   private readonly fastJudgeConfigInvalid: boolean
+  private readonly deepJudgeConfig: NormalizedDeepJudgeConfig
   private readonly seedStore: ReviewerSeedStore
   private readonly userRing = new DirectUserRing()
   private judge: LlmRuntime | undefined
   private scheduler: JudgeScheduler | undefined
+  private deepScheduler: DeepJudgeScheduler | undefined
+  private subagents: DeepJudgeSubagentRuntimeLike | undefined
+  private subagentsGeneration = 0
+  private readonly parentBindings: DeepJudgeParentBindingStore
   private evidence: EvidenceCollector | undefined
   private orphanDecisions = 0
   private capacityExceeded = 0
@@ -300,6 +334,7 @@ export class ApprovalAssessmentCoordinator {
   constructor(foundation: FoundationDiagnostics, options: AssessmentCoordinatorOptions = {}) {
     this.foundation = foundation
     this.clock = options.clock ?? (() => performance.now())
+    this.parentBindings = new DeepJudgeParentBindingStore(this.clock)
     this.maxRecords = options.maxRecords ?? MAX_RECORDS
     this.completedTtlMs = options.completedTtlMs ?? COMPLETED_TTL_MS
     this.rules = options.rules
@@ -308,6 +343,7 @@ export class ApprovalAssessmentCoordinator {
     this.evidence = options.evidence
     this.seedStore = new ReviewerSeedStore(this.clock)
     try { this.fastJudgeConfig = normalizeFastJudgeConfig(options.fastJudge); this.fastJudgeConfigInvalid = false } catch { this.fastJudgeConfig = normalizeFastJudgeConfig(undefined); this.fastJudgeConfigInvalid = true }
+    this.deepJudgeConfig = normalizeDeepJudgeConfig(options.deepJudge)
     if (!Number.isSafeInteger(this.maxRecords) || this.maxRecords < 1 || !Number.isSafeInteger(this.completedTtlMs) || this.completedTtlMs < 1) {
       throw new RangeError('Assessment coordinator bounds must be positive safe integers')
     }
@@ -335,12 +371,14 @@ export class ApprovalAssessmentCoordinator {
         if (record.phase5 !== undefined) {
           record.phase5.closed = true
           this.scheduler?.cancel(record.approvalId, 'JUDGE_GENERATION_DISPOSED')
+          this.deepScheduler?.cancel(record.approvalId, 'DEEP_JUDGE_GENERATION_DISPOSED')
           this.evidence?.cancel(record.phase5.context.snapshot.executionId)
         }
         this.records.delete(record)
       }
       byId.clear()
       this.recordsBySession.delete(session)
+      this.parentBindings.disposeSession(session)
     } catch {
       // Session disposal is already committed; advisory cleanup cannot veto it.
     }
@@ -351,9 +389,13 @@ export class ApprovalAssessmentCoordinator {
     this.active = false
     const scheduler = this.scheduler
     this.scheduler = undefined
+    const deepScheduler = this.deepScheduler
+    this.deepScheduler = undefined
     this.judge = undefined
+    this.subagents = undefined
     this.seedStore.dispose()
     this.userRing.dispose()
+    this.parentBindings.dispose()
     for (const record of this.records) {
       const session = record.sessionRef.deref()
       if (session !== undefined) this.recordsBySession.get(session)?.delete(record.approvalId)
@@ -363,6 +405,7 @@ export class ApprovalAssessmentCoordinator {
     this.orphanDecisions = 0
     this.capacityExceeded = 0
     if (scheduler !== undefined) await scheduler.dispose()
+    if (deepScheduler !== undefined) await deepScheduler.dispose()
   }
 
   getForApproval(session: Session, approvalId: string): AssessmentDiagnostic {
@@ -407,6 +450,27 @@ export class ApprovalAssessmentCoordinator {
     if (scheduler !== undefined) await scheduler.dispose()
   }
 
+  attachSubagents(runtime: DeepJudgeSubagentRuntimeLike): void {
+    if (!this.active || !this.deepJudgeConfig.enabled || !this.deepJudgeConfig.valid) return
+    if (this.subagents !== undefined && this.subagents !== runtime) {
+      const prior = this.deepScheduler
+      this.deepScheduler = undefined
+      if (prior !== undefined) void prior.dispose()
+    }
+    this.subagentsGeneration += 1
+    this.subagents = runtime
+    this.deepScheduler ??= new DeepJudgeScheduler(this.deepJudgeConfig.maxConcurrentJudges, this.deepJudgeConfig.maxPendingJudges)
+    for (const record of this.records) this.scheduleDeepJudge(record)
+  }
+
+  async detachSubagents(): Promise<void> {
+    this.subagentsGeneration += 1
+    this.subagents = undefined
+    const scheduler = this.deepScheduler
+    this.deepScheduler = undefined
+    if (scheduler !== undefined) await scheduler.dispose()
+  }
+
   attachEvidence(collector: EvidenceCollector): void {
     if (!this.active) return
     this.evidence = collector
@@ -423,6 +487,15 @@ export class ApprovalAssessmentCoordinator {
     } catch {
       // Capture is observational and must not veto the native path.
     }
+  }
+
+  captureDeepJudgeParent(exec: Parameters<ActiveExecutionIndex['observePreExecute']>[0], executionId: ExecutionId | undefined): void {
+    if (executionId === undefined) return
+    try {
+      const agent = (exec as unknown as { readonly agent?: unknown }).agent
+      const session = agent !== null && typeof agent === 'object' ? (agent as { readonly session?: unknown }).session : undefined
+      if (session !== undefined && typeof session === 'object') this.parentBindings.capture(executionId, session as Session, agent)
+    } catch { /* parent binding is advisory and fail-closed */ }
   }
 
   getIssueSummary(): AssessmentIssueSummary {
@@ -576,7 +649,7 @@ export class ApprovalAssessmentCoordinator {
       try {
         const built = this.buildPhase5Context(session, executionId)
         const assessment = createDeterministicAssessment(built.snapshot, assessmentId!, now)
-        record.phase5 = { context: built, a1: assessment, latest: assessment, generation: 1, attempted: false, closed: false, stage: 'rules' }
+        record.phase5 = { context: built, a1: assessment, latest: assessment, generation: 1, attempted: false, deepAttempted: false, closed: false, stage: 'rules' }
         if (built.reviewerFailure !== undefined) this.addReason(record, built.reviewerFailure)
         if (this.fastJudgeConfigInvalid) this.addReason(record, 'JUDGE_CONFIG_UNAVAILABLE')
         else if (!this.fastJudgeConfig.enabled) this.addReason(record, 'JUDGE_DISABLED')
@@ -602,6 +675,7 @@ export class ApprovalAssessmentCoordinator {
     if (record.phase5 !== undefined) {
       record.phase5.closed = true
       this.scheduler?.cancel(record.approvalId, 'JUDGE_NATIVE_DECISION')
+      this.deepScheduler?.cancel(record.approvalId, 'DEEP_JUDGE_NATIVE_DECISION')
       this.evidence?.cancel(record.phase5.context.snapshot.executionId)
     }
     this.replaceShell(record, {
@@ -642,6 +716,7 @@ export class ApprovalAssessmentCoordinator {
     if (record.phase5 !== undefined) {
       record.phase5.closed = true
       this.scheduler?.cancel(record.approvalId, 'JUDGE_SUPERSEDED')
+      this.deepScheduler?.cancel(record.approvalId, 'DEEP_JUDGE_SUPERSEDED')
       record.phase5 = undefined
     }
     const shell = record.shell
@@ -744,20 +819,60 @@ export class ApprovalAssessmentCoordinator {
   private scheduleEvidence(record: AssessmentRecord): void {
     const phase5 = record.phase5
     const collector = this.evidence
-    if (phase5 === undefined || phase5.closed || phase5.evidence !== undefined || collector === undefined) return
-    if (phase5.latest.dimensions.evidenceQuality.verdict !== 'LOW' && phase5.latest.aggregate.recommendation !== 'NEED_MORE_INFORMATION') return
-    if (!collector.canCollect(phase5.context.snapshot.executionId)) return
+    if (phase5 === undefined || phase5.closed || phase5.evidence !== undefined || collector === undefined) { this.scheduleDeepJudge(record); return }
+    if (phase5.latest.dimensions.evidenceQuality.verdict !== 'LOW' && phase5.latest.aggregate.recommendation !== 'NEED_MORE_INFORMATION') { phase5.stage = 'complete'; this.scheduleDeepJudge(record); return }
+    if (!collector.canCollect(phase5.context.snapshot.executionId)) { phase5.stage = 'complete'; this.scheduleDeepJudge(record); return }
     phase5.stage = 'evidence'
     this.addReason(record, 'EVIDENCE_PENDING')
     const generation = phase5.generation
     collector.collect(phase5.context.snapshot.executionId, snapshot => {
       if (!this.active || record.phase5 !== phase5 || phase5.closed || phase5.generation !== generation || phase5.stage !== 'evidence') return
       phase5.evidence = snapshot
-      if (snapshot.status === 'CANCELLED') { phase5.stage = 'complete'; this.addReason(record, 'EVIDENCE_COLLECTION_DEGRADED'); return }
+      if (snapshot.status === 'CANCELLED') { phase5.stage = 'complete'; this.addReason(record, 'EVIDENCE_COLLECTION_DEGRADED'); this.scheduleDeepJudge(record); return }
       if (materialEvidence(snapshot)) {
         const context = overlayEvidenceContext(phase5.context.snapshot, snapshot)
         phase5.latest = mergeEvidenceAssessment(phase5.latest, phase5.context.snapshot, context, snapshot, `ra-assessment-${randomUUID()}`, this.readClock())
       }
+      phase5.stage = 'complete'
+      this.replaceShell(record, { updatedAt: this.readClock() })
+      this.scheduleDeepJudge(record)
+    })
+  }
+
+  private scheduleDeepJudge(record: AssessmentRecord): void {
+    const phase5 = record.phase5
+    if (phase5 === undefined || phase5.closed || phase5.deepAttempted || phase5.stage !== 'complete') return
+    if (!this.deepJudgeConfig.enabled) return
+    if (!this.deepJudgeConfig.valid) { this.addReason(record, 'DEEP_JUDGE_CONFIG_UNAVAILABLE'); return }
+    if (this.subagents === undefined || this.deepScheduler === undefined) { this.addReason(record, 'DEEP_JUDGE_CAPABILITY_UNAVAILABLE'); return }
+    if (phase5.evidence === undefined || !materialEvidence(phase5.evidence)) return
+    const session = record.sessionRef.deref()
+    if (session === undefined) { this.addReason(record, 'DEEP_JUDGE_PARENT_UNAVAILABLE'); return }
+    const parent = this.parentBindings.get(phase5.context.snapshot.executionId, session)
+    if (parent === undefined) { this.addReason(record, 'DEEP_JUDGE_PARENT_UNAVAILABLE'); return }
+    const requested = requestedDeepJudgeDimensions(phase5.context, phase5.latest, phase5.evidence)
+    if (requested.length === 0) return
+    let payload: string
+    try { payload = buildDeepJudgePayload(phase5.context, phase5.latest, phase5.evidence, requested) } catch { this.addReason(record, 'DEEP_JUDGE_REDACTION_FAILED'); return }
+    phase5.deepAttempted = true
+    phase5.stage = 'deep'
+    const generation = phase5.generation
+    const capabilityGeneration = this.subagentsGeneration
+    const runtime = this.subagents
+    const knownFeatureIds = new Set(phase5.context.snapshot.features.features.map(item => item.id))
+    void this.deepScheduler.enqueue(record.approvalId, signal => executeDeepJudge(runtime, parent, payload, requested, knownFeatureIds, this.deepJudgeConfig, signal)).then(result => {
+      if (!this.active || record.phase5 !== phase5 || phase5.closed || phase5.generation !== generation || this.subagentsGeneration !== capabilityGeneration) return
+      if (!result.ok || result.candidate === undefined) {
+        if (result.failure !== undefined) this.addReason(record, result.failure)
+        phase5.stage = 'complete'
+        this.replaceShell(record, { updatedAt: this.readClock() })
+        return
+      }
+      phase5.latest = mergeDeepJudgeAssessment(phase5.latest, phase5.context.snapshot, {
+        dimensions: requested as readonly import('./assessment-aggregator.ts').DimensionName[],
+        results: result.candidate.results,
+        suggestedAlternatives: result.candidate.suggestedAlternatives,
+      }, `ra-assessment-${randomUUID()}`, this.readClock(), this.deepJudgeConfig.reviewer?.model)
       phase5.stage = 'complete'
       this.replaceShell(record, { updatedAt: this.readClock() })
     })

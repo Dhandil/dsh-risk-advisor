@@ -135,6 +135,7 @@ export interface RiskAssessment {
     readonly aggregatorVersion: 'phase5-aggregator-v1'
     readonly judge: { readonly invoked: boolean; readonly dimensions: readonly DimensionName[]; readonly model?: string }
     readonly evidence?: { readonly invoked: true; readonly evidenceId: string; readonly status: EvidenceSnapshotV1['status']; readonly itemCount: number }
+    readonly deepJudge?: { readonly invoked: true; readonly providerName: 'spawn'; readonly dimensions: readonly DimensionName[]; readonly model?: string }
   }
   readonly supersedesAssessmentId?: string
 }
@@ -276,6 +277,74 @@ export function mergeJudgeAssessment(base: RiskAssessment, context: RiskContextS
     uncertainties: Object.freeze([...uncertaintiesFor(context, mergedDimensions, ['JUDGE_USED']), ...hypotheses]),
     evidence: evidenceSummary(context, mergedDimensions),
     provenance: { ...base.provenance, judge: { invoked: true, dimensions: Object.freeze(candidate.dimensions), model } },
+    supersedesAssessmentId: base.assessmentId,
+  })
+}
+
+export interface DeepJudgeMergeInput {
+  readonly dimensions: readonly DimensionName[]
+  readonly results: readonly { readonly dimension: 'RISK' | 'AUTHORIZATION' | 'NECESSITY' | 'PRIVILEGE'; readonly verdict: string; readonly rationale: string; readonly referencedFeatureIds: readonly string[]; readonly proposedFacts: readonly { readonly statement: string; readonly status: 'HYPOTHESIS' }[] }[]
+  readonly suggestedAlternatives: readonly { readonly title: string; readonly description: string }[]
+}
+
+/**
+ * A4 is a local deterministic composition over a validated Deep Judge
+ * candidate. It can fill semantic UNKNOWNs only; all existing facts and
+ * Phase-8 evidence remain authoritative.
+ */
+export function mergeDeepJudgeAssessment(base: RiskAssessment, context: RiskContextSnapshot, candidate: DeepJudgeMergeInput, assessmentId: string, createdAt: number, model?: string): RiskAssessment {
+  const dimensions = { ...base.dimensions }
+  for (const item of candidate.results) {
+    const key = item.dimension === 'RISK' ? 'risk' : item.dimension === 'AUTHORIZATION' ? 'authorization' : item.dimension === 'NECESSITY' ? 'necessity' : 'privilege'
+    const current = dimensions[key]
+    if (current.verdict !== 'UNKNOWN' || !candidate.dimensions.includes(item.dimension)) continue
+    if (item.dimension === 'RISK' && context.ruleEvaluation.findings.some(finding => finding.severity === 'critical' || finding.severity === 'high')) continue
+    dimensions[key] = Object.freeze({
+      ...current,
+      verdict: item.verdict as never,
+      source: 'JUDGE',
+      judge: { invoked: true, model, rationale: item.rationale },
+      reasons: Object.freeze([...current.reasons, { code: 'DEEP_JUDGE_SEMANTIC_GAP_FILL', message: 'Deep Judge filled an eligible semantic UNKNOWN without changing deterministic or evidence facts.', strength: 'INFERRED' as const }]),
+    }) as never
+  }
+  const alternatives = candidate.suggestedAlternatives.length === 0
+    ? base.alternatives
+    : candidate.suggestedAlternatives.map((item, index) => ({
+        alternativeId: `deep-judge-alternative-${index + 1}`,
+        title: item.title,
+        description: item.description,
+        source: 'MODEL_SUGGESTED' as const,
+        verification: 'UNVERIFIED' as const,
+        improvements: { lowerRisk: false, lowerPrivilege: false, narrowerScope: false, moreReversible: false },
+      }))
+  const finalDimensions = Object.freeze({
+    ...dimensions,
+    alternatives: candidate.suggestedAlternatives.length === 0
+      ? dimensions.alternatives
+      : dimension('ALTERNATIVES', 'UNKNOWN', 'JUDGE', dimensions.alternatives.evidenceQuality, dimensions.alternatives.basisFeatureIds, ['MODEL_SUGGESTION_UNVERIFIED'], 'Deep Judge alternatives are suggestions only and remain unverified.'),
+  })
+  const status = assessmentStatus(context, finalDimensions)
+  const hypotheses = candidate.results.flatMap(item => item.proposedFacts.map((fact, index) => ({
+    uncertaintyId: `deep-judge-hypothesis-${item.dimension.toLowerCase()}-${index + 1}`,
+    code: 'DEEP_JUDGE_HYPOTHESIS',
+    description: fact.statement,
+    impact: 'LOW' as const,
+    resolvable: true,
+  })))
+  return deepFreeze({
+    ...base,
+    assessmentId,
+    createdAt,
+    status,
+    dimensions: finalDimensions,
+    aggregate: aggregateAssessment({ ...finalDimensions, assessmentStatus: status }),
+    alternatives: Object.freeze(alternatives),
+    uncertainties: Object.freeze([...uncertaintiesFor(context, finalDimensions, ['DEEP_JUDGE_USED']), ...hypotheses]),
+    evidence: evidenceSummary(context, finalDimensions),
+    provenance: {
+      ...base.provenance,
+      deepJudge: { invoked: true as const, providerName: 'spawn' as const, dimensions: Object.freeze(candidate.dimensions), ...(model === undefined ? {} : { model }) },
+    },
     supersedesAssessmentId: base.assessmentId,
   })
 }

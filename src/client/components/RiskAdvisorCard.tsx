@@ -3,11 +3,11 @@ import { useSyncExternalStore } from 'react'
 import { writeClipboard } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { RiskAdvisorLocaleKey } from '../locales.ts'
-import type { BrowserDimension, RiskAdvisorBridgeViewV2, RiskAdvisorBridgeViewV3 } from '../../bridge-contract.ts'
+import type { BrowserDimension, RiskAdvisorBridgeViewV2, RiskAdvisorBridgeViewV3, RiskAdvisorBridgeViewV4 } from '../../bridge-contract.ts'
 import type { PresentationStore } from '../presentation-store.ts'
 
 type CardProps = PropsLocale<'risk-advisor.r1'> & { readonly store: PresentationStore }
-type RiskAdvisorView = RiskAdvisorBridgeViewV2 | RiskAdvisorBridgeViewV3
+type RiskAdvisorView = RiskAdvisorBridgeViewV2 | RiskAdvisorBridgeViewV3 | RiskAdvisorBridgeViewV4
 type ReadyAssessment = NonNullable<RiskAdvisorView['assessment']>
 
 export function RiskAdvisorCard({ store, t }: CardProps): ReactNode {
@@ -37,7 +37,7 @@ function ReadyCard({ view, t }: { readonly view: RiskAdvisorView; readonly t: Ca
     <BoundedList title={t('uncertainties')} items={assessment.uncertainties.map(item => `${item.code}: ${item.description}`)} testId="risk-advisor-uncertainties" />
     <div data-testid="risk-advisor-source">{assessment.judgeAssisted ? t('judgeAssisted') : t('rulesOnly')}</div>
     <details data-testid="risk-advisor-failure-context"><summary>{t('failureContext')}</summary><span>{t('failureDetails')}</span><span>{view.failureContext!.retryCount}/{view.failureContext!.recentFailureCount}</span><span>{t('sameRootCause')}: {displayUnknown(view.failureContext!.sameRootCause, t)}</span><span>{t('permissionEscalation')}: {displayUnknown(view.failureContext!.permissionEscalation, t)}</span><span>{t('truncated')}: {view.failureContext!.truncated ? 'true' : 'false'}</span></details>
-    <div data-testid="risk-advisor-evidence"><span>{t('ledgerHealth')}: {assessment.evidence.ledgerHealth}</span><span>{t('evidenceQuality')}: {assessment.dimensions.evidenceQuality.verdict} / {assessment.dimensions.evidenceQuality.evidenceQuality}</span>{view.schemaVersion === 3 && view.evidence !== undefined ? <span data-testid="risk-advisor-evidence-summary">{view.evidence.status}: {view.evidence.itemCount}</span> : null}</div>
+    <div data-testid="risk-advisor-evidence"><span>{t('ledgerHealth')}: {assessment.evidence.ledgerHealth}</span><span>{t('evidenceQuality')}: {assessment.dimensions.evidenceQuality.verdict} / {assessment.dimensions.evidenceQuality.evidenceQuality}</span>{(view.schemaVersion === 3 || view.schemaVersion === 4) && view.evidence !== undefined ? <span data-testid="risk-advisor-evidence-summary">{view.evidence.status}: {view.evidence.itemCount}</span> : null}</div>
     <AlternativeList alternatives={assessment.alternatives} t={t} />
   </section>
 }

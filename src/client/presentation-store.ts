@@ -1,4 +1,4 @@
-import type { BrowserBridgeClientResult, RiskAdvisorBridgeViewV2, RiskAdvisorBridgeViewV3 } from '../bridge-contract.ts'
+import type { BrowserBridgeClientResult, RiskAdvisorBridgeViewV2, RiskAdvisorBridgeViewV3, RiskAdvisorBridgeViewV4 } from '../bridge-contract.ts'
 import type { RiskAdvisorBridgeClient } from './assessment-bridge.ts'
 
 export const POLL_INTERVAL_MS = 1000
@@ -7,7 +7,7 @@ export const NOT_FOUND_GRACE_MS = 3000
 export type PresentationStoreStatus = 'ANALYZING' | 'READY' | 'UNAVAILABLE' | 'CANCELLED'
 export interface PresentationStoreSnapshot {
   readonly status: PresentationStoreStatus
-  readonly view?: RiskAdvisorBridgeViewV2 | RiskAdvisorBridgeViewV3
+  readonly view?: RiskAdvisorBridgeViewV2 | RiskAdvisorBridgeViewV3 | RiskAdvisorBridgeViewV4
   readonly reason?: 'TRANSPORT_UNAVAILABLE' | 'HOST_REJECTED' | 'PROTOCOL_INVALID' | 'CANCELLED' | 'NO_ACTIVE_EXECUTION' | 'AMBIGUOUS_EXECUTION'
 }
 
@@ -131,7 +131,7 @@ export class PresentationStore {
       this.clearScheduled()
       return
     }
-    if (result.view.schemaVersion !== 2 && result.view.schemaVersion !== 3) {
+    if (result.view.schemaVersion !== 2 && result.view.schemaVersion !== 3 && result.view.schemaVersion !== 4) {
       this.publish({ status: 'UNAVAILABLE', reason: 'PROTOCOL_INVALID' })
       this.clearScheduled()
       return
@@ -139,7 +139,7 @@ export class PresentationStore {
     const view = result.view
     if (view.status === 'ready') {
       this.publish({ status: 'READY', view })
-      if (view.stage === 'fast' || view.stage === 'evidence') this.schedulePoll()
+      if (view.stage === 'fast' || view.stage === 'evidence' || view.stage === 'deep') this.schedulePoll()
       else this.clearScheduled()
       return
     }

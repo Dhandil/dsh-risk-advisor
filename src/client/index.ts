@@ -11,7 +11,7 @@ import type { ClientConnectionLike } from './presentation-store.ts'
 
 export { createRiskAdvisorBridgeClient } from './assessment-bridge.ts'
 export type { RiskAdvisorBridgeClient } from './assessment-bridge.ts'
-export type { BrowserBridgeClientResult, RiskAdvisorBridgeRead, RiskAdvisorBridgeViewV1, RiskAdvisorBridgeViewV2, RiskAdvisorBridgeViewV3, BrowserEvidenceSummaryV1, OperationPresentationV1, BrowserRiskAssessmentV1, FailureContextPresentationV1, BrowserDimension } from '../bridge-contract.ts'
+export type { BrowserBridgeClientResult, RiskAdvisorBridgeRead, RiskAdvisorBridgeViewV1, RiskAdvisorBridgeViewV2, RiskAdvisorBridgeViewV3, RiskAdvisorBridgeViewV4, BrowserEvidenceSummaryV1, OperationPresentationV1, BrowserRiskAssessmentV1, FailureContextPresentationV1, BrowserDimension } from '../bridge-contract.ts'
 export { commandForSnapshot, commandOf } from './command.ts'
 export { PresentationClient } from './presentation-client.ts'
 export { PresentationStore, POLL_INTERVAL_MS, NOT_FOUND_GRACE_MS } from './presentation-store.ts'

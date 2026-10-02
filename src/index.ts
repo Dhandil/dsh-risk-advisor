@@ -17,6 +17,8 @@ import type { FailureChainDiagnostics } from './host/retry-escalation.ts'
 import { RuleEngine } from './host/rule-engine.ts'
 import type { RuleDiagnostics } from './host/rule-engine.ts'
 import type { FastJudgeConfig } from './host/fast-judge.ts'
+import type { DeepJudgeConfig } from './host/deep-judge.ts'
+import { getSubagentsCapability } from './host/deep-judge-subagent.ts'
 import { ExpectedEffectRegistry } from './host/expected-effect.ts'
 import { PostconditionVerifier } from './host/postcondition-verifier.ts'
 import type { VerificationDiagnostics, VerificationRecordV1 } from './host/verification-store.ts'
@@ -75,7 +77,7 @@ export function installCorrelation(ctx: Context): CorrelationDiagnostics {
 }
 
 /** Host bundle entry. R2 observes native execution and approval events only. */
-export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConfig } = {}): void {
+export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConfig; readonly deepJudge?: DeepJudgeConfig } = {}): void {
   const ledger = installLedger(ctx)
   const foundation = new OperationFoundation()
   const failureChain = new RetryEscalationAnalyzer()
@@ -91,6 +93,7 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
     ledger,
     evidence,
     ...config.fastJudge === undefined ? {} : { fastJudge: config.fastJudge },
+    ...config.deepJudge === undefined ? {} : { deepJudge: config.deepJudge },
   })
   installCorrelationInternal(ctx, {
     capture: (exec, executionId, parentExecutionId) => {
@@ -100,6 +103,7 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
       expectedEffects.capture(exec, executionId)
       evidence.seeds.capture(exec, executionId)
       assessments.captureReviewerSeed(exec, executionId)
+      assessments.captureDeepJudgeParent(exec, executionId)
     },
     retire: (exec, result) => {
       failureChain.observeResult(exec, result)
@@ -123,6 +127,11 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
     const llm = judgeCtx.get('llm')
     if (llm !== undefined) assessments.attachJudge(llm)
     judgeCtx.effect(() => () => assessments.detachJudge(), 'risk-advisor-fast-judge-capability')
+  })
+  ctx.inject(['subagents'], subagentCtx => {
+    const runtime = getSubagentsCapability(subagentCtx)
+    if (runtime !== undefined) assessments.attachSubagents(runtime)
+    subagentCtx.effect(() => () => assessments.detachSubagents(), 'risk-advisor-deep-judge-capability')
   })
   ctx.inject(['shell'], shellCtx => {
     const shell = shellCtx.get('shell', false)
@@ -170,8 +179,9 @@ export type { FailureChainDiagnostics, FailureChainEntry, FailureChainFailureKin
 export type { RuleDiagnostics, RuleEvaluationStatus, RuleParserConfidence, RuleOperationKind, RuleFindingCategory, RuleFinding, RuleFailureContext, RuleEvaluation } from './host/rule-engine.ts'
 export type { AssessmentAssociation, AssessmentBridgeSnapshot, AssessmentDiagnostic, AssessmentDiagnostics, AssessmentIssueSummary, AssessmentReasonCode, AssessmentStage, AssessmentStatus, ApprovalAssessmentShell, Phase5AssessmentStage, Phase5AssessmentStatus } from './host/assessment-envelope.ts'
 export type { FastJudgeConfig, FastJudgeCandidate, FastJudgeDimension, FastJudgeDimensionResult, JudgeFailureCode, NormalizedFastJudgeConfig, ReviewerRoute } from './host/fast-judge.ts'
+export type { DeepJudgeConfig, DeepJudgeCandidateV1, DeepJudgeDimension, DeepJudgeDimensionResult, DeepJudgeFailureCode, NormalizedDeepJudgeConfig } from './host/deep-judge.ts'
 export type { RiskAssessment, RiskContextSnapshot, RiskFeature, RiskFeatureSet, AssessmentFinding, AssessmentUncertainty, SaferAlternative } from './host/risk-engine.ts'
-export type { BrowserBridgeClientResult, BrowserSafeReasonCode, BrowserSafeReasonCodeV2, BrowserSafeReasonCodeV3, RiskAdvisorBridgeRead, RiskAdvisorBridgeViewV1, RiskAdvisorBridgeViewV2, RiskAdvisorBridgeViewV3, BrowserEvidenceSummaryV1, OperationPresentationV1, BrowserRiskAssessmentV1, FailureContextPresentationV1, BrowserOperationKind, BrowserResourceKind, BrowserDimension, BrowserDimensionSource, BrowserEvidenceQuality, BrowserFindingDimension, BrowserFindingSeverity, BrowserFindingStrength, BrowserAlternativeSource, BrowserAlternativeVerification, BrowserUncertaintyImpact } from './bridge-contract.ts'
+export type { BrowserBridgeClientResult, BrowserSafeReasonCode, BrowserSafeReasonCodeV2, BrowserSafeReasonCodeV3, BrowserSafeReasonCodeV4, RiskAdvisorBridgeRead, RiskAdvisorBridgeViewV1, RiskAdvisorBridgeViewV2, RiskAdvisorBridgeViewV3, RiskAdvisorBridgeViewV4, BrowserEvidenceSummaryV1, OperationPresentationV1, BrowserRiskAssessmentV1, FailureContextPresentationV1, BrowserOperationKind, BrowserResourceKind, BrowserDimension, BrowserDimensionSource, BrowserEvidenceQuality, BrowserFindingDimension, BrowserFindingSeverity, BrowserFindingStrength, BrowserAlternativeSource, BrowserAlternativeVerification, BrowserUncertaintyImpact } from './bridge-contract.ts'
 export type {
   DurableOccurrenceRef,
   EdgeResolution,

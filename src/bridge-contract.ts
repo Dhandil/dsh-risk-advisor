@@ -20,6 +20,8 @@ export const BROWSER_SAFE_REASON_CODES_V2 = [
 export type BrowserSafeReasonCodeV2 = typeof BROWSER_SAFE_REASON_CODES_V2[number]
 export const BROWSER_SAFE_REASON_CODES_V3 = [...BROWSER_SAFE_REASON_CODES_V2, 'EVIDENCE_CAPABILITY_UNAVAILABLE', 'EVIDENCE_PENDING', 'EVIDENCE_COLLECTION_DEGRADED', 'EVIDENCE_OUTSIDE_WORKSPACE', 'EVIDENCE_PATH_ALIAS', 'PACKAGE_LIFECYCLE_SCRIPTS_PRESENT'] as const
 export type BrowserSafeReasonCodeV3 = typeof BROWSER_SAFE_REASON_CODES_V3[number]
+export const BROWSER_SAFE_REASON_CODES_V4 = [...BROWSER_SAFE_REASON_CODES_V3, 'DEEP_JUDGE_DISABLED', 'DEEP_JUDGE_CONFIG_UNAVAILABLE', 'DEEP_JUDGE_CAPABILITY_UNAVAILABLE', 'DEEP_JUDGE_PROVIDER_UNSUPPORTED', 'DEEP_JUDGE_PARENT_UNAVAILABLE', 'DEEP_JUDGE_ROUTE_UNAVAILABLE', 'DEEP_JUDGE_QUEUE_SATURATED', 'DEEP_JUDGE_TIMEOUT', 'DEEP_JUDGE_STREAM_ERROR', 'DEEP_JUDGE_ABORTED', 'DEEP_JUDGE_INVALID_OUTPUT', 'DEEP_JUDGE_REDACTION_FAILED', 'DEEP_JUDGE_SUPERSEDED', 'DEEP_JUDGE_NATIVE_DECISION', 'DEEP_JUDGE_GENERATION_DISPOSED'] as const
+export type BrowserSafeReasonCodeV4 = typeof BROWSER_SAFE_REASON_CODES_V4[number]
 
 export type BrowserOperationKind = 'filesystem-read' | 'filesystem-write' | 'filesystem-edit' | 'shell' | 'network-read' | 'unknown'
 export type BrowserResourceKind = 'path' | 'url' | 'query' | 'workdir' | 'other'
@@ -129,8 +131,14 @@ export interface RiskAdvisorBridgeViewV3 extends Omit<RiskAdvisorBridgeViewV2, '
   readonly evidence?: BrowserEvidenceSummaryV1
 }
 
+export interface RiskAdvisorBridgeViewV4 extends Omit<RiskAdvisorBridgeViewV3, 'schemaVersion' | 'stage' | 'reasonCodes'> {
+  readonly schemaVersion: 4
+  readonly stage: 'rules' | 'fast' | 'evidence' | 'deep' | 'complete'
+  readonly reasonCodes: readonly BrowserSafeReasonCodeV4[]
+}
+
 export type RiskAdvisorBridgeRead =
-  | { readonly kind: 'VIEW'; readonly view: RiskAdvisorBridgeViewV1 | RiskAdvisorBridgeViewV2 | RiskAdvisorBridgeViewV3 }
+  | { readonly kind: 'VIEW'; readonly view: RiskAdvisorBridgeViewV1 | RiskAdvisorBridgeViewV2 | RiskAdvisorBridgeViewV3 | RiskAdvisorBridgeViewV4 }
   | { readonly kind: 'NOT_FOUND' }
   | { readonly kind: 'AMBIGUOUS'; readonly reasonCodes: readonly ['MULTIPLE_ACTIVE_APPROVALS'] }
 
@@ -161,7 +169,7 @@ export function parseBridgeRead(value: unknown): RiskAdvisorBridgeRead | undefin
     if (kind !== 'VIEW' || !exactKeys(value, ['kind', 'view']) || !isPlainRecord(own(value, 'view'))) return undefined
     const rawView = own(value, 'view') as Record<string, unknown>
     const version = own(rawView, 'schemaVersion')
-    const view = version === 1 ? parseV1View(rawView) : version === 2 ? parseV2View(rawView) : version === 3 ? parseV3View(rawView) : undefined
+    const view = version === 1 ? parseV1View(rawView) : version === 2 ? parseV2View(rawView) : version === 3 ? parseV3View(rawView) : version === 4 ? parseV4View(rawView) : undefined
     return view === undefined ? undefined : Object.freeze({ kind: 'VIEW' as const, view })
   } catch { return undefined }
 }
@@ -172,10 +180,11 @@ export function freezeBridgeRead(value: RiskAdvisorBridgeRead): RiskAdvisorBridg
   return Object.freeze({ kind: 'NOT_FOUND' as const })
 }
 
-export function freezeView(view: RiskAdvisorBridgeViewV1 | RiskAdvisorBridgeViewV2 | RiskAdvisorBridgeViewV3): RiskAdvisorBridgeViewV1 | RiskAdvisorBridgeViewV2 | RiskAdvisorBridgeViewV3 { return deepFreeze({ ...view, reasonCodes: [...view.reasonCodes] }) as RiskAdvisorBridgeViewV1 | RiskAdvisorBridgeViewV2 | RiskAdvisorBridgeViewV3 }
+export function freezeView(view: RiskAdvisorBridgeViewV1 | RiskAdvisorBridgeViewV2 | RiskAdvisorBridgeViewV3 | RiskAdvisorBridgeViewV4): RiskAdvisorBridgeViewV1 | RiskAdvisorBridgeViewV2 | RiskAdvisorBridgeViewV3 | RiskAdvisorBridgeViewV4 { return deepFreeze({ ...view, reasonCodes: [...view.reasonCodes] }) as RiskAdvisorBridgeViewV1 | RiskAdvisorBridgeViewV2 | RiskAdvisorBridgeViewV3 | RiskAdvisorBridgeViewV4 }
 export function isBrowserSafeReasonCode(value: unknown): value is BrowserSafeReasonCode { return typeof value === 'string' && (BROWSER_SAFE_REASON_CODES as readonly string[]).includes(value) }
 export function isBrowserSafeReasonCodeV2(value: unknown): value is BrowserSafeReasonCodeV2 { return typeof value === 'string' && (BROWSER_SAFE_REASON_CODES_V2 as readonly string[]).includes(value) }
 export function isBrowserSafeReasonCodeV3(value: unknown): value is BrowserSafeReasonCodeV3 { return typeof value === 'string' && (BROWSER_SAFE_REASON_CODES_V3 as readonly string[]).includes(value) }
+export function isBrowserSafeReasonCodeV4(value: unknown): value is BrowserSafeReasonCodeV4 { return typeof value === 'string' && (BROWSER_SAFE_REASON_CODES_V4 as readonly string[]).includes(value) }
 
 function parseV1View(value: Record<string, unknown>): RiskAdvisorBridgeViewV1 | undefined {
   if (!exactKeys(value, ['schemaVersion', 'sessionId', 'callId', 'association', 'status', 'stage', 'reasonCodes', 'updatedAt'], ['assessmentId'])) return undefined
@@ -227,6 +236,28 @@ function parseV3View(value: Record<string, unknown>): RiskAdvisorBridgeViewV3 | 
   if (status === 'ready' && (association !== 'BOUND' || assessmentId === undefined || operation === undefined || assessment === undefined || failureContext === undefined)) return undefined
   if ((status === 'pending' || status === 'unavailable' || status === 'cancelled') && assessment !== undefined) return undefined
   return deepFreeze({ schemaVersion: 3 as const, sessionId, callId, ...(assessmentId === undefined ? {} : { assessmentId }), association, status, stage, ...(operation === undefined ? {} : { operation }), ...(assessment === undefined ? {} : { assessment }), ...(failureContext === undefined ? {} : { failureContext }), ...(evidence === undefined ? {} : { evidence }), reasonCodes: [...reasons] as BrowserSafeReasonCodeV3[], updatedAt: own(value, 'updatedAt') }) as RiskAdvisorBridgeViewV3
+}
+
+function parseV4View(value: Record<string, unknown>): RiskAdvisorBridgeViewV4 | undefined {
+  if (!exactKeys(value, ['schemaVersion', 'sessionId', 'callId', 'association', 'status', 'stage', 'reasonCodes', 'updatedAt'], ['assessmentId', 'operation', 'assessment', 'failureContext', 'evidence'])) return undefined
+  const sessionId = own(value, 'sessionId'); const callId = own(value, 'callId'); const assessmentId = own(value, 'assessmentId'); const association = own(value, 'association'); const status = own(value, 'status'); const stage = own(value, 'stage'); const reasons = own(value, 'reasonCodes')
+  if (own(value, 'schemaVersion') !== 4 || !isBoundedIdentifier(sessionId) || !isBoundedIdentifier(callId) || (association !== 'BOUND' && association !== 'UNBOUND') || !isEnum(status, ['pending', 'ready', 'unavailable', 'cancelled']) || !isEnum(stage, ['rules', 'fast', 'evidence', 'deep', 'complete']) || !Array.isArray(reasons) || reasons.length > 40 || reasons.some(reason => !isBrowserSafeReasonCodeV4(reason)) || !finiteNonNegative(own(value, 'updatedAt'))) return undefined
+  if (assessmentId !== undefined && !isBoundedIdentifier(assessmentId)) return undefined
+  if (association === 'UNBOUND' && assessmentId !== undefined) return undefined
+  if (status !== 'pending' && association === 'BOUND' && assessmentId === undefined) return undefined
+  if (status === 'pending' && association !== 'BOUND') return undefined
+  if (status === 'pending' && stage !== 'rules' && stage !== 'fast' && stage !== 'evidence' && stage !== 'deep') return undefined
+  if (status === 'ready' && stage === 'rules') return undefined
+  if (status === 'cancelled' && stage !== 'complete') return undefined
+  const operationValue = own(value, 'operation'); const assessmentValue = own(value, 'assessment'); const failureValue = own(value, 'failureContext'); const evidenceValue = own(value, 'evidence')
+  const operation = operationValue === undefined ? undefined : parseOperation(operationValue)
+  const assessment = assessmentValue === undefined ? undefined : parseAssessment(assessmentValue)
+  const failureContext = failureValue === undefined ? undefined : parseFailureContext(failureValue)
+  const evidence = evidenceValue === undefined ? undefined : parseEvidenceSummary(evidenceValue)
+  if ((operationValue !== undefined && operation === undefined) || (assessmentValue !== undefined && assessment === undefined) || (failureValue !== undefined && failureContext === undefined) || (evidenceValue !== undefined && evidence === undefined)) return undefined
+  if (status === 'ready' && (association !== 'BOUND' || assessmentId === undefined || operation === undefined || assessment === undefined || failureContext === undefined)) return undefined
+  if ((status === 'pending' || status === 'unavailable' || status === 'cancelled') && assessment !== undefined) return undefined
+  return deepFreeze({ schemaVersion: 4 as const, sessionId, callId, ...(assessmentId === undefined ? {} : { assessmentId }), association, status, stage, ...(operation === undefined ? {} : { operation }), ...(assessment === undefined ? {} : { assessment }), ...(failureContext === undefined ? {} : { failureContext }), ...(evidence === undefined ? {} : { evidence }), reasonCodes: [...reasons] as BrowserSafeReasonCodeV4[], updatedAt: own(value, 'updatedAt') }) as RiskAdvisorBridgeViewV4
 }
 
 function parseEvidenceSummary(value: unknown): BrowserEvidenceSummaryV1 | undefined {
