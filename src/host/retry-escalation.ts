@@ -9,6 +9,7 @@ import {
 } from './explicit-failure.ts'
 import type { LedgerEvidenceRef } from './ledger.ts'
 import type { ExecutionId } from './correlation.ts'
+import type { VerificationRecordV1 } from './verification-store.ts'
 
 export type RelationSummaryStatus =
   | 'READY'
@@ -75,6 +76,7 @@ interface RelationOutcome {
   readonly signature?: FailureSignature
   readonly permissionMode?: SandboxMode
   readonly processSuccess?: true | false | 'unknown'
+  readonly semanticSuccess?: true | false | 'unknown'
 }
 
 interface RelationRecord {
@@ -88,7 +90,14 @@ interface RelationRecord {
   readonly nearestPriorExpired: boolean
   readonly reasonCodes: string[]
   evidenceState: EvidenceState
+  baseOutcome: RelationOutcome | undefined
   outcome: RelationOutcome | undefined
+  verification?: {
+    readonly adapterId: string
+    readonly semanticSuccess: true | false | 'unknown'
+    readonly status: string
+  }
+  semanticFailureCausallyAvailable?: boolean
   settledBeforeCaptureOrdinal?: number
 }
 
@@ -381,6 +390,11 @@ function sameOutcome(a: RelationOutcome, b: RelationOutcome): boolean {
     && a.signature?.key === b.signature?.key
     && a.permissionMode === b.permissionMode
     && a.processSuccess === b.processSuccess
+    && a.semanticSuccess === b.semanticSuccess
+}
+
+function sameVerification(a: NonNullable<RelationRecord['verification']>, b: VerificationRecordV1): boolean {
+  return a.adapterId === b.adapterId && a.semanticSuccess === b.semanticSuccess && a.status === b.status
 }
 
 function permissionLevel(mode: SandboxMode): number {
@@ -456,6 +470,7 @@ export class RetryEscalationAnalyzer {
       nearestPriorExpired,
       reasonCodes: [...capture.reasonCodes],
       evidenceState: capture.fingerprint === undefined ? 'UNSUPPORTED' : 'PENDING',
+      baseOutcome: undefined,
       outcome: undefined,
     }
     this.records.add(record)
@@ -471,6 +486,7 @@ export class RetryEscalationAnalyzer {
     try {
       const next = outcomeFor(exec, result, record.ordinal)
       if (record.outcome === undefined && record.evidenceState === 'PENDING') {
+        record.baseOutcome = next
         record.outcome = next
         record.evidenceState = 'SETTLED'
         record.settledBeforeCaptureOrdinal = this.nextOrdinal
@@ -484,6 +500,53 @@ export class RetryEscalationAnalyzer {
       record.evidenceState = 'CONFLICTED'
       record.outcome = undefined
       record.reasonCodes.push('RELATION_EVIDENCE_UNAVAILABLE')
+    }
+  }
+
+  /** Apply a sanitized Phase-7 overlay after the immutable base result settles. */
+  observeVerification(verification: VerificationRecordV1): void {
+    if (!this.active) return
+    const record = this.recordsById.get(verification.executionId)
+    if (record === undefined || record.baseOutcome === undefined) return
+    if (record.verification !== undefined) {
+      if (sameVerification(record.verification, verification)) return
+      record.verification = {
+        adapterId: verification.adapterId,
+        semanticSuccess: 'unknown',
+        status: 'UNKNOWN',
+      }
+      record.outcome = record.baseOutcome
+      record.evidenceState = 'CONFLICTED'
+      record.reasonCodes.push('RELATION_EVIDENCE_CONFLICT')
+      return
+    }
+    record.verification = {
+      adapterId: verification.adapterId,
+      semanticSuccess: verification.semanticSuccess,
+      status: verification.status,
+    }
+    const base = record.baseOutcome
+    if (base.status !== 'SUCCESS') return
+    if (verification.semanticSuccess === false) {
+      const session = record.session.deref()
+      const state = session === undefined ? undefined : this.states.get(session)
+      const laterMatchingCapture = state?.records.some(item => item.ordinal > record.ordinal && item.fingerprint !== undefined && item.fingerprint === record.fingerprint) === true
+      record.semanticFailureCausallyAvailable = !laterMatchingCapture
+      const signature: FailureSignature = {
+        kind: 'SEMANTIC_FAILURE',
+        key: `SEMANTIC_FAILURE:${verification.adapterId}`,
+      }
+      record.outcome = {
+        ...base,
+        status: 'FAILURE',
+        failureKind: 'SEMANTIC_FAILURE',
+        signature,
+        processSuccess: true,
+        semanticSuccess: false,
+      }
+      if (record.semanticFailureCausallyAvailable) record.settledBeforeCaptureOrdinal = this.nextOrdinal
+    } else {
+      record.outcome = { ...base, semanticSuccess: verification.semanticSuccess }
     }
   }
 
@@ -563,6 +626,7 @@ export class RetryEscalationAnalyzer {
     if (record.evidenceState === 'CONFLICTED') return undefined
     if (now - prior.createdAt >= this.ttlMs || record.createdAt - prior.createdAt > this.ttlMs) return undefined
     if (prior.evidenceState !== 'SETTLED' || prior.outcome?.status !== 'FAILURE') return undefined
+    if (prior.verification?.semanticSuccess === false && prior.semanticFailureCausallyAvailable !== true) return undefined
     if (prior.settledBeforeCaptureOrdinal === undefined || prior.settledBeforeCaptureOrdinal > record.ordinal) return undefined
     return prior
   }

@@ -17,6 +17,9 @@ import type { FailureChainDiagnostics } from './host/retry-escalation.ts'
 import { RuleEngine } from './host/rule-engine.ts'
 import type { RuleDiagnostics } from './host/rule-engine.ts'
 import type { FastJudgeConfig } from './host/fast-judge.ts'
+import { ExpectedEffectRegistry } from './host/expected-effect.ts'
+import { PostconditionVerifier } from './host/postcondition-verifier.ts'
+import type { VerificationDiagnostics, VerificationRecordV1 } from './host/verification-store.ts'
 
 export const inject = ['tools']
 
@@ -28,6 +31,7 @@ interface Context {
   riskAdvisorAssessments: AssessmentDiagnostics
   riskAdvisorFailureChain: FailureChainDiagnostics
   riskAdvisorRules: RuleDiagnostics
+  riskAdvisorVerification: VerificationDiagnostics
 }
 }
 
@@ -73,6 +77,10 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
   const foundation = new OperationFoundation()
   const failureChain = new RetryEscalationAnalyzer()
   const rules = new RuleEngine()
+  const expectedEffects = new ExpectedEffectRegistry()
+  const verifier = new PostconditionVerifier(expectedEffects, {
+    onRecord: (record: VerificationRecordV1) => { failureChain.observeVerification(record) },
+  })
   const assessments = new ApprovalAssessmentCoordinator(foundation.diagnostics, {
     rules: rules.diagnostics,
     failureChain: failureChain.diagnostics,
@@ -84,11 +92,13 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
       foundation.capture(exec, executionId, parentExecutionId)
       failureChain.observePreExecute(exec, executionId)
       rules.observePreExecute(exec, executionId, executionId === undefined ? undefined : failureChain.diagnostics.get(executionId))
+      expectedEffects.capture(exec, executionId)
       assessments.captureReviewerSeed(exec, executionId)
     },
     retire: (exec, result) => {
-      foundation.retire(exec)
       failureChain.observeResult(exec, result)
+      verifier.observeResult(exec, result)
+      foundation.retire(exec)
     },
     sessionEvent: (session, event, index) => { assessments.observeSessionEvent(session, event, index) },
     sessionDisposed: session => { assessments.observeSessionDisposed(session) },
@@ -97,6 +107,7 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
   ctx.provide('riskAdvisorAssessments', assessments.diagnostics)
   ctx.provide('riskAdvisorFailureChain', failureChain.diagnostics)
   ctx.provide('riskAdvisorRules', rules.diagnostics)
+  ctx.provide('riskAdvisorVerification', verifier.store.diagnostics)
   ctx.inject(['connection', 'sessions'], bridgeCtx => {
     const connection = bridgeCtx.get('connection', false) as HostConnectionLike | undefined
     if (connection !== undefined) installRiskAdvisorBrowserBridge(bridgeCtx, connection, assessments)
@@ -106,10 +117,18 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
     if (llm !== undefined) assessments.attachJudge(llm)
     judgeCtx.effect(() => () => assessments.detachJudge(), 'risk-advisor-fast-judge-capability')
   })
+  ctx.inject(['shell'], shellCtx => {
+    const shell = shellCtx.get('shell', false)
+    const sandboxPolicy = shellCtx.get('sandboxPolicy', false)
+    if (shell !== undefined) verifier.attach(shell, sandboxPolicy)
+    shellCtx.effect(() => () => { verifier.detach() }, 'risk-advisor-postcondition-shell-capability')
+  })
+  ctx.on('session/disposed', session => { verifier.cancelSession(session) })
   ctx.effect(() => () => { foundation.dispose() }, 'risk-advisor-operation-foundation-generation')
   ctx.effect(() => () => assessments.dispose(), 'risk-advisor-assessment-generation')
   ctx.effect(() => () => { failureChain.dispose() }, 'risk-advisor-failure-chain-generation')
   ctx.effect(() => () => { rules.dispose() }, 'risk-advisor-rule-engine-generation')
+  ctx.effect(() => () => verifier.dispose(), 'risk-advisor-postcondition-verification-generation')
 }
 
 export { ActiveExecutionIndex }
@@ -127,6 +146,7 @@ export type {
   NotFoundReason,
 } from './host/correlation.ts'
 export type { FoundationBoundaryDiagnostic, FoundationDiagnostic, FoundationDiagnostics, FoundationStatus, FoundationToolKind, FoundationUnknown } from './host/operation-foundation.ts'
+export type { VerificationDiagnostics, VerificationRecordV1, VerificationReasonCode, VerificationStatus, SemanticSuccess } from './host/verification-store.ts'
 export type { FailureChainDiagnostics, FailureChainEntry, FailureChainFailureKind, FailureChainSummary, RelationSummaryStatus, RetryEscalationOptions } from './host/retry-escalation.ts'
 export type { RuleDiagnostics, RuleEvaluationStatus, RuleParserConfidence, RuleOperationKind, RuleFindingCategory, RuleFinding, RuleFailureContext, RuleEvaluation } from './host/rule-engine.ts'
 export type { AssessmentAssociation, AssessmentBridgeSnapshot, AssessmentDiagnostic, AssessmentDiagnostics, AssessmentIssueSummary, AssessmentReasonCode, AssessmentStage, AssessmentStatus, ApprovalAssessmentShell, Phase5AssessmentStage, Phase5AssessmentStatus } from './host/assessment-envelope.ts'

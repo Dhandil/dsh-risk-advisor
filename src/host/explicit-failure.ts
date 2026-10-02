@@ -26,6 +26,7 @@ export type ExplicitFailureKind =
   | 'APPROVAL_CANCELLED'
   | 'APPROVAL_UNAVAILABLE'
   | 'SYSTEM_ERROR'
+  | 'SEMANTIC_FAILURE'
   | 'UNKNOWN'
 
 export type EvidenceStrength = 'AUTHORITATIVE' | 'DETERMINISTIC' | 'UNKNOWN'
@@ -48,7 +49,7 @@ export interface ExplicitFailureFact {
 export interface Phase2ExecutionOutcome {
   readonly terminalStatus: TerminalStatus
   readonly processSuccess?: true | false | 'unknown'
-  readonly semanticSuccess: 'unknown'
+  readonly semanticSuccess: true | false | 'unknown'
   readonly failures: readonly ExplicitFailureFact[]
 }
 
