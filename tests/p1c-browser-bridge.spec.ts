@@ -155,8 +155,10 @@ describe('Phase 1C authenticated read-only browser bridge', () => {
       const active = expectOk(await connection.dispatch('active', { sessionId: session.id, callId: 'p1c-live-call' })) as Record<string, unknown>
       expect(active).toMatchObject({ kind: 'VIEW' })
       const view = (active as { view: Record<string, unknown> }).view
-      expect(view).toMatchObject({ sessionId: session.id, callId: 'p1c-live-call', association: 'BOUND', status: 'unavailable', stage: 'not-started' })
+      expect(view).toMatchObject({ schemaVersion: 2, sessionId: session.id, callId: 'p1c-live-call', association: 'BOUND', status: 'ready', stage: 'complete' })
       expect(view.assessmentId).toMatch(/^ra-assessment-[0-9a-f-]{36}$/)
+      expect(view).toHaveProperty('operation')
+      expect(view).toHaveProperty('assessment')
       expect(view).not.toHaveProperty('approvalId')
       expect(view).not.toHaveProperty('executionId')
       expect(view).not.toHaveProperty('observedOutcome')

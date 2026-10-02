@@ -28,6 +28,8 @@ import {
   type FastJudgeConfig,
   type NormalizedFastJudgeConfig,
 } from './fast-judge.ts'
+import { phase6View, type Phase6PresentationSource } from './presentation/presentation-source.ts'
+import type { RiskAdvisorBridgeViewV2 } from '../bridge-contract.ts'
 
 export type AssessmentAssociation = 'BOUND' | 'UNBOUND' | 'AMBIGUOUS'
 export type AssessmentStatus = 'pending' | 'unavailable' | 'cancelled' | 'not-found'
@@ -127,6 +129,11 @@ export type OpenAssessmentQuery =
   | { readonly kind: 'VIEW'; readonly snapshot: AssessmentBridgeSnapshot }
   | { readonly kind: 'NOT_FOUND' }
 
+export type Phase6PresentationQuery =
+  | { readonly kind: 'VIEW'; readonly view: RiskAdvisorBridgeViewV2 }
+  | { readonly kind: 'NOT_FOUND' }
+  | { readonly kind: 'AMBIGUOUS' }
+
 export interface AssessmentDiagnostics {
   readonly getForApproval: (session: Session, approvalId: string) => AssessmentDiagnostic
   readonly getAssessment: (assessmentId: string) => RiskAssessment | undefined
@@ -171,6 +178,7 @@ interface Phase5Record {
   readonly generation: number
   attempted: boolean
   closed: boolean
+  stage: Phase5AssessmentStage
 }
 
 const MAX_RECORDS = 256
@@ -228,7 +236,7 @@ function diagnosticFromRecord(record: AssessmentRecord): AssessmentDiagnostic {
   return Object.freeze({
     ...base,
     lifecycleStatus: record.phase5.latest.status,
-    lifecycleStage: record.phase5.latest.provenance.judge.invoked ? 'complete' as const : 'rules' as const,
+    lifecycleStage: record.phase5.stage,
     latestAssessmentId: record.phase5.latest.assessmentId,
     assessment: record.phase5.latest,
   })
@@ -426,6 +434,36 @@ export class ApprovalAssessmentCoordinator {
       : { kind: 'VIEW', snapshot: bridgeSnapshotFrom(match, match.callId!, sessionId) }
   }
 
+  queryActivePresentationForCall(session: Session, callIdValue: unknown): Phase6PresentationQuery {
+    if (!this.active) return { kind: 'NOT_FOUND' }
+    const callId = safeId(callIdValue, true)
+    if (callId === undefined) return { kind: 'NOT_FOUND' }
+    this.sweep(this.readClock())
+    const matches = [...this.recordsBySession.get(session)?.values() ?? []]
+      .filter(record => record.shell.closed === false && record.callId === callId)
+    if (matches.length === 0) return { kind: 'NOT_FOUND' }
+    if (matches.length > 1) return { kind: 'AMBIGUOUS' }
+    return { kind: 'VIEW', view: phase6View(this.presentationSource(matches[0]!, session, callId)) }
+  }
+
+  queryOpenPresentationByAssessmentId(assessmentIdValue: unknown): Phase6PresentationQuery {
+    if (!this.active) return { kind: 'NOT_FOUND' }
+    const assessmentId = safeId(assessmentIdValue, true)
+    if (assessmentId === undefined) return { kind: 'NOT_FOUND' }
+    this.sweep(this.readClock())
+    let match: AssessmentRecord | undefined
+    let session: Session | undefined
+    for (const record of this.records) {
+      const phase5 = record.phase5
+      if (record.shell.closed || phase5 === undefined || (phase5.a1.assessmentId !== assessmentId && phase5.latest.assessmentId !== assessmentId)) continue
+      if (match !== undefined) return { kind: 'NOT_FOUND' }
+      match = record
+      session = record.sessionRef.deref()
+    }
+    if (match === undefined || session === undefined || match.callId === undefined) return { kind: 'NOT_FOUND' }
+    return { kind: 'VIEW', view: phase6View(this.presentationSource(match, session, match.callId)) }
+  }
+
   private observeAsked(
     session: Session,
     approvalIdValue: unknown,
@@ -502,7 +540,7 @@ export class ApprovalAssessmentCoordinator {
       try {
         const built = this.buildPhase5Context(session, executionId)
         const assessment = createDeterministicAssessment(built.snapshot, assessmentId!, now)
-        record.phase5 = { context: built, a1: assessment, latest: assessment, generation: 1, attempted: false, closed: false }
+        record.phase5 = { context: built, a1: assessment, latest: assessment, generation: 1, attempted: false, closed: false, stage: 'rules' }
         if (built.reviewerFailure !== undefined) this.addReason(record, built.reviewerFailure)
         if (this.fastJudgeConfigInvalid) this.addReason(record, 'JUDGE_CONFIG_UNAVAILABLE')
         else if (!this.fastJudgeConfig.enabled) this.addReason(record, 'JUDGE_DISABLED')
@@ -612,30 +650,35 @@ export class ApprovalAssessmentCoordinator {
 
   private scheduleJudge(record: AssessmentRecord): void {
     const phase5 = record.phase5
-    if (phase5 === undefined || phase5.attempted || phase5.closed || !this.fastJudgeConfig.enabled) return
-    if (this.judge === undefined || this.scheduler === undefined) return
+    if (phase5 === undefined || phase5.attempted || phase5.closed) return
+    if (!this.fastJudgeConfig.enabled) { phase5.stage = 'complete'; return }
+    if (this.judge === undefined || this.scheduler === undefined) { phase5.stage = 'complete'; this.addReason(record, 'JUDGE_CAPABILITY_UNAVAILABLE'); return }
     if (phase5.context.payload === undefined || phase5.context.serializedPayload === undefined) {
       this.addReason(record, 'CONTEXT_DEGRADED')
       phase5.attempted = true
+      phase5.stage = 'complete'
       return
     }
     if (phase5.latest.status === 'DEGRADED' || phase5.context.snapshot.degraded) {
       this.addReason(record, 'CONTEXT_DEGRADED')
       phase5.attempted = true
+      phase5.stage = 'complete'
       return
     }
     phase5.attempted = true
+    phase5.stage = 'fast'
     const session = record.sessionRef.deref()
-    if (session === undefined) { this.addReason(record, 'JUDGE_GENERATION_DISPOSED'); return }
+    if (session === undefined) { this.addReason(record, 'JUDGE_GENERATION_DISPOSED'); phase5.stage = 'complete'; return }
     const route = resolveReviewerRoute(this.fastJudgeConfig, session)
-    if (route === undefined) { this.addReason(record, 'JUDGE_ROUTE_UNAVAILABLE'); return }
+    if (route === undefined) { this.addReason(record, 'JUDGE_ROUTE_UNAVAILABLE'); phase5.stage = 'complete'; return }
     const requested = requestedJudgeDimensions(phase5.context, phase5.latest)
-    if (requested.length === 0) return
+    if (requested.length === 0) { phase5.stage = 'complete'; return }
     const generation = phase5.generation
     void this.scheduler.enqueue(record.approvalId, signal => executeFastJudge(this.judge!, route, phase5.context, requested, this.fastJudgeConfig, signal)).then(result => {
       if (!this.active || record.phase5 !== phase5 || phase5.closed || phase5.generation !== generation) return
       if (!result.ok || result.candidate === undefined) {
         if (result.failure !== undefined) this.addReason(record, result.failure)
+        phase5.stage = 'complete'
         return
       }
     const latest = mergeJudgeAssessment(phase5.latest, phase5.context.snapshot, {
@@ -644,7 +687,44 @@ export class ApprovalAssessmentCoordinator {
         suggestedAlternatives: result.candidate.suggestedAlternatives,
       }, `ra-assessment-${randomUUID()}`, this.readClock(), route.model)
       phase5.latest = latest
+      phase5.stage = 'complete'
+      this.replaceShell(record, { updatedAt: this.readClock() })
     })
+  }
+
+  private presentationSource(record: AssessmentRecord, session: Session, callId: string): Phase6PresentationSource {
+    const phase5 = record.phase5
+    const sessionId = safeId(session.id, true) ?? record.shell.sessionId
+    if (phase5 === undefined) {
+      return {
+        sessionId, callId, toolName: record.toolName,
+        association: record.shell.association === 'BOUND' ? 'BOUND' : 'UNBOUND',
+        ...(record.shell.assessmentId === undefined ? {} : { assessmentId: record.shell.assessmentId }),
+        stage: 'rules',
+        status: record.shell.status === 'cancelled' ? 'cancelled' : 'unavailable',
+        reasonCodes: record.shell.reasonCodes,
+        updatedAt: record.shell.updatedAt,
+      }
+    }
+    const latestId = phase5.latest.assessmentId
+    const contextReasons = [
+      ...(phase5.context.snapshot.historyOmitted ? ['HISTORY_OMITTED' as const] : []),
+      ...(phase5.context.snapshot.ledger.health === 'DEGRADED' ? ['CONTEXT_DEGRADED' as const] : []),
+      ...phase5.latest.uncertainties.map(item => item.code),
+    ]
+    return {
+      sessionId, callId, toolName: record.toolName,
+      association: 'BOUND',
+      assessmentId: latestId,
+      assessment: phase5.latest,
+      ...(phase5.context.snapshot.seed === undefined ? {} : { seed: phase5.context.snapshot.seed }),
+      ruleEvaluation: phase5.context.snapshot.ruleEvaluation,
+      failureSummary: phase5.context.snapshot.failureSummary,
+      stage: phase5.stage,
+      status: record.shell.status === 'cancelled' ? 'cancelled' : 'unavailable',
+      reasonCodes: [...record.shell.reasonCodes, ...contextReasons],
+      updatedAt: Math.max(record.shell.updatedAt, phase5.latest.createdAt),
+    }
   }
 
   private addReason(record: AssessmentRecord, reason: AssessmentReasonCode): void {

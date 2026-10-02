@@ -132,7 +132,7 @@ export type { RuleDiagnostics, RuleEvaluationStatus, RuleParserConfidence, RuleO
 export type { AssessmentAssociation, AssessmentBridgeSnapshot, AssessmentDiagnostic, AssessmentDiagnostics, AssessmentIssueSummary, AssessmentReasonCode, AssessmentStage, AssessmentStatus, ApprovalAssessmentShell, Phase5AssessmentStage, Phase5AssessmentStatus } from './host/assessment-envelope.ts'
 export type { FastJudgeConfig, FastJudgeCandidate, FastJudgeDimension, FastJudgeDimensionResult, JudgeFailureCode, NormalizedFastJudgeConfig, ReviewerRoute } from './host/fast-judge.ts'
 export type { RiskAssessment, RiskContextSnapshot, RiskFeature, RiskFeatureSet, AssessmentFinding, AssessmentUncertainty, SaferAlternative } from './host/risk-engine.ts'
-export type { BrowserBridgeClientResult, BrowserSafeReasonCode, RiskAdvisorBridgeRead, RiskAdvisorBridgeViewV1 } from './bridge-contract.ts'
+export type { BrowserBridgeClientResult, BrowserSafeReasonCode, BrowserSafeReasonCodeV2, RiskAdvisorBridgeRead, RiskAdvisorBridgeViewV1, RiskAdvisorBridgeViewV2, OperationPresentationV1, BrowserRiskAssessmentV1, FailureContextPresentationV1, BrowserOperationKind, BrowserResourceKind, BrowserDimension, BrowserDimensionSource, BrowserEvidenceQuality, BrowserFindingDimension, BrowserFindingSeverity, BrowserFindingStrength, BrowserAlternativeSource, BrowserAlternativeVerification, BrowserUncertaintyImpact } from './bridge-contract.ts'
 export type {
   DurableOccurrenceRef,
   EdgeResolution,

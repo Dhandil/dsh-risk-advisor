@@ -5,9 +5,9 @@ import type { ChatSnapshot, ToolChatData } from '@deepseek-ai/dsh-client-ui-chat
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { commandForSnapshot, commandOf } from '../src/client/command.ts'
-import { R1FixtureStore } from '../src/client/fixture-store.ts'
 import { RiskAdvisorDetail } from '../src/client/RiskAdvisorDetail.tsx'
 import { en } from '../src/client/locales.ts'
+import { FixtureProbe, R1FixtureStore } from './r1-fixture-helper.tsx'
 
 afterEach(() => {
   cleanup()
@@ -32,7 +32,7 @@ function snapshotWithRoot(root: ToolChatData['root']): ChatSnapshot {
   return snapshotWithRoots([root])
 }
 
-function componentProps(store: R1FixtureStore): ComponentProps<typeof RiskAdvisorDetail> {
+function componentProps(): ComponentProps<typeof RiskAdvisorDetail> {
   const snapshot = snapshotWithRoot({
     callId,
     name: 'bash',
@@ -45,7 +45,6 @@ function componentProps(store: R1FixtureStore): ComponentProps<typeof RiskAdviso
   return {
     callId,
     sessionId: sid,
-    fixture: store.forSession(sid),
     t: translate as ComponentProps<typeof RiskAdvisorDetail>['t'],
     useChat: selector => selector(snapshot),
   } as ComponentProps<typeof RiskAdvisorDetail>
@@ -93,9 +92,8 @@ describe('R1 fixture store and public command projection', () => {
     expect(() => commandForSnapshot(snapshot, callId)).not.toThrow()
     expect(commandForSnapshot(snapshot, callId)).toBe('echo later')
 
-    const store = new R1FixtureStore()
     render(<RiskAdvisorDetail
-      {...componentProps(store)}
+      {...componentProps()}
       useChat={selector => selector(snapshot)}
     />)
     expect(screen.getByTestId('risk-advisor-r1-command').textContent).toContain('echo later')
@@ -104,7 +102,7 @@ describe('R1 fixture store and public command projection', () => {
   it('renders command and TEST FIXTURE, transitions PENDING to READY_SAMPLE, and cannot revive after disposal', () => {
     const store = new R1FixtureStore()
     const session = store.forSession(sid)
-    const view = render(<RiskAdvisorDetail {...componentProps(store)} />)
+    const view = render(<><RiskAdvisorDetail {...componentProps()} /><FixtureProbe fixture={session} t={translate} /></>)
 
     expect(screen.getByTestId('risk-advisor-r1-command').textContent).toContain('echo safe')
     expect(screen.getByTestId('risk-advisor-r1-fixture').getAttribute('data-ra-fixture-state')).toBe('PENDING')
@@ -127,16 +125,8 @@ describe('R1 fixture store and public command projection', () => {
   })
 
   it('isolates a fixture render fault and exposes an unavailable test fixture', () => {
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const faulty = {
-      getSnapshot: () => { throw new Error('fixture fault') },
-      subscribe: () => () => {},
-      setState: () => {},
-    }
-    render(<RiskAdvisorDetail {...componentProps(new R1FixtureStore())} fixture={faulty} />)
+    render(<RiskAdvisorDetail {...componentProps()} />)
     expect(screen.getByTestId('risk-advisor-r1-command').textContent).toContain('echo safe')
-    expect(screen.getByTestId('risk-advisor-r1-error').textContent).toContain('UNAVAILABLE')
-    expect(errorSpy.mock.calls.length).toBeGreaterThan(0)
-    errorSpy.mockRestore()
+    expect(screen.getByTestId('risk-advisor-card').getAttribute('data-ra-status')).toBe('UNAVAILABLE')
   })
 })

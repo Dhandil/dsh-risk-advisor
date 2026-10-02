@@ -14,12 +14,19 @@ import type { SlotScopeAdapter, StandardSourceBinding } from '@deepseek-ai/dsh-c
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { commandForSnapshot } from '../src/client/command.ts'
-import type { R1FixtureSession } from '../src/client/fixture-store.ts'
 import { RiskAdvisorDetail } from '../src/client/RiskAdvisorDetail.tsx'
 import { NS } from '../src/client/locales.ts'
 import { apply, inject } from '../src/client/index.ts'
 
 let ctx: Context | undefined
+
+function provideUnavailableConnection(target: Context): void {
+  target.provide('connection', {
+    rpc: {
+      call: async () => ({ ok: true, value: { kind: 'NOT_FOUND' } }),
+    },
+  })
+}
 
 afterEach(async () => {
   cleanup()
@@ -58,6 +65,7 @@ const chatSnapshot = {
 describe('R1 real SlotCore + Native ApprovalPanel integration', () => {
   it('shadows the single detail cell, composes the fixture, and restores the slot on dispose', async () => {
     ctx = new Context()
+    provideUnavailableConnection(ctx)
     await ctx.plugin(SlotRegistry).await()
     const slots = ctx.slots
     const locale = new LocaleRuntime(ctx)
@@ -118,16 +126,9 @@ describe('R1 real SlotCore + Native ApprovalPanel integration', () => {
     view.rerender(<NativeHost />)
     expect(screen.getByTestId('risk-advisor-r1-detail')).toBeTruthy()
     expect(screen.getByText('echo native')).toBeTruthy()
-    expect(screen.getByTestId('risk-advisor-r1-fixture').getAttribute('data-ra-fixture-state')).toBe('PENDING')
+    expect(screen.getByTestId('risk-advisor-card').getAttribute('data-ra-status')).toBe('ANALYZING')
     expect((screen.getByRole('button', { name: 'Reject' }) as HTMLButtonElement).disabled).toBe(false)
     expect((screen.getByRole('button', { name: 'Allow once' }) as HTMLButtonElement).disabled).toBe(false)
-
-    const detail = slots.entriesOfSlot('conversation.approval.detail')[0]
-    const fixture = (detail.inject as unknown as (id: SessionId) => {
-      fixture: { setState(state: 'READY_SAMPLE'): void }
-    })(sessionId).fixture
-    act(() => { fixture.setState('READY_SAMPLE') })
-    expect(screen.getByTestId('risk-advisor-r1-fixture').getAttribute('data-ra-fixture-state')).toBe('READY_SAMPLE')
 
     await fiber.dispose()
     expect(slots.entries('conversation.approval.detail')).toHaveLength(1)
@@ -142,7 +143,6 @@ describe('R1 real SlotCore + Native ApprovalPanel integration', () => {
     visible = false
     view.rerender(<NativeHost />)
     expect(screen.queryByTestId('risk-advisor-r1-detail')).toBeNull()
-    act(() => { fixture.setState('UNAVAILABLE') })
     view.rerender(<NativeHost />)
     expect(screen.queryByTestId('risk-advisor-r1-detail')).toBeNull()
 
@@ -152,6 +152,7 @@ describe('R1 real SlotCore + Native ApprovalPanel integration', () => {
 
   it('keeps the native command and controls when the fixture boundary fails', async () => {
     ctx = new Context()
+    provideUnavailableConnection(ctx)
     await ctx.plugin(SlotRegistry).await()
     const slots = ctx.slots
     const locale = new LocaleRuntime(ctx)
@@ -164,11 +165,6 @@ describe('R1 real SlotCore + Native ApprovalPanel integration', () => {
       callId,
       reason: 'fixture fault integration',
     })
-    const faultyFixture = {
-      getSnapshot: () => { throw new Error('deliberate fixture fault') },
-      subscribe: () => () => {},
-      setState: () => {},
-    } as unknown as R1FixtureSession
     const snapshot = {
       nodes: {
         values: () => [{
@@ -194,7 +190,7 @@ describe('R1 real SlotCore + Native ApprovalPanel integration', () => {
       name: 'conversation.approval.detail',
       priority: -100,
       locale: NS,
-      inject: () => ({ fixture: faultyFixture }),
+      inject: () => ({}),
     }, RiskAdvisorDetail)
 
     const renderDetail = (_key: string, owner: ApprovalDetailOwnerProps): ReactNode => {
@@ -211,21 +207,19 @@ describe('R1 real SlotCore + Native ApprovalPanel integration', () => {
       />
     }
 
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     render(<ApprovalPanel matched={pending} renderSlot={renderDetail} t={panelCopy(pending)} />)
 
     expect(screen.getByText('echo native')).toBeTruthy()
-    expect(screen.getByTestId('risk-advisor-r1-fixture').getAttribute('data-ra-fixture-state')).toBe('UNAVAILABLE')
-    expect(screen.getByTestId('risk-advisor-r1-error')).toBeTruthy()
+    expect(screen.getByTestId('risk-advisor-card').getAttribute('data-ra-status')).toBe('UNAVAILABLE')
     expect((screen.getByRole('button', { name: 'Reject' }) as HTMLButtonElement).disabled).toBe(false)
     expect((screen.getByRole('button', { name: 'Allow once' }) as HTMLButtonElement).disabled).toBe(false)
     fireEvent.click(screen.getByRole('button', { name: 'Reject' }))
     await expect(pending.result).resolves.toBe('rejected')
-    errorSpy.mockRestore()
   })
 
   it('uses the public owner child path for two session bindings and restores native detail on dispose', async () => {
     ctx = new Context()
+    provideUnavailableConnection(ctx)
     await ctx.plugin(SlotRegistry).await()
     const slots = ctx.slots
     const locale = new LocaleRuntime(ctx)
@@ -323,14 +317,14 @@ describe('R1 real SlotCore + Native ApprovalPanel integration', () => {
     await act(async () => { await feature.await() })
     expect(view.getByTestId('risk-advisor-r1-detail').getAttribute('data-session-id')).toBe('session-1')
     expect(view.getByText('echo first')).toBeTruthy()
-    expect(view.getByTestId('risk-advisor-r1-fixture').getAttribute('data-ra-fixture-state')).toBe('PENDING')
+    expect(view.getByTestId('risk-advisor-card').getAttribute('data-ra-status')).toBe('ANALYZING')
     expect((view.getByRole('button', { name: 'Reject' }) as HTMLButtonElement).disabled).toBe(false)
 
     if (switchSession === undefined) throw new Error('public owner frame did not expose session switch')
     act(() => { switchSession!(second) })
     expect(view.getByTestId('risk-advisor-r1-detail').getAttribute('data-session-id')).toBe('session-2')
     expect(view.getByText('echo second')).toBeTruthy()
-    expect(view.getByTestId('risk-advisor-r1-fixture').getAttribute('data-ra-fixture-state')).toBe('PENDING')
+    expect(view.getByTestId('risk-advisor-card').getAttribute('data-ra-status')).toBe('ANALYZING')
 
     await act(async () => { await feature.dispose() })
     expect(slots.entriesOfSlot('conversation.approval.detail')[0]?.component).toBe(ApprovalCommand)

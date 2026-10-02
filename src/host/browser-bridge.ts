@@ -1,19 +1,15 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId, SessionStore } from '@deepseek-ai/dsh-session'
 import type {
-  AssessmentBridgeSnapshot,
   ApprovalAssessmentCoordinator,
+  Phase6PresentationQuery,
 } from './assessment-envelope.ts'
 import {
   RISK_ADVISOR_RPC_CHANNEL,
   isBoundedIdentifier,
-  isBrowserSafeReasonCode,
   isPlainRecord,
-  type BrowserSafeReasonCode,
   type RiskAdvisorBridgeRead,
-  type RiskAdvisorBridgeViewV1,
   freezeBridgeRead,
-  freezeView,
 } from '../bridge-contract.ts'
 
 export interface HostConnectionRpcLike {
@@ -83,10 +79,8 @@ async function handleActive(
   const session = sessions.get(payload.sessionId as SessionId)
   if (session === undefined) return success({ kind: 'NOT_FOUND' as const })
   if (signal.aborted) return failure('risk-advisor/cancelled', 'request cancelled')
-  const query = coordinator.queryActiveForCall(session, payload.callId)
-  if (query.kind === 'NOT_FOUND') return success({ kind: 'NOT_FOUND' as const })
-  if (query.kind === 'AMBIGUOUS') return success(ambiguousRead())
-  return success(viewRead(query.snapshot))
+  const presentation = coordinator.queryActivePresentationForCall(session, payload.callId)
+  return presentationResult(presentation)
 }
 
 async function handleAssessment(
@@ -98,26 +92,14 @@ async function handleAssessment(
     return failure('risk-advisor/bad-request', 'invalid request')
   }
   if (signal.aborted) return failure('risk-advisor/cancelled', 'request cancelled')
-  const query = coordinator.queryOpenByAssessmentId(payload.assessmentId)
-  if (query.kind === 'NOT_FOUND') return success({ kind: 'NOT_FOUND' as const })
-  return success(viewRead(query.snapshot))
+  const query = coordinator.queryOpenPresentationByAssessmentId(payload.assessmentId)
+  return presentationResult(query)
 }
 
-function viewRead(snapshot: AssessmentBridgeSnapshot): RiskAdvisorBridgeRead {
-  const reasonCodes = snapshot.reasonCodes.filter(isBrowserSafeReasonCode) as BrowserSafeReasonCode[]
-  const bindable = snapshot.association === 'BOUND' && isBoundedIdentifier(snapshot.assessmentId)
-  const view: RiskAdvisorBridgeViewV1 = freezeView({
-    schemaVersion: 1,
-    sessionId: snapshot.sessionId,
-    callId: snapshot.callId,
-    ...(bindable ? { assessmentId: snapshot.assessmentId } : {}),
-    association: bindable ? 'BOUND' : 'UNBOUND',
-    status: 'unavailable',
-    stage: 'not-started',
-    reasonCodes,
-    updatedAt: snapshot.updatedAt,
-  })
-  return { kind: 'VIEW', view }
+function presentationResult(query: Phase6PresentationQuery): ConnectionRpcResultLike {
+  if (query.kind === 'NOT_FOUND') return success({ kind: 'NOT_FOUND' as const })
+  if (query.kind === 'AMBIGUOUS') return success(ambiguousRead())
+  return success({ kind: 'VIEW' as const, view: query.view })
 }
 
 function ambiguousRead(): RiskAdvisorBridgeRead {

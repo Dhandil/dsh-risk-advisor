@@ -3,35 +3,48 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-approval/client'
 import type {} from '@deepseek-ai/dsh-client-ui-chat/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
-import { R1FixtureStore } from './fixture-store.ts'
+import type {} from '@deepseek-ai/dsh-client-connection/client'
 import { RiskAdvisorDetail } from './RiskAdvisorDetail.tsx'
 import { en, NS, zh } from './locales.ts'
+import { PresentationClient } from './presentation-client.ts'
+import type { ClientConnectionLike } from './presentation-store.ts'
 
 export { createRiskAdvisorBridgeClient } from './assessment-bridge.ts'
 export type { RiskAdvisorBridgeClient } from './assessment-bridge.ts'
-export type { BrowserBridgeClientResult, RiskAdvisorBridgeRead, RiskAdvisorBridgeViewV1 } from '../bridge-contract.ts'
+export type { BrowserBridgeClientResult, RiskAdvisorBridgeRead, RiskAdvisorBridgeViewV1, RiskAdvisorBridgeViewV2, OperationPresentationV1, BrowserRiskAssessmentV1, FailureContextPresentationV1, BrowserDimension } from '../bridge-contract.ts'
 export { commandForSnapshot, commandOf } from './command.ts'
-export { R1FixtureStore } from './fixture-store.ts'
-export type { R1FixtureSession, R1FixtureSnapshot, R1FixtureState } from './fixture-store.ts'
+export { PresentationClient } from './presentation-client.ts'
+export { PresentationStore, POLL_INTERVAL_MS, NOT_FOUND_GRACE_MS } from './presentation-store.ts'
+export type { PresentationStoreSnapshot, PresentationStoreStatus } from './presentation-store.ts'
 export { RiskAdvisorDetail } from './RiskAdvisorDetail.tsx'
 export { en, NS, zh } from './locales.ts'
 
-/** Browser-only R1 fixture: it shadows one detail cell at explicit lower priority. */
+/** Browser advisory client: it shadows one detail cell at explicit lower priority. */
 export const inject = ['slots', 'locale']
 
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'risk-advisor-r1: dictionaries')
 
-  const fixtures = new R1FixtureStore()
-  ctx.effect(() => () => fixtures.dispose(), 'risk-advisor-r1: fixture store')
-
-  // `conversation.approval.detail` is a single cell. The explicit -100 rank
-  // intentionally shadows ui-chat's rank-0 renderer while this fiber lives.
-  // The slot disposer restores ui-chat automatically on plugin disposal.
-  ctx.slots.inject('conversation.approval.detail', () => ctx.slots.register({
-    name: 'conversation.approval.detail',
-    priority: -100,
-    locale: NS,
-    inject: (sessionId) => ({ fixture: fixtures.forSession(sessionId) }),
-  }, RiskAdvisorDetail))
+  const installSlot = (presentationClient: PresentationClient): void => {
+    ctx.slots.inject('conversation.approval.detail', () => ctx.slots.register({
+      name: 'conversation.approval.detail',
+      priority: -100,
+      locale: NS,
+      inject: () => ({ presentationClient }),
+    }, RiskAdvisorDetail))
+  }
+  const connection = ctx.get('connection', false) as ClientConnectionLike | undefined
+  if (connection !== undefined) {
+    const presentationClient = new PresentationClient(connection)
+    ctx.effect(() => () => presentationClient.dispose(), 'risk-advisor-phase6: presentation client')
+    installSlot(presentationClient)
+    return
+  }
+  ctx.inject(['connection'], connectionCtx => {
+    const lateConnection = connectionCtx.get('connection', false) as ClientConnectionLike | undefined
+    if (lateConnection === undefined) return
+    const presentationClient = new PresentationClient(lateConnection)
+    connectionCtx.effect(() => () => presentationClient.dispose(), 'risk-advisor-phase6: presentation client')
+    installSlot(presentationClient)
+  })
 }

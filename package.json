@@ -1,7 +1,7 @@
 {
   "name": "@dhandil/dsh-risk-advisor",
   "version": "0.1.0-r1",
-  "description": "Disposable Risk Advisor approval-detail test fixture for DeepSeek Harness",
+  "description": "Read-only Risk Advisor operation presentation and browser advisory UI for DeepSeek Harness",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -23,7 +23,8 @@
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-ui-approval",
         "@deepseek-ai/dsh-client-ui-chat",
-        "@deepseek-ai/dsh-client-ui-renderer"
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-connection"
       ],
       "platform": "web"
     }
@@ -32,7 +33,7 @@
     "build": "tsc -p tsconfig.json && tsdown",
     "bundle": "tsdown",
     "watch": "tsdown --watch",
-    "test": "pnpm run test:r1 && pnpm run test:r2 && pnpm run test:r3 && pnpm run test:r4 && pnpm run test:r5 && pnpm run test:p1a && pnpm run test:p1b && pnpm run test:p1c && pnpm run test:p2 && pnpm run test:p3 && pnpm run test:p4 && pnpm run test:p5",
+    "test": "pnpm run test:r1 && pnpm run test:r2 && pnpm run test:r3 && pnpm run test:r4 && pnpm run test:r5 && pnpm run test:p1a && pnpm run test:p1b && pnpm run test:p1c && pnpm run test:p2 && pnpm run test:p3 && pnpm run test:p4 && pnpm run test:p5 && pnpm run test:p6",
     "test:r1": "vitest run tests/r1-fixture.unit.spec.tsx tests/r1-slot.integration.spec.tsx",
     "test:r2": "vitest run tests/r2-correlation.unit.spec.ts tests/r2-runtime.integration.spec.ts",
     "test:r3": "vitest run tests/r3-ptc-replay.unit.spec.ts tests/r3-runtime.integration.spec.ts",
@@ -53,6 +54,7 @@
     "test:p3": "vitest run tests/p3-retry-escalation.unit.spec.ts tests/p3-runtime.integration.spec.ts",
     "test:p4": "vitest run tests/p4-rule-engine.unit.spec.ts tests/p4-runtime.integration.spec.ts",
     "test:p5": "vitest run tests/p5-fast-judge.unit.spec.ts tests/p5-repair.unit.spec.ts tests/p5-runtime.integration.spec.ts tests/p5-lifecycle.integration.spec.ts",
+    "test:p6": "vitest run tests/p6-operation-presenter.unit.spec.ts tests/p6-browser-bridge-v2.spec.ts tests/p6-client-store.unit.spec.ts tests/p6-ui.integration.spec.tsx",
     "bench:r5:smoke": "pnpm run build && vitest run --config vitest.config.ts tests/r5-benchmark-smoke.spec.ts",
     "bench:r5": "pnpm run build && vitest run --config vitest.config.ts tests/r5-benchmark-full.spec.ts",
     "bench:r5:p5:smoke": "pnpm run build && vitest run --config vitest.config.ts tests/r5-phase5-benchmark-smoke.spec.ts",
@@ -69,6 +71,8 @@
     "@deepseek-ai/dsh-client-ui-approval": ">=0.1.6-alpha.2",
     "@deepseek-ai/dsh-client-ui-chat": ">=0.1.6-alpha.2",
     "@deepseek-ai/dsh-client-ui-slots": ">=0.1.6-alpha.2",
+    "@deepseek-ai/dsh-client-connection": ">=0.1.6-alpha.2",
+    "@deepseek-ai/dsh-client-ui-primitives": ">=0.1.6-alpha.2",
     "react": ">=18.2.0"
   },
   "devDependencies": {
@@ -77,6 +81,8 @@
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",
     "@deepseek-ai/dsh-llm": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-client-connection": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.1.6-alpha.2",
     "jsdom": "^29.1.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
