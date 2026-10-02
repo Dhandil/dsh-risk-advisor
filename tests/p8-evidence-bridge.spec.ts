@@ -1,0 +1,10 @@
+import { describe, expect, it } from 'vitest'
+import { parseBridgeRead } from '../src/bridge-contract.ts'
+
+describe('Phase 8 Bridge V3', () => {
+  it('accepts sanitized evidence stage and rejects path leakage/unknown fields', () => {
+    const value = { kind: 'VIEW', view: { schemaVersion: 3, sessionId: 's', callId: 'c', association: 'BOUND', status: 'ready', stage: 'complete', assessmentId: 'a', operation: { schemaVersion: 1, kind: 'filesystem-write', toolName: 'write', title: 'Write', summary: 'bounded', resources: [], parserConfidence: 'high', mutating: true, externalEffect: false, networkEffect: 'none', workspaceContained: 'unknown', sandboxCovered: 'unknown', reversible: 'unknown' }, assessment: { schemaVersion: 1, assessmentId: 'a', status: 'PARTIAL', dimensions: { risk: { verdict: 'LOW', source: 'RULE', evidenceQuality: 'MEDIUM', reasons: [] }, authorization: { verdict: 'UNKNOWN', source: 'UNKNOWN', evidenceQuality: 'MEDIUM', reasons: [] }, necessity: { verdict: 'UNKNOWN', source: 'UNKNOWN', evidenceQuality: 'MEDIUM', reasons: [] }, privilege: { verdict: 'UNKNOWN', source: 'UNKNOWN', evidenceQuality: 'MEDIUM', reasons: [] }, alternatives: { verdict: 'NO_KNOWN_SAFER_ALTERNATIVE', source: 'RULE', evidenceQuality: 'MEDIUM', reasons: [] }, evidenceQuality: { verdict: 'MEDIUM', source: 'RULE', evidenceQuality: 'MEDIUM', reasons: [] } }, aggregate: { recommendation: 'NEED_MORE_INFORMATION', hazardLevel: 'LOW', attention: 'ELEVATED', primaryReasonCodes: [] }, findings: [], uncertainties: [], alternatives: [], evidence: { ledgerHealth: 'HEALTHY' }, judgeAssisted: false }, failureContext: { schemaVersion: 1, retryCount: 0, recentFailureCount: 0, sameRootCause: 'unknown', permissionEscalation: 'unknown', truncated: false }, evidence: { status: 'COMPLETE', workspaceContained: true, canonicalTargetsKnown: true, versionControlled: 'unknown', checkpointAvailable: 'unknown', pathAliasObserved: false, itemCount: 1, truncated: false }, reasonCodes: [], updatedAt: 1 } }
+    expect(parseBridgeRead(value)?.kind).toBe('VIEW')
+    expect(parseBridgeRead({ ...value, view: { ...value.view, extra: '/secret/path' } })).toBeUndefined()
+  })
+})

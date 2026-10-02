@@ -3,6 +3,7 @@ import type { FoundationDiagnostic } from './operation-foundation.ts'
 import type { FailureChainSummary } from './retry-escalation.ts'
 import type { RuleEvaluation, RuleFinding } from './rule-engine.ts'
 import type { ReviewerOperationSeed, DirectUserContext } from './reviewer-seed.ts'
+import type { EvidenceSnapshotV1 } from './evidence-types.ts'
 import {
   aggregateAssessment,
   type AggregateAssessment,
@@ -133,6 +134,7 @@ export interface RiskAssessment {
     readonly contextBuilderVersion: 'phase5-context-v1'
     readonly aggregatorVersion: 'phase5-aggregator-v1'
     readonly judge: { readonly invoked: boolean; readonly dimensions: readonly DimensionName[]; readonly model?: string }
+    readonly evidence?: { readonly invoked: true; readonly evidenceId: string; readonly status: EvidenceSnapshotV1['status']; readonly itemCount: number }
   }
   readonly supersedesAssessmentId?: string
 }
@@ -276,6 +278,82 @@ export function mergeJudgeAssessment(base: RiskAssessment, context: RiskContextS
     provenance: { ...base.provenance, judge: { invoked: true, dimensions: Object.freeze(candidate.dimensions), model } },
     supersedesAssessmentId: base.assessmentId,
   })
+}
+
+export function overlayEvidenceContext(base: RiskContextSnapshot, snapshot: EvidenceSnapshotV1): RiskContextSnapshot {
+  const facts = snapshot.facts
+  const values = new Map(base.features.features.map(feature => [feature.id, feature] as const))
+  const set = (id: string, value: FeatureValue) => values.set(id, Object.freeze({ id, value, source: 'AUTHORITATIVE' as const, strength: 'AUTHORITATIVE' as const }))
+  set('scope.targetCountKnown', facts.targetCountKnown)
+  set('scope.canonicalTargetsKnown', facts.canonicalTargetsKnown)
+  set('scope.workspaceOnly', facts.workspaceContained === true ? true : facts.workspaceContained === false ? false : 'unknown')
+  set('scope.outsideWorkspace', facts.workspaceContained === true ? false : facts.workspaceContained === false ? true : 'unknown')
+  set('scope.pathAliasObserved', facts.pathAliasObserved)
+  set('recovery.versionControlled', facts.versionControlled)
+  set('recovery.exactTargetsClean', facts.exactTargetsClean)
+  set('recovery.checkpointAvailable', facts.checkpointAvailable)
+  set('recovery.rollbackMechanismKnown', facts.rollbackMechanismKnown)
+  set('recovery.reversible', facts.rollbackMechanismKnown === true ? true : base.features.features.find(item => item.id === 'recovery.reversible')?.value ?? 'unknown')
+  const minimumEligible = (base.seed?.toolName === 'write' || base.seed?.toolName === 'edit') && facts.targetCountKnown && facts.canonicalTargetsKnown === true && facts.workspaceContained === true && facts.pathAliasObserved !== true && facts.versionControlled !== 'unknown'
+  set('privilege.minimumScopeEvidenceAvailable', minimumEligible)
+  const features = Object.freeze([...values.values()])
+  return deepFreeze({ ...base, contextId: `ra-context-evidence-${snapshot.evidenceId}`, features: { schemaVersion: 1 as const, features } })
+}
+
+export function mergeEvidenceAssessment(latest: RiskAssessment, baseContext: RiskContextSnapshot, evidenceContext: RiskContextSnapshot, snapshot: EvidenceSnapshotV1, assessmentId: string, createdAt: number): RiskAssessment {
+  const deterministic = deterministicDimensions(evidenceContext)
+  const evidenceQuality: EvidenceQualityVerdict = baseContext.degraded || snapshot.status === 'UNAVAILABLE' || snapshot.status === 'CANCELLED' || snapshot.truncated ? 'LOW' : snapshot.status === 'COMPLETE' && deterministic.risk.verdict !== 'UNKNOWN' && evidenceContext.features.features.find(item => item.id === 'scope.canonicalTargetsKnown')?.value === true && evidenceContext.ruleEvaluation.mutating === false ? 'HIGH' : 'MEDIUM'
+  const privilege = minimumPrivilegeDimension(latest, evidenceContext, evidenceQuality)
+  const risk = preserveRisk(latest.dimensions.risk, deterministic.risk, evidenceContext, evidenceQuality)
+  const dimensions = Object.freeze({
+    risk,
+    authorization: latest.dimensions.authorization,
+    necessity: latest.dimensions.necessity,
+    privilege,
+    alternatives: latest.dimensions.alternatives,
+    evidenceQuality: dimension('EVIDENCE_QUALITY', evidenceQuality, 'MIXED', evidenceQuality, evidenceFeatureIds(evidenceContext), evidenceQuality === 'LOW' ? ['EVIDENCE_COLLECTION_DEGRADED'] : ['EVIDENCE_COLLECTED'], 'Evidence quality is derived only from bounded local evidence facts.'),
+  })
+  const status = assessmentStatus(evidenceContext, dimensions)
+  const findings = evidenceFindings(latest, snapshot)
+  const uncertainties = uncertaintiesFor(evidenceContext, dimensions).filter(item => !(item.code === 'CANONICAL_TARGETS_UNAVAILABLE' && snapshot.facts.canonicalTargetsKnown === true))
+  const aggregate = aggregateAssessment({ ...dimensions, assessmentStatus: status })
+  return deepFreeze({
+    ...latest,
+    assessmentId,
+    contextId: evidenceContext.contextId,
+    createdAt,
+    status,
+    dimensions,
+    aggregate,
+    findings,
+    uncertainties,
+    evidence: evidenceSummary(evidenceContext, dimensions),
+    provenance: { ...latest.provenance, evidence: { invoked: true as const, evidenceId: snapshot.evidenceId, status: snapshot.status, itemCount: snapshot.counts.evidenceItems } },
+    supersedesAssessmentId: latest.assessmentId,
+  })
+}
+
+function severityRank(value: RiskVerdict): number { return value === 'UNKNOWN' ? -1 : value === 'LOW' ? 0 : value === 'MEDIUM' ? 1 : value === 'HIGH' ? 2 : 3 }
+function preserveRisk(base: DimensionAssessment<RiskVerdict>, candidate: DimensionAssessment<RiskVerdict>, context: RiskContextSnapshot, quality: EvidenceQualityVerdict): DimensionAssessment<RiskVerdict> {
+  const outside = context.features.features.find(item => item.id === 'scope.outsideWorkspace')?.value === true
+  const verdict = severityRank(base.verdict) >= severityRank(candidate.verdict) ? base.verdict : candidate.verdict
+  const reasons = [...base.reasons, ...candidate.reasons, ...(outside ? [{ code: 'EVIDENCE_OUTSIDE_WORKSPACE', message: 'A bounded filesystem observation proved a target outside the approval-bound workspace.', strength: 'AUTHORITATIVE' as const }] : [])]
+  return dimension('RISK', verdict, base.source === 'JUDGE' ? 'MIXED' : 'MIXED', quality, [...new Set([...base.basisFeatureIds, ...candidate.basisFeatureIds])], reasons.map(item => item.code), outside ? 'Risk is preserved or elevated by authoritative evidence.' : 'Risk remains fenced by the prior deterministic assessment.')
+}
+function minimumPrivilegeDimension(base: RiskAssessment, context: RiskContextSnapshot, quality: EvidenceQualityVerdict): DimensionAssessment<PrivilegeVerdict> {
+  const proven = context.features.features.find(item => item.id === 'privilege.minimumScopeEvidenceAvailable')?.value === true
+  const requested = context.features.features.find(item => item.id === 'privilege.requestedScope')?.value
+  if (!proven) return base.dimensions.privilege
+  const verdict: PrivilegeVerdict = requested === 'unrestricted' ? 'EXCESSIVE' : requested === 'workspace' ? 'PROPORTIONATE' : 'UNKNOWN'
+  return dimension('PRIVILEGE', verdict, 'MIXED', quality, ['privilege.minimumScopeEvidenceAvailable', 'privilege.requestedScope'], [verdict === 'EXCESSIVE' ? 'PRIVILEGE_SCOPE_EXCESSIVE' : 'MINIMUM_SCOPE_PROVEN'], 'Minimum local target scope was proven by bounded evidence.')
+}
+function evidenceFindings(base: RiskAssessment, snapshot: EvidenceSnapshotV1): readonly AssessmentFinding[] {
+  const findings = [...base.findings]
+  const add = (code: string, dimension: DimensionName, severity: AssessmentFinding['severity'], title: string, detail: string, basis: string[]) => findings.push({ findingId: `evidence-${code.toLowerCase()}`, code, dimension, severity, title, detail, strength: 'AUTHORITATIVE', basisFeatureIds: Object.freeze(basis), basisEventIds: Object.freeze([]) })
+  if (snapshot.facts.workspaceContained === false) add('EVIDENCE_OUTSIDE_WORKSPACE', 'RISK', 'SERIOUS', 'Outside-workspace target', 'Bounded target evidence proved that at least one target is outside the approval-bound workspace.', ['scope.outsideWorkspace'])
+  if (snapshot.facts.pathAliasObserved === true) add('EVIDENCE_PATH_ALIAS', 'EVIDENCE_QUALITY', 'WARNING', 'Path alias observed', 'A bounded path-level observation found an alias or symbolic-link boundary.', ['scope.pathAliasObserved'])
+  if (snapshot.facts.lifecycleScriptsPresent === true) add('PACKAGE_LIFECYCLE_SCRIPTS_PRESENT', 'RISK', 'WARNING', 'Package lifecycle scripts', 'The bounded package manifest contains lifecycle hooks.', ['operation.installsSoftware'])
+  return Object.freeze(findings.slice(0, 32))
 }
 
 export interface JudgeMergeInput {

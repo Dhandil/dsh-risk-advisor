@@ -20,6 +20,8 @@ import type { FastJudgeConfig } from './host/fast-judge.ts'
 import { ExpectedEffectRegistry } from './host/expected-effect.ts'
 import { PostconditionVerifier } from './host/postcondition-verifier.ts'
 import type { VerificationDiagnostics, VerificationRecordV1 } from './host/verification-store.ts'
+import { BoundedEvidenceRuntime } from './host/evidence-collector.ts'
+import type { EvidenceDiagnostics } from './host/evidence-types.ts'
 
 export const inject = ['tools']
 
@@ -32,6 +34,7 @@ interface Context {
   riskAdvisorFailureChain: FailureChainDiagnostics
   riskAdvisorRules: RuleDiagnostics
   riskAdvisorVerification: VerificationDiagnostics
+  riskAdvisorEvidence: EvidenceDiagnostics
 }
 }
 
@@ -78,6 +81,7 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
   const failureChain = new RetryEscalationAnalyzer()
   const rules = new RuleEngine()
   const expectedEffects = new ExpectedEffectRegistry()
+  const evidence = new BoundedEvidenceRuntime()
   const verifier = new PostconditionVerifier(expectedEffects, {
     onRecord: (record: VerificationRecordV1) => { failureChain.observeVerification(record) },
   })
@@ -85,6 +89,7 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
     rules: rules.diagnostics,
     failureChain: failureChain.diagnostics,
     ledger,
+    evidence,
     ...config.fastJudge === undefined ? {} : { fastJudge: config.fastJudge },
   })
   installCorrelationInternal(ctx, {
@@ -93,6 +98,7 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
       failureChain.observePreExecute(exec, executionId)
       rules.observePreExecute(exec, executionId, executionId === undefined ? undefined : failureChain.diagnostics.get(executionId))
       expectedEffects.capture(exec, executionId)
+      evidence.seeds.capture(exec, executionId)
       assessments.captureReviewerSeed(exec, executionId)
     },
     retire: (exec, result) => {
@@ -101,13 +107,14 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
       foundation.retire(exec)
     },
     sessionEvent: (session, event, index) => { assessments.observeSessionEvent(session, event, index) },
-    sessionDisposed: session => { assessments.observeSessionDisposed(session) },
+    sessionDisposed: session => { assessments.observeSessionDisposed(session); evidence.seeds.disposeSession(session); evidence.cancelSession(session) },
   })
   ctx.provide('riskAdvisorFoundation', foundation.diagnostics)
   ctx.provide('riskAdvisorAssessments', assessments.diagnostics)
   ctx.provide('riskAdvisorFailureChain', failureChain.diagnostics)
   ctx.provide('riskAdvisorRules', rules.diagnostics)
   ctx.provide('riskAdvisorVerification', verifier.store.diagnostics)
+  ctx.provide('riskAdvisorEvidence', evidence.diagnostics)
   ctx.inject(['connection', 'sessions'], bridgeCtx => {
     const connection = bridgeCtx.get('connection', false) as HostConnectionLike | undefined
     if (connection !== undefined) installRiskAdvisorBrowserBridge(bridgeCtx, connection, assessments)
@@ -120,12 +127,19 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
   ctx.inject(['shell'], shellCtx => {
     const shell = shellCtx.get('shell', false)
     if (shell !== undefined) verifier.attach(shell)
+    if (shell !== undefined) evidence.attachShell(shell)
     shellCtx.inject(['sandboxPolicy'], async policyCtx => {
       const sandboxPolicy = policyCtx.get('sandboxPolicy', false)
+      if (shell !== undefined) evidence.attachShell(shell)
       if (shell !== undefined) await verifier.attachGeneration(shell, sandboxPolicy)
       policyCtx.effect(() => async () => { await verifier.detach() }, 'risk-advisor-postcondition-sandbox-policy-capability')
     })
     shellCtx.effect(() => async () => { await verifier.detach() }, 'risk-advisor-postcondition-shell-capability')
+  })
+  ctx.inject(['fs'], fsCtx => {
+    const fs = fsCtx.get('fs', false)
+    if (fs !== undefined) evidence.attachFs(fs)
+    fsCtx.effect(() => async () => { await evidence.detachFs() }, 'risk-advisor-evidence-filesystem-capability')
   })
   ctx.on('session/disposed', session => { verifier.cancelSession(session) })
   ctx.effect(() => () => { foundation.dispose() }, 'risk-advisor-operation-foundation-generation')
@@ -133,6 +147,7 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
   ctx.effect(() => () => { failureChain.dispose() }, 'risk-advisor-failure-chain-generation')
   ctx.effect(() => () => { rules.dispose() }, 'risk-advisor-rule-engine-generation')
   ctx.effect(() => () => verifier.dispose(), 'risk-advisor-postcondition-verification-generation')
+  ctx.effect(() => () => evidence.dispose(), 'risk-advisor-evidence-collector-generation')
 }
 
 export { ActiveExecutionIndex }
@@ -151,12 +166,13 @@ export type {
 } from './host/correlation.ts'
 export type { FoundationBoundaryDiagnostic, FoundationDiagnostic, FoundationDiagnostics, FoundationStatus, FoundationToolKind, FoundationUnknown } from './host/operation-foundation.ts'
 export type { VerificationDiagnostics, VerificationRecordV1, VerificationReasonCode, VerificationStatus, SemanticSuccess } from './host/verification-store.ts'
+export type { EvidenceDiagnostics, EvidenceSnapshotV1, EvidenceReasonCode, EvidenceCollectionStatus, EvidenceFacts, EvidenceCounts } from './host/evidence-types.ts'
 export type { FailureChainDiagnostics, FailureChainEntry, FailureChainFailureKind, FailureChainSummary, RelationSummaryStatus, RetryEscalationOptions } from './host/retry-escalation.ts'
 export type { RuleDiagnostics, RuleEvaluationStatus, RuleParserConfidence, RuleOperationKind, RuleFindingCategory, RuleFinding, RuleFailureContext, RuleEvaluation } from './host/rule-engine.ts'
 export type { AssessmentAssociation, AssessmentBridgeSnapshot, AssessmentDiagnostic, AssessmentDiagnostics, AssessmentIssueSummary, AssessmentReasonCode, AssessmentStage, AssessmentStatus, ApprovalAssessmentShell, Phase5AssessmentStage, Phase5AssessmentStatus } from './host/assessment-envelope.ts'
 export type { FastJudgeConfig, FastJudgeCandidate, FastJudgeDimension, FastJudgeDimensionResult, JudgeFailureCode, NormalizedFastJudgeConfig, ReviewerRoute } from './host/fast-judge.ts'
 export type { RiskAssessment, RiskContextSnapshot, RiskFeature, RiskFeatureSet, AssessmentFinding, AssessmentUncertainty, SaferAlternative } from './host/risk-engine.ts'
-export type { BrowserBridgeClientResult, BrowserSafeReasonCode, BrowserSafeReasonCodeV2, RiskAdvisorBridgeRead, RiskAdvisorBridgeViewV1, RiskAdvisorBridgeViewV2, OperationPresentationV1, BrowserRiskAssessmentV1, FailureContextPresentationV1, BrowserOperationKind, BrowserResourceKind, BrowserDimension, BrowserDimensionSource, BrowserEvidenceQuality, BrowserFindingDimension, BrowserFindingSeverity, BrowserFindingStrength, BrowserAlternativeSource, BrowserAlternativeVerification, BrowserUncertaintyImpact } from './bridge-contract.ts'
+export type { BrowserBridgeClientResult, BrowserSafeReasonCode, BrowserSafeReasonCodeV2, BrowserSafeReasonCodeV3, RiskAdvisorBridgeRead, RiskAdvisorBridgeViewV1, RiskAdvisorBridgeViewV2, RiskAdvisorBridgeViewV3, BrowserEvidenceSummaryV1, OperationPresentationV1, BrowserRiskAssessmentV1, FailureContextPresentationV1, BrowserOperationKind, BrowserResourceKind, BrowserDimension, BrowserDimensionSource, BrowserEvidenceQuality, BrowserFindingDimension, BrowserFindingSeverity, BrowserFindingStrength, BrowserAlternativeSource, BrowserAlternativeVerification, BrowserUncertaintyImpact } from './bridge-contract.ts'
 export type {
   DurableOccurrenceRef,
   EdgeResolution,
