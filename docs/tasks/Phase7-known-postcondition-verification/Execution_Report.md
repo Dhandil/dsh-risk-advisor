@@ -2,7 +2,7 @@
 
 ## Outcome
 
-`PHASE7_PUBLISHED_READY_FOR_REVIEW`
+`PHASE7_REPAIR_PUBLISHED_READY_FOR_REVIEW`
 
 This report records implementation and execution evidence only. Final acceptance is reserved for independent ChatGPT review. No `Acceptance_Report.md` was created and Phase 8 was not started.
 
@@ -20,7 +20,9 @@ This report records implementation and execution evidence only. Final acceptance
 
 Executable implementation, tests, package scripts, and bounded local benchmark evidence were committed as:
 
-`25c9326f0c8863cd994698e220edbeaba7bed804`
+`cacda91fafa0acc827e3aa7192c307390c140a0c`
+
+Repair start SHA: `3f4b8e22cc454365ab2df96228bb4fd9526177d2`.
 
 The post-commit working tree contained only pre-existing protected untracked drift (`.vitest-cache/`, historical/current docs, `lib/`, `node_modules/`, and `pnpm-lock.yaml`). No intended executable, test, config, package, or benchmark drift remained.
 
@@ -44,7 +46,7 @@ All gates passed in the required order.
 
 | Gate | Result |
 |---|---:|
-| Phase 7 focused (`test:p7`) | 5 files, 16 tests PASS |
+| Phase 7 focused (`test:p7`) | 5 files, 23 tests PASS |
 | Phase 4 parser-equivalence / regression (`test:p4`) | 2 files, 17 tests PASS |
 | Phase 3 (`test:p3`) | 2 files, 17 tests PASS |
 | Phase 2 (`test:p2`) | 2 files, 15 tests PASS |
@@ -71,19 +73,32 @@ All gates passed in the required order.
 
 The verifier benchmark is explicitly `LOCAL_VERIFIER_ONLY`; provider, registry, network, and Git remote calls were not made. Fixture command strings are test evidence only, not external calls.
 
+## Final Repair F1–F6
+
+The final review repair was limited to the frozen Phase 7 scope.
+
+- F1: ExpectedEffect uses one atomic removal primitive for the execution-id map, execution-object WeakMap, session index, and disposed guard. TTL/session disposal/terminal one-shot take/full dispose remove all raw lookup paths. Active effects are capped at 128 per Session and 512 globally; eviction and hostile accessor proof are in the expanded P7 suite.
+- F2: scheduler timeout publishes one logical UNKNOWN but keeps the underlying promise in the owned active slot until settlement. `fenceAndDrain()` aborts and joins generation work. Async verifier detach/dispose now drains; sandboxPolicy is nested under shell lifecycle, and unload/replacement fences the old generation before new policy use.
+- F3: the single shared shell tokenizer is dialect-aware for PowerShell backslashes. Git recognition is exactly checkout/`-b` and switch/`-c`; wrong pairings and option-looking mkdir/copy operands are rejected. Git exit-0 output is branch-grammar validated; malformed output is UNKNOWN. Pwsh unsupported path forms fail closed.
+- F4: the fixed copy checker distinguishes confirmed destination ENOENT from access/provider/read/race errors. Only coherent bounded regular-file equality/difference or confirmed absence produces a hard result; symlink, directory, special, oversize, and race cases are UNKNOWN. No raw error/path/output is retained.
+- F5: retry evidence selected at B capture is stored as an immutable sanitized snapshot. Later A verification conflict can affect future captures but cannot erase B's captured `retryOf` or failure context; duplicate verification remains idempotent.
+- F6: P7 focused evidence is now 5 files / 23 tests and includes lifecycle cleanup, bounds, scheduler quiescence, capability/policy generation, exact grammar, Git output, copy classifications, conflict immutability, privacy, and non-interference. The expanded benchmark executes direct write/edit, mkdir, small copy, near-1MiB copy, Git, positive Node resolution, timeout, and saturation paths.
+
 ## Fresh complete regression
 
-After the executable commit above, exactly one fresh complete `pnpm test` was run at that exact SHA. It passed:
+After the repaired executable commit above, exactly one fresh complete `pnpm test` was run at that exact SHA. It passed:
 
 - 34 test files PASS.
-- 216 tests PASS.
+- 223 tests PASS.
 - Included R1–R5, P1A–P1C, P2–P7 in the package full-test chain.
 - No executable/test/config/package/benchmark semantic drift occurred after the Full run.
+
+The historical `25c9326f0c8863cd994698e220edbeaba7bed804` / 216-test Full remains chronology only; the repair evidence and Tested SHA are the values above.
 
 ## Boundary and privacy evidence
 
 - Provider calls: `0`.
-- External network, registry, and Git remote calls from implementation/tests/benchmark: `0`.
+- Provider, external network, registry, and Git remote calls from implementation/tests/benchmark: `0` (Git remote was used only for the required governance sync/push/equality check).
 - Harness Core mutations: `0` tracked changes.
 - Custom Risk Advisor Session events: `0`.
 - Deprecated Session readers: `0`.
