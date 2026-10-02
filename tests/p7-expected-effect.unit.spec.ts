@@ -131,7 +131,8 @@ describe('Phase 7 ExpectedEffect capture', () => {
 
   it('uses a conservative Git branch grammar for capture inputs', () => {
     const registry = new ExpectedEffectRegistry()
-    for (const branch of ['.foo', '/foo', 'foo//bar', 'foo.lock', 'foo/.bar', 'foo/part.lock', 'foo.']) {
+    const delBranch = `foo\u007fbar`
+    for (const branch of ['.foo', '/foo', 'foo//bar', 'foo.lock', 'foo/.bar', 'foo/part.lock', 'foo.', delBranch]) {
       const value = exec('bash', { command: `git switch ${branch}`, description: 'invalid branch' }, `invalid-${branch}`)
       registry.capture(value, `invalid-${branch}`)
       expect(registry.take(value)).toBeUndefined()

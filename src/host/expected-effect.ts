@@ -127,7 +127,7 @@ export function isValidBranchName(value: string): boolean {
     && !value.includes('//')
     && !value.includes('..')
     && !value.includes('@{')
-    && !/[\s\u0000-\u001f~^:?*[\\]/.test(value)
+    && !/[\s\u0000-\u001f\u007f~^:?*[\\]/.test(value)
     && !value.endsWith('.')
     && components.every(component => component.length > 0 && !component.startsWith('.') && !component.endsWith('.lock') && !component.endsWith('.'))
 }

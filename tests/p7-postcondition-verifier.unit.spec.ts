@@ -154,6 +154,7 @@ describe('Phase 7 bounded postcondition verifier', () => {
       ['git-invalid-dot', '.foo', 'main', 'UNKNOWN'],
       ['git-invalid-slash', 'foo//bar', 'main', 'UNKNOWN'],
       ['git-invalid-lock', 'foo.lock', 'main', 'UNKNOWN'],
+      ['git-del', `main\u007f`, 'main', 'UNKNOWN'],
     ] as const) {
       const registry = new ExpectedEffectRegistry()
       const value = exec('bash', { command: 'git switch main', description: 'fixture' }, id)
