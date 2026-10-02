@@ -292,9 +292,18 @@ export function overlayEvidenceContext(base: RiskContextSnapshot, snapshot: Evid
   set('recovery.versionControlled', facts.versionControlled)
   set('recovery.exactTargetsClean', facts.exactTargetsClean)
   set('recovery.checkpointAvailable', facts.checkpointAvailable)
-  set('recovery.rollbackMechanismKnown', facts.rollbackMechanismKnown)
-  set('recovery.reversible', facts.rollbackMechanismKnown === true ? true : base.features.features.find(item => item.id === 'recovery.reversible')?.value ?? 'unknown')
-  const minimumEligible = (base.seed?.toolName === 'write' || base.seed?.toolName === 'edit') && facts.targetCountKnown && facts.canonicalTargetsKnown === true && facts.workspaceContained === true && facts.pathAliasObserved !== true && facts.versionControlled !== 'unknown'
+  const safeLocalMutation = base.ruleEvaluation.mutating === true
+    && base.ruleEvaluation.externalEffect === false
+    && base.ruleEvaluation.networkEffect === 'none'
+    && base.ruleEvaluation.requestedPermission !== 'danger-full-access'
+    && !base.ruleEvaluation.findings.some(item => ['system-change', 'permission', 'network', 'credential', 'install'].includes(item.category))
+  const writeEdit = base.seed?.toolName === 'write' || base.seed?.toolName === 'edit'
+  const reversible = facts.rollbackMechanismKnown === true && writeEdit && safeLocalMutation
+  const rollback = writeEdit && safeLocalMutation ? facts.rollbackMechanismKnown : facts.rollbackMechanismKnown === false ? false : 'unknown'
+  set('recovery.rollbackMechanismKnown', rollback)
+  set('recovery.reversible', writeEdit ? (reversible ? true : base.features.features.find(item => item.id === 'recovery.reversible')?.value ?? 'unknown') : false)
+  const simpleStaticMutation = base.ruleEvaluation.operationKind === 'shell' && safeLocalMutation && !base.ruleEvaluation.findings.some(item => item.category === 'destructive' || item.category === 'shell-ambiguity')
+  const minimumEligible = (writeEdit || simpleStaticMutation) && facts.targetCountKnown && facts.canonicalTargetsKnown === true && facts.workspaceContained === true && facts.pathAliasObserved !== true && safeLocalMutation
   set('privilege.minimumScopeEvidenceAvailable', minimumEligible)
   const features = Object.freeze([...values.values()])
   return deepFreeze({ ...base, contextId: `ra-context-evidence-${snapshot.evidenceId}`, features: { schemaVersion: 1 as const, features } })
@@ -336,7 +345,9 @@ export function mergeEvidenceAssessment(latest: RiskAssessment, baseContext: Ris
 function severityRank(value: RiskVerdict): number { return value === 'UNKNOWN' ? -1 : value === 'LOW' ? 0 : value === 'MEDIUM' ? 1 : value === 'HIGH' ? 2 : 3 }
 function preserveRisk(base: DimensionAssessment<RiskVerdict>, candidate: DimensionAssessment<RiskVerdict>, context: RiskContextSnapshot, quality: EvidenceQualityVerdict): DimensionAssessment<RiskVerdict> {
   const outside = context.features.features.find(item => item.id === 'scope.outsideWorkspace')?.value === true
-  const verdict = severityRank(base.verdict) >= severityRank(candidate.verdict) ? base.verdict : candidate.verdict
+  const confirmedMutatingOutside = outside && context.ruleEvaluation.mutating === true
+  const evidenceFloor: RiskVerdict = confirmedMutatingOutside ? 'HIGH' : 'UNKNOWN'
+  const verdict = [base.verdict, candidate.verdict, evidenceFloor].sort((a, b) => severityRank(b) - severityRank(a))[0]!
   const reasons = [...base.reasons, ...candidate.reasons, ...(outside ? [{ code: 'EVIDENCE_OUTSIDE_WORKSPACE', message: 'A bounded filesystem observation proved a target outside the approval-bound workspace.', strength: 'AUTHORITATIVE' as const }] : [])]
   return dimension('RISK', verdict, base.source === 'JUDGE' ? 'MIXED' : 'MIXED', quality, [...new Set([...base.basisFeatureIds, ...candidate.basisFeatureIds])], reasons.map(item => item.code), outside ? 'Risk is preserved or elevated by authoritative evidence.' : 'Risk remains fenced by the prior deterministic assessment.')
 }

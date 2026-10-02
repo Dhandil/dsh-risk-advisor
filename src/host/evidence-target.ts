@@ -23,6 +23,14 @@ const GLOBAL = 512
 const PATH_LIMIT = 8
 const STRING_LIMIT = 4096
 
+const TOOL_ARGUMENT_KEYS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  read: Object.freeze(['file_path', 'offset', 'limit']),
+  write: Object.freeze(['file_path', 'content', 'sandbox_permissions', 'justification']),
+  edit: Object.freeze(['file_path', 'old_string', 'new_string', 'replace_all', 'sandbox_permissions', 'justification']),
+  bash: Object.freeze(['command', 'description', 'timeoutMs', 'workdir', 'run_in_background', 'sandbox_permissions', 'justification']),
+  pwsh: Object.freeze(['command', 'description', 'timeoutMs', 'workdir', 'run_in_background']),
+})
+
 function fields(value: unknown, allowed: readonly string[]): Record<string, unknown> | undefined {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
   try {
@@ -80,7 +88,7 @@ function shellSeed(exec: ToolExecution, executionId: ExecutionId, session: Sessi
 }
 
 function seedFor(exec: ToolExecution, executionId: ExecutionId, session: Session): EvidenceTargetSeed {
-  const args = fields(exec.arguments, ['file_path', 'command', 'workdir', 'sandbox_permissions', 'content', 'old_string', 'new_string', 'replace_all'])
+  const args = fields(exec.arguments, TOOL_ARGUMENT_KEYS[exec.name] ?? [])
   const direct = args === undefined ? undefined : directSeed(exec, executionId, session, args)
   if (direct !== undefined) return direct
   const shell = args === undefined ? undefined : shellSeed(exec, executionId, session, args)
@@ -115,6 +123,7 @@ export class EvidenceTargetSeedRegistry {
 
   take(exec: Readonly<ToolExecution>): EvidenceTargetSeed | undefined {
     if (!this.active) return undefined
+    this.sweep()
     const seed = this.byExecution.get(exec as ToolExecution)
     if (seed !== undefined) this.remove(seed.executionId)
     return seed
@@ -131,7 +140,14 @@ export class EvidenceTargetSeedRegistry {
 
   has(executionId: ExecutionId): boolean { if (!this.active) return false; this.sweep(); return this.values.has(executionId) }
 
-  sessionOf(executionId: ExecutionId): Session | undefined { return this.values.get(executionId)?.seed.session }
+  hasSupportedEvidenceQuestion(executionId: ExecutionId): boolean {
+    if (!this.active) return false
+    this.sweep()
+    const operationClass = this.values.get(executionId)?.seed.operationClass
+    return operationClass === 'direct-file' || operationClass === 'simple-shell-file' || operationClass === 'package-workspace'
+  }
+
+  sessionOf(executionId: ExecutionId): Session | undefined { if (!this.active) return undefined; this.sweep(); return this.values.get(executionId)?.seed.session }
 
   disposeSession(session: Session): void {
     const ids = this.bySession.get(session)

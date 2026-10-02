@@ -7,6 +7,20 @@ function session(id = 's'): Session { return { id, header: { cwd: 'C:/workspace'
 function exec(name: string, args: unknown, current: Session): ToolExecution { return { name, arguments: args, callId: `${name}-${Math.random()}`, rootCallId: 'root', signal: new AbortController().signal, token: Symbol() as never, agent: { session: current } } as unknown as ToolExecution }
 
 describe('Phase 8 EvidenceTargetSeed', () => {
+  it('accepts the pinned per-tool argument schemas without retaining non-semantic fields', () => {
+    const registry = new EvidenceTargetSeedRegistry(() => 1)
+    const s = session()
+    const read = exec('read', { file_path: 'src/a.ts', offset: 3, limit: 7 }, s)
+    registry.capture(read, 'read')
+    expect(registry.takeById('read')).toMatchObject({ requestedPaths: ['src/a.ts'], operationClass: 'direct-file' })
+    const bash = exec('bash', { command: 'mkdir build', description: 'Create build directory', timeoutMs: 1000, run_in_background: false }, s)
+    registry.capture(bash, 'bash')
+    expect(registry.takeById('bash')).toMatchObject({ requestedPaths: ['build'], operationClass: 'simple-shell-file' })
+    const write = exec('write', { file_path: 'src/a.ts', content: 'x', sandbox_permissions: 'workspace-write', justification: 'Write the requested file' }, s)
+    registry.capture(write, 'write')
+    expect(registry.takeById('write')).toMatchObject({ requestedPaths: ['src/a.ts'], requestedPermission: 'workspace-write' })
+  })
+
   it('captures only own data properties and keeps unsupported/accessor inputs path-free', () => {
     const registry = new EvidenceTargetSeedRegistry(() => 1)
     const s = session()
@@ -18,6 +32,19 @@ describe('Phase 8 EvidenceTargetSeed', () => {
     registry.capture(bad, 'e2')
     expect(registry.takeById('e2')?.requestedPaths).toEqual([])
     expect(registry.takeById('e1')?.requestedPaths).toEqual(['src/a.ts'])
+  })
+
+  it('rejects unknown extra fields and expires raw seeds before take', () => {
+    let now = 1
+    const registry = new EvidenceTargetSeedRegistry(() => now)
+    const s = session()
+    const unknown = exec('read', { file_path: 'secret.txt', offset: 1, extra: 'must-not-pass' }, s)
+    registry.capture(unknown, 'unknown')
+    expect(registry.takeById('unknown')?.requestedPaths).toEqual([])
+    const expiring = exec('write', { file_path: 'ttl.txt', content: 'x' }, s)
+    registry.capture(expiring, 'expiring')
+    now += 5 * 60 * 1000
+    expect(registry.take(expiring)).toBeUndefined()
   })
 
   it('enforces the exact 128 per-session raw seed bound and one-shot consumption', () => {

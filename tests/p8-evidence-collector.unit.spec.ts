@@ -1,4 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile, lstat, readdir } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join, resolve as resolvePath, relative } from 'node:path'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { ToolExecution } from '@deepseek-ai/dsh-tools'
 import { EvidenceCollector } from '../src/host/evidence-collector.ts'
@@ -18,6 +23,47 @@ function fakeFs(nodes: Map<string, Node>): object {
     readBytes: async (value: { displayPath: string }) => nodes.get(value.displayPath)?.bytes ?? new Uint8Array(),
     listDir: async () => [],
   }
+}
+
+const execFileAsync = promisify(execFile)
+function realFs(root: string): object {
+  const target = (path: string) => ({ targetKey: path, displayPath: path })
+  const full = (path: string, cwd = root) => resolvePath(cwd, path)
+  return {
+    resolve: async (path: string, options?: { cwd?: string }) => target(full(path, options?.cwd ?? root)),
+    processPath: (value: { displayPath: string }) => value.displayPath,
+    fileUrl: (value: { displayPath: string }) => `file://${value.displayPath}`,
+    contains: (parent: { displayPath: string }, child: { displayPath: string }) => { const r = relative(parent.displayPath, child.displayPath); return r === '' || (!r.startsWith('..') && !r.startsWith('/') && !/^[A-Za-z]:/.test(r)) },
+    lstat: async (path: string, options?: { cwd?: string }) => { try { const item = await lstat(full(path, options?.cwd ?? root)); return { version: item.mtimeMs.toString(), type: item.isSymbolicLink() ? 'symlink' : item.isDirectory() ? 'directory' : item.isFile() ? 'file' : 'other', size: item.size } } catch { return undefined } },
+    stat: async (value: { displayPath: string }) => { try { const item = await stat(value.displayPath); return { version: item.mtimeMs.toString(), type: item.isDirectory() ? 'directory' : item.isFile() ? 'file' : 'other', size: item.size } } catch { return undefined } },
+    readBytes: async (value: { displayPath: string }) => new Uint8Array(await readFile(value.displayPath)),
+    listDir: async (value: { displayPath: string }) => await readdir(value.displayPath),
+  }
+}
+
+function realShell(): object {
+  return {
+    resolve: (request: Record<string, unknown>) => request,
+    run: async (spec: unknown) => {
+      const request = spec as { command: string; workdir: string; env?: Record<string, string> }
+      const script = JSON.parse(request.command.slice('node -e '.length)) as string
+      try {
+        const output = await execFileAsync('node', ['-e', script], { cwd: request.workdir, env: { ...process.env, ...request.env }, maxBuffer: 4096 })
+        return { exitCode: 0, stdout: { text: output.stdout } }
+      } catch (error) {
+        const failure = error as { code?: number; stdout?: string; stderr?: string }
+        return { exitCode: typeof failure.code === 'number' ? failure.code : 1, stdout: { text: failure.stdout ?? '' }, stderr: { text: failure.stderr ?? '' } }
+      }
+    },
+  }
+}
+
+function realExecution(s: Session, filePath: string, id: string): ToolExecution {
+  return { name: 'write', arguments: { file_path: filePath, content: 'requested' }, callId: id, rootCallId: 'root', signal: new AbortController().signal, token: Symbol() as never, agent: { session: s } } as unknown as ToolExecution
+}
+
+async function collect(collector: EvidenceCollector, executionId: string): Promise<NonNullable<ReturnType<EvidenceCollector['diagnostics']['get']>>> {
+  return await new Promise(resolve => collector.collect(executionId, resolve))
 }
 
 describe('Phase 8 bounded collector', () => {
@@ -73,4 +119,67 @@ describe('Phase 8 bounded collector', () => {
     await expect(first).resolves.toMatchObject({ ok: true, value: 1 })
     await scheduler.dispose()
   })
+
+  it('uses the product Git checker for clean, dirty, untracked, and ignored states', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-risk-advisor-p8-git-'))
+    try {
+      const s = { id: 'git-session', header: { cwd: root } } as unknown as Session
+      await writeFile(join(root, 'tracked.txt'), 'tracked')
+      await execFileAsync('git', ['init', '--quiet'], { cwd: root })
+      await execFileAsync('git', ['config', 'user.email', 'p8@example.invalid'], { cwd: root })
+      await execFileAsync('git', ['config', 'user.name', 'Phase 8'], { cwd: root })
+      await execFileAsync('git', ['add', 'tracked.txt'], { cwd: root })
+      await execFileAsync('git', ['commit', '--quiet', '-m', 'fixture'], { cwd: root })
+      await writeFile(join(root, '.gitignore'), 'ignored.txt\n')
+      await writeFile(join(root, 'untracked.txt'), 'u')
+      await writeFile(join(root, 'ignored.txt'), 'i')
+      const collector = new EvidenceCollector()
+      collector.attachFs(realFs(root) as never); collector.attachShell(realShell() as never)
+      const cases = [
+        ['clean', 'tracked.txt'],
+        ['dirty', 'tracked.txt'],
+        ['untracked', 'untracked.txt'],
+        ['ignored', 'ignored.txt'],
+      ] as const
+      const snapshots: Record<string, NonNullable<ReturnType<EvidenceCollector['diagnostics']['get']>>> = {}
+      const execution = (id: string, path: string) => { const value = realExecution(s, path, id); collector.seeds.capture(value, id); return value }
+      execution('clean', 'tracked.txt'); snapshots.clean = await collect(collector, 'clean')
+      await writeFile(join(root, 'tracked.txt'), 'dirty')
+      execution('dirty', 'tracked.txt'); snapshots.dirty = await collect(collector, 'dirty')
+      execution('untracked', 'untracked.txt'); snapshots.untracked = await collect(collector, 'untracked')
+      execution('ignored', 'ignored.txt'); snapshots.ignored = await collect(collector, 'ignored')
+      expect(snapshots.clean.facts.versionControlled).toBe(true)
+      expect(snapshots.clean.facts.exactTargetsClean).toBe(true)
+      expect(snapshots.dirty.facts.exactTargetsClean).toBe(false)
+      expect(snapshots.untracked.facts.versionControlled).toBe(false)
+      expect(snapshots.ignored.facts.versionControlled).toBe(false)
+      await collector.dispose()
+    } finally { await rm(root, { recursive: true, force: true }) }
+  }, 30000)
+
+  it('bounds directory evidence, package reads, and Session snapshot retention', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-risk-advisor-p8-bounds-'))
+    try {
+      const s = { id: 'bounds-session', header: { cwd: root } } as unknown as Session
+      await mkdir(join(root, 'many'))
+      for (let i = 0; i < 220; i += 1) await writeFile(join(root, 'many', `entry-${i}.txt`), 'x')
+      const collector = new EvidenceCollector()
+      collector.attachFs(realFs(root) as never)
+      const dirExec = realExecution(s, 'many', 'directory')
+      collector.seeds.capture(dirExec, 'directory')
+      const directory = await collect(collector, 'directory')
+      expect(directory.counts.directoryEntries).toBe(200)
+      expect(directory.reasonCodes).toContain('DIRECTORY_ENTRY_LIMIT')
+      for (let i = 0; i < 129; i += 1) {
+        const path = `many/entry-${i}.txt`
+        const value = realExecution(s, path, `retention-${i}`)
+        collector.seeds.capture(value, `retention-${i}`)
+        await collect(collector, `retention-${i}`)
+      }
+      expect(collector.diagnostics.snapshot().length).toBeLessThanOrEqual(128)
+      collector.disposeSession(s)
+      expect(collector.diagnostics.snapshot()).toEqual([])
+      await collector.dispose()
+    } finally { await rm(root, { recursive: true, force: true }) }
+  }, 60000)
 })

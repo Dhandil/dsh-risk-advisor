@@ -209,6 +209,19 @@ function copyReasons(reasons: readonly AssessmentReasonCode[]): readonly Assessm
   return Object.freeze([...new Set(reasons)])
 }
 
+function materialEvidence(snapshot: EvidenceSnapshotV1): boolean {
+  const facts = snapshot.facts
+  return facts.canonicalTargetsKnown !== 'unknown'
+    || facts.workspaceContained !== 'unknown'
+    || facts.pathAliasObserved !== 'unknown'
+    || facts.versionControlled !== 'unknown'
+    || facts.exactTargetsClean !== 'unknown'
+    || facts.rollbackMechanismKnown !== 'unknown'
+    || facts.packageManifestPresent !== 'unknown'
+    || facts.packageManifestValid !== 'unknown'
+    || facts.lifecycleScriptsPresent !== 'unknown'
+}
+
 function lookupReason(lookup: ActiveExecutionLookup): AssessmentReasonCode {
   if (lookup.status === 'FOUND') return 'OBSERVATION_UNAVAILABLE'
   if (lookup.status === 'AMBIGUOUS') return 'AMBIGUOUS_EXECUTION'
@@ -741,8 +754,10 @@ export class ApprovalAssessmentCoordinator {
       if (!this.active || record.phase5 !== phase5 || phase5.closed || phase5.generation !== generation || phase5.stage !== 'evidence') return
       phase5.evidence = snapshot
       if (snapshot.status === 'CANCELLED') { phase5.stage = 'complete'; this.addReason(record, 'EVIDENCE_COLLECTION_DEGRADED'); return }
-      const context = overlayEvidenceContext(phase5.context.snapshot, snapshot)
-      phase5.latest = mergeEvidenceAssessment(phase5.latest, phase5.context.snapshot, context, snapshot, `ra-assessment-${randomUUID()}`, this.readClock())
+      if (materialEvidence(snapshot)) {
+        const context = overlayEvidenceContext(phase5.context.snapshot, snapshot)
+        phase5.latest = mergeEvidenceAssessment(phase5.latest, phase5.context.snapshot, context, snapshot, `ra-assessment-${randomUUID()}`, this.readClock())
+      }
       phase5.stage = 'complete'
       this.replaceShell(record, { updatedAt: this.readClock() })
     })

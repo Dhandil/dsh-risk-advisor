@@ -107,7 +107,7 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
       foundation.retire(exec)
     },
     sessionEvent: (session, event, index) => { assessments.observeSessionEvent(session, event, index) },
-    sessionDisposed: session => { assessments.observeSessionDisposed(session); evidence.seeds.disposeSession(session); evidence.cancelSession(session) },
+    sessionDisposed: session => { assessments.observeSessionDisposed(session); evidence.disposeSession(session) },
   })
   ctx.provide('riskAdvisorFoundation', foundation.diagnostics)
   ctx.provide('riskAdvisorAssessments', assessments.diagnostics)
@@ -130,11 +130,10 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
     if (shell !== undefined) evidence.attachShell(shell)
     shellCtx.inject(['sandboxPolicy'], async policyCtx => {
       const sandboxPolicy = policyCtx.get('sandboxPolicy', false)
-      if (shell !== undefined) evidence.attachShell(shell)
       if (shell !== undefined) await verifier.attachGeneration(shell, sandboxPolicy)
       policyCtx.effect(() => async () => { await verifier.detach() }, 'risk-advisor-postcondition-sandbox-policy-capability')
     })
-    shellCtx.effect(() => async () => { await verifier.detach() }, 'risk-advisor-postcondition-shell-capability')
+    shellCtx.effect(() => async () => { await Promise.all([verifier.detach(), evidence.detachShell()]) }, 'risk-advisor-postcondition-shell-capability')
   })
   ctx.inject(['fs'], fsCtx => {
     const fs = fsCtx.get('fs', false)
