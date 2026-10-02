@@ -119,9 +119,13 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
   })
   ctx.inject(['shell'], shellCtx => {
     const shell = shellCtx.get('shell', false)
-    const sandboxPolicy = shellCtx.get('sandboxPolicy', false)
-    if (shell !== undefined) verifier.attach(shell, sandboxPolicy)
-    shellCtx.effect(() => () => { verifier.detach() }, 'risk-advisor-postcondition-shell-capability')
+    if (shell !== undefined) verifier.attach(shell)
+    shellCtx.inject(['sandboxPolicy'], async policyCtx => {
+      const sandboxPolicy = policyCtx.get('sandboxPolicy', false)
+      if (shell !== undefined) await verifier.attachGeneration(shell, sandboxPolicy)
+      policyCtx.effect(() => async () => { await verifier.detach() }, 'risk-advisor-postcondition-sandbox-policy-capability')
+    })
+    shellCtx.effect(() => async () => { await verifier.detach() }, 'risk-advisor-postcondition-shell-capability')
   })
   ctx.on('session/disposed', session => { verifier.cancelSession(session) })
   ctx.effect(() => () => { foundation.dispose() }, 'risk-advisor-operation-foundation-generation')

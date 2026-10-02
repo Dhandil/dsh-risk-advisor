@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
-import type { ExpectedEffect, ExpectedEffectRegistry } from './expected-effect.ts'
+import { isValidBranchName, type ExpectedEffect, type ExpectedEffectRegistry } from './expected-effect.ts'
 import { VerificationScheduler, type VerificationJob } from './verification-scheduler.ts'
 import {
   VerificationStore,
@@ -48,7 +48,7 @@ const HARDENED_ENV: Readonly<Record<string, string>> = Object.freeze({
 
 // Product-owned literal checkers. Operation values are passed only as data in env.
 const MKDIR_CHECKER = "const fs=require('node:fs');try{const p=process.env.RA_TARGET;if(!p)process.stdout.write('UNKNOWN');else{const s=fs.lstatSync(p);process.stdout.write(s.isSymbolicLink()?'UNKNOWN':s.isDirectory()?'MATCHED':'MISMATCHED')}}catch(e){process.stdout.write(e&&e.code==='ENOENT'?'MISMATCHED':'UNKNOWN')}"
-const COPY_CHECKER = "const fs=require('node:fs');try{const s=fs.lstatSync(process.env.RA_SOURCE);if(s.isSymbolicLink()||!s.isFile()||s.size>1048576)process.stdout.write('UNKNOWN');else{try{const d=fs.lstatSync(process.env.RA_DEST);if(d.isSymbolicLink()||!d.isFile()||d.size>1048576)process.stdout.write('UNKNOWN');else process.stdout.write(fs.readFileSync(process.env.RA_SOURCE).equals(fs.readFileSync(process.env.RA_DEST))?'MATCHED':'MISMATCHED')}catch(e){process.stdout.write('MISMATCHED')}}}catch(e){process.stdout.write('UNKNOWN')}"
+const COPY_CHECKER = "const fs=require('node:fs');const out=v=>process.stdout.write(v);const same=(a,b)=>a.size===b.size&&a.mtimeMs===b.mtimeMs&&a.dev===b.dev&&a.ino===b.ino;let s,d,source,afterSource,afterDest;try{s=fs.lstatSync(process.env.RA_SOURCE);if(s.isSymbolicLink()||!s.isFile()||s.size>1048576){out('UNKNOWN');process.exit(0)}source=fs.readFileSync(process.env.RA_SOURCE);afterSource=fs.lstatSync(process.env.RA_SOURCE);if(!same(s,afterSource)){out('UNKNOWN');process.exit(0)}}catch(e){out('UNKNOWN');process.exit(0)}try{d=fs.lstatSync(process.env.RA_DEST)}catch(e){out(e&&e.code==='ENOENT'?'MISMATCHED':'UNKNOWN');process.exit(0)}if(d.isSymbolicLink()||!d.isFile()||d.size>1048576){out('UNKNOWN');process.exit(0)}try{const destination=fs.readFileSync(process.env.RA_DEST);afterDest=fs.lstatSync(process.env.RA_DEST);if(!same(d,afterDest)){out('UNKNOWN');process.exit(0)}out(source.equals(destination)?'MATCHED':'MISMATCHED')}catch(e){out('UNKNOWN')}"
 const PACKAGE_CHECKER = "const m=process.env.RA_PACKAGE;try{if(!m)process.stdout.write('UNKNOWN');else{require.resolve(m,{paths:[process.cwd()]});process.stdout.write('MATCHED')}}catch(e){process.stdout.write('UNKNOWN')}"
 const GIT_CHECKER = 'git -c core.fsmonitor=false symbolic-ref --quiet --short HEAD'
 
@@ -210,6 +210,7 @@ function shellResultRecord(effect: ExpectedEffect, result: ShellRunResult, start
   const output = result.stdout.text.trim()
   if (expected !== undefined) {
     if (result.exitCode !== 0 || output.length === 0 || output.length > 256) return record(effect, 'UNKNOWN', 'unknown', 'low', ['VERIFIER_RESULT_UNSUPPORTED'], start)
+    if (!isValidBranchName(output)) return record(effect, 'UNKNOWN', 'unknown', 'low', ['VERIFIER_RESULT_UNSUPPORTED'], start)
     return output === expected
       ? record(effect, 'MATCHED', true, 'medium', ['POSTCONDITION_MATCHED'], start)
       : record(effect, 'MISMATCHED', false, 'medium', ['POSTCONDITION_MISMATCH'], start)
@@ -252,11 +253,22 @@ export class PostconditionVerifier {
     this.generation = this.scheduler.currentGeneration
   }
 
-  detach(): void {
+  /** Replace a capability generation only after the previous generation drains. */
+  async attachGeneration(shell: unknown, sandboxPolicy?: unknown): Promise<void> {
+    if (!this.active) return
+    if (this.shell === shell && this.sandboxPolicy === sandboxPolicy) return
+    await this.scheduler.fenceAndDrain()
+    if (!this.active) return
+    this.shell = shell as ShellCapability
+    this.sandboxPolicy = sandboxPolicy as SandboxPolicyCapability | undefined
+    this.generation = this.scheduler.currentGeneration
+  }
+
+  async detach(): Promise<void> {
     if (!this.active) return
     this.shell = undefined
     this.sandboxPolicy = undefined
-    this.scheduler.fence()
+    await this.scheduler.fenceAndDrain()
     this.generation = this.scheduler.currentGeneration
   }
 
@@ -289,10 +301,7 @@ export class PostconditionVerifier {
 
   async dispose(): Promise<void> {
     if (!this.active) return
-    this.shell = undefined
-    this.sandboxPolicy = undefined
-    this.scheduler.fence()
-    this.generation = this.scheduler.currentGeneration
+    await this.detach()
     this.active = false
     await this.scheduler.dispose()
     this.store.dispose()

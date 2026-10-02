@@ -9,13 +9,16 @@ function exec(name: string, args: unknown, callId: string): ToolExecution {
   return { name, arguments: args, callId, rootCallId: callId, agent: { session }, signal: new AbortController().signal, token: Symbol(callId) } as unknown as ToolExecution
 }
 
-function shellFixture(output: string, mode: 'unsandboxed' | 'sandboxed' = 'unsandboxed') {
+function shellFixture(output: string, mode: 'unsandboxed' | 'sandboxed' = 'unsandboxed', runImpl?: (spec: Record<string, unknown>) => Promise<unknown>) {
   const calls: Record<string, unknown>[] = []
   return {
     calls,
     sandboxMode: mode === 'sandboxed' ? 'workspace-write' as const : undefined,
     resolve(request: Record<string, unknown>) { calls.push(request); return request },
-    async run(_spec: Record<string, unknown>) { return { exitCode: 0, timedOut: false, aborted: false, stdout: { text: output, truncated: false }, stderr: { text: '', truncated: false } } },
+    async run(spec: Record<string, unknown>) {
+      if (runImpl !== undefined) return runImpl(spec)
+      return { exitCode: 0, timedOut: false, aborted: false, stdout: { text: output, truncated: false }, stderr: { text: '', truncated: false } }
+    },
   }
 }
 
@@ -103,5 +106,81 @@ describe('Phase 7 bounded postcondition verifier', () => {
     const verifier = new PostconditionVerifier(registry)
     verifier.observeResult(value, { isError: true, error: { message: 'failure', info: { name: 'ToolError', code: 'TOOL_ERROR' } }, content: [] })
     expect(verifier.store.diagnostics.get('package')).toMatchObject({ status: 'UNKNOWN', semanticSuccess: 'unknown', reasonCodes: ['PROCESS_NOT_SUCCESSFUL'] })
+  })
+
+  it('fails closed for malformed Git output and preserves a valid-but-different branch as mismatch', async () => {
+    for (const [id, output, expected] of [['git-malformed', 'not a branch?', 'main'], ['git-different', 'other-branch', 'main']] as const) {
+      const registry = new ExpectedEffectRegistry()
+      const value = exec('bash', { command: 'git switch main', description: 'fixture' }, id)
+      registry.capture(value, id)
+      const verifier = new PostconditionVerifier(registry)
+      verifier.attach(shellFixture(output))
+      verifier.observeResult(value, { isError: false, value: { kind: 'foreground', exitCode: 0 }, content: [] })
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(verifier.store.diagnostics.get(id)?.status).toBe(expected === 'main' && output === 'other-branch' ? 'MISMATCHED' : 'UNKNOWN')
+      await verifier.dispose()
+    }
+  })
+
+  it('detaches by aborting and joining the underlying shell work, then fences policy replacement', async () => {
+    const registry = new ExpectedEffectRegistry()
+    const oldRun = Promise.withResolvers<unknown>()
+    const oldShell = shellFixture('MATCHED', 'sandboxed', async () => oldRun.promise)
+    const oldPolicy = { resolve: () => ({ mode: 'workspace-write' as const, workspaceRoot: 'D:\\Harness\\old' }) }
+    const verifier = new PostconditionVerifier(registry)
+    verifier.attach(oldShell, oldPolicy)
+    const old = exec('bash', { command: 'git switch main', description: 'old' }, 'old-generation')
+    registry.capture(old, 'old-generation')
+    verifier.observeResult(old, { isError: false, value: { kind: 'foreground', exitCode: 0, sandbox: { mode: 'workspace-write', denied: false } }, content: [] })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    let detached = false
+    const detaching = verifier.detach().then(() => { detached = true })
+    await Promise.resolve()
+    expect(detached).toBe(false)
+    oldRun.resolve({ exitCode: 0, timedOut: false, aborted: true, stdout: { text: 'main', truncated: false }, stderr: { text: '', truncated: false } })
+    await detaching
+    expect(detached).toBe(true)
+    expect(verifier.scheduler.activeCount).toBe(0)
+
+    const policyCalls: unknown[] = []
+    const newShell = shellFixture('main', 'sandboxed')
+    const newPolicy = { resolve: (request: unknown) => { policyCalls.push(request); return { mode: 'workspace-write' as const, workspaceRoot: 'D:\\Harness\\new' } } }
+    await verifier.attachGeneration(newShell, newPolicy)
+    const current = exec('bash', { command: 'git switch main', description: 'new' }, 'new-generation')
+    registry.capture(current, 'new-generation')
+    verifier.observeResult(current, { isError: false, value: { kind: 'foreground', exitCode: 0, sandbox: { mode: 'workspace-write', denied: false } }, content: [] })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(policyCalls).toHaveLength(1)
+    expect(verifier.store.diagnostics.get('new-generation')).toMatchObject({ status: 'MATCHED' })
+    expect(verifier.store.diagnostics.get('old-generation')).toMatchObject({ status: 'UNKNOWN', reasonCodes: ['VERIFIER_ABORTED'] })
+    await verifier.dispose()
+  })
+
+  it('keeps copy access/race markers UNKNOWN and reserves mismatch for coherent absence/difference', async () => {
+    for (const [id, output, status] of [
+      ['copy-equal', 'MATCHED', 'MATCHED'],
+      ['copy-different', 'MISMATCHED', 'MISMATCHED'],
+      ['copy-absent', 'MISMATCHED', 'MISMATCHED'],
+      ['copy-eacces', 'UNKNOWN', 'UNKNOWN'],
+      ['copy-eperm', 'UNKNOWN', 'UNKNOWN'],
+      ['copy-race', 'UNKNOWN', 'UNKNOWN'],
+    ] as const) {
+      const registry = new ExpectedEffectRegistry()
+      const value = exec('bash', { command: 'cp source.txt destination.txt', description: 'fixture' }, id)
+      registry.capture(value, id)
+      const shell = shellFixture(output)
+      const verifier = new PostconditionVerifier(registry)
+      verifier.attach(shell)
+      verifier.observeResult(value, { isError: false, value: { kind: 'foreground', exitCode: 0 }, content: [] })
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(verifier.store.diagnostics.get(id)).toMatchObject({ status, semanticSuccess: status === 'MATCHED' ? true : status === 'MISMATCHED' ? false : 'unknown' })
+      if (id === 'copy-equal') {
+        expect(String(shell.calls[0]!.command)).toContain("e&&e.code==='ENOENT'?'MISMATCHED':'UNKNOWN'")
+        expect(String(shell.calls[0]!.command)).toContain('same=')
+      }
+      await verifier.dispose()
+    }
   })
 })

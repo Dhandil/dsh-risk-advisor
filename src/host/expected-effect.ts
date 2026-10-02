@@ -117,7 +117,7 @@ function digest(value: string): string | undefined {
   try { return createHash('sha256').update(value, 'utf8').digest('hex') } catch { return undefined }
 }
 
-function branchName(value: string): boolean {
+export function isValidBranchName(value: string): boolean {
   return value.length > 0
     && value.length <= 256
     && !value.startsWith('-')
@@ -133,7 +133,7 @@ function packageName(value: string): boolean {
 }
 
 function noWildcard(value: string): boolean {
-  return value.length > 0 && value.length <= MAX_STRING_LENGTH && !/[\\*?\[\]]/.test(value)
+  return value.length > 0 && value.length <= MAX_STRING_LENGTH && !value.startsWith('-') && !/[\\*?\[\]]/.test(value)
 }
 
 function captureToolContract(exec: ToolExecution, executionId: ExecutionId, session: Session): ExpectedEffect | undefined {
@@ -184,10 +184,12 @@ function captureShell(exec: ToolExecution, executionId: ExecutionId, session: Se
   }
   if (action === 'git' && args.length >= 2) {
     const operation = args[0]!.toLowerCase()
-    const expected = operation === 'checkout' || operation === 'switch'
-      ? args.length === 2 ? args[1] : args.length === 3 && (args[1] === '-b' || args[1] === '-c') ? args[2] : undefined
+    const expected = operation === 'checkout'
+      ? args.length === 2 ? args[1] : args.length === 3 && args[1] === '-b' ? args[2] : undefined
+      : operation === 'switch'
+        ? args.length === 2 ? args[1] : args.length === 3 && args[1] === '-c' ? args[2] : undefined
       : undefined
-    if (expected !== undefined && branchName(expected)) {
+    if (expected !== undefined && isValidBranchName(expected)) {
       return Object.freeze({ schemaVersion: 1, executionId, source: 'known-adapter', adapterId: 'git.branch-switch.v1', session, toolName: exec.name, expectedBranch: expected })
     }
   }
@@ -206,8 +208,9 @@ function captureShell(exec: ToolExecution, executionId: ExecutionId, session: Se
 export class ExpectedEffectRegistry {
   private readonly effects = new Map<ExecutionId, { readonly effect: ExpectedEffect; readonly createdAt: number }>()
   private readonly executionsById = new Map<ExecutionId, ToolExecution>()
-  private readonly executions = new WeakMap<ToolExecution, ExpectedEffect>()
-  private readonly disposedExecutions = new WeakSet<ToolExecution>()
+  private executions = new WeakMap<ToolExecution, ExpectedEffect>()
+  private disposedExecutions = new WeakSet<ToolExecution>()
+  private bySession = new WeakMap<Session, Set<ExecutionId>>()
   private readonly clock: () => number
   private active = true
 
@@ -218,52 +221,73 @@ export class ExpectedEffectRegistry {
   capture(exec: ToolExecution, executionId: ExecutionId | undefined): void {
     if (!this.active || executionId === undefined || this.effects.has(executionId)) return
     this.sweep(this.clock())
-    if (this.effects.size >= MAX_EFFECTS) return
     let session: Session | undefined
     try { session = exec.agent?.session } catch { session = undefined }
     if (session === undefined) return
     let effect: ExpectedEffect | undefined
     try { effect = captureToolContract(exec, executionId, session) ?? captureShell(exec, executionId, session) } catch { effect = undefined }
     if (effect === undefined) return
+    const sessionIds = this.bySession.get(session) ?? new Set<ExecutionId>()
+    while (sessionIds.size >= 128) {
+      const oldest = sessionIds.values().next().value as ExecutionId | undefined
+      if (oldest === undefined) break
+      this.remove(oldest)
+    }
+    while (this.effects.size >= MAX_EFFECTS) {
+      const oldest = this.effects.keys().next().value as ExecutionId | undefined
+      if (oldest === undefined) break
+      this.remove(oldest)
+    }
     this.effects.set(executionId, { effect, createdAt: this.clock() })
     this.executionsById.set(executionId, exec)
     this.executions.set(exec, effect)
+    sessionIds.add(executionId)
+    this.bySession.set(session, sessionIds)
   }
 
   take(exec: Readonly<ToolExecution>): ExpectedEffect | undefined {
     if (this.disposedExecutions.has(exec as ToolExecution)) return undefined
     const effect = this.executions.get(exec as ToolExecution)
     if (effect === undefined) return undefined
-    this.executions.delete(exec as ToolExecution)
-    this.effects.delete(effect.executionId)
-    this.executionsById.delete(effect.executionId)
+    this.remove(effect.executionId)
     return effect
   }
 
   disposeSession(session: Session): void {
-    for (const [executionId, item] of this.effects) {
-      if (item.effect.session !== session) continue
-      const execution = this.executionsById.get(executionId)
-      if (execution !== undefined) this.disposedExecutions.add(execution)
-      this.effects.delete(executionId)
-      this.executionsById.delete(executionId)
-    }
+    const ids = this.bySession.get(session)
+    if (ids === undefined) return
+    for (const executionId of [...ids]) this.remove(executionId)
+    ids.clear()
+    this.bySession.delete(session)
   }
 
   dispose(): void {
     this.active = false
     this.effects.clear()
     this.executionsById.clear()
-
+    this.executions = new WeakMap()
+    this.disposedExecutions = new WeakSet()
+    this.bySession = new WeakMap()
   }
 
   private sweep(now: number): void {
     for (const [executionId, item] of this.effects) {
       if (now - item.createdAt < EFFECT_TTL_MS) continue
-      const execution = this.executionsById.get(executionId)
-      if (execution !== undefined) this.disposedExecutions.add(execution)
-      this.effects.delete(executionId)
-      this.executionsById.delete(executionId)
+      this.remove(executionId)
     }
+  }
+
+  /** Remove every raw lookup atomically, including the object-keyed index. */
+  private remove(executionId: ExecutionId): void {
+    const item = this.effects.get(executionId)
+    if (item === undefined) return
+    const execution = this.executionsById.get(executionId)
+    if (execution !== undefined) {
+      this.executions.delete(execution)
+      this.disposedExecutions.add(execution)
+    }
+    this.effects.delete(executionId)
+    this.executionsById.delete(executionId)
+    this.bySession.get(item.effect.session)?.delete(executionId)
   }
 }

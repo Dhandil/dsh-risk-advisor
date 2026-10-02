@@ -79,6 +79,12 @@ interface RelationOutcome {
   readonly semanticSuccess?: true | false | 'unknown'
 }
 
+interface CapturedPrior {
+  readonly executionId: ExecutionId
+  readonly outcome: RelationOutcome
+  readonly requestedPermission?: ExplicitSandboxTarget
+}
+
 interface RelationRecord {
   readonly session: WeakRef<Session>
   readonly executionId: ExecutionId
@@ -97,6 +103,8 @@ interface RelationRecord {
     readonly semanticSuccess: true | false | 'unknown'
     readonly status: string
   }
+  /** Immutable retry evidence selected at this record's capture boundary. */
+  capturedPrior?: CapturedPrior
   semanticFailureCausallyAvailable?: boolean
   settledBeforeCaptureOrdinal?: number
 }
@@ -477,6 +485,14 @@ export class RetryEscalationAnalyzer {
     this.recordsById.set(executionId, record)
     state.records.push(record)
     this.executions.set(exec, record)
+    const capturedPrior = this.directPrior(record, now)
+    if (capturedPrior?.outcome !== undefined) {
+      record.capturedPrior = {
+        executionId: capturedPrior.executionId,
+        outcome: capturedPrior.outcome,
+        ...capturedPrior.requestedPermission === undefined ? {} : { requestedPermission: capturedPrior.requestedPermission },
+      }
+    }
   }
 
   observeResult(exec: Readonly<ToolExecution>, result: Readonly<ToolExecutionResult>): void {
@@ -625,19 +641,28 @@ export class RetryEscalationAnalyzer {
     if (prior.ordinal >= record.ordinal) return undefined
     if (record.evidenceState === 'CONFLICTED') return undefined
     if (now - prior.createdAt >= this.ttlMs || record.createdAt - prior.createdAt > this.ttlMs) return undefined
+    if (record.capturedPrior !== undefined) return prior
     if (prior.evidenceState !== 'SETTLED' || prior.outcome?.status !== 'FAILURE') return undefined
     if (prior.verification?.semanticSuccess === false && prior.semanticFailureCausallyAvailable !== true) return undefined
     if (prior.settledBeforeCaptureOrdinal === undefined || prior.settledBeforeCaptureOrdinal > record.ordinal) return undefined
     return prior
   }
 
-  private chainFor(record: RelationRecord, now: number): { readonly records: readonly RelationRecord[]; readonly truncated: boolean } {
-    const reverse: RelationRecord[] = []
+  private chainFor(record: RelationRecord, now: number): { readonly records: readonly { readonly record: RelationRecord; readonly outcome: RelationOutcome | undefined }[]; readonly truncated: boolean } {
+    const reverse: { readonly record: RelationRecord; readonly outcome: RelationOutcome | undefined }[] = []
     let cursor: RelationRecord | undefined = record
+    let outcome: RelationOutcome | undefined = record.outcome
     let truncated = false
     while (cursor !== undefined && reverse.length < this.maxRecent) {
-      reverse.push(cursor)
-      cursor = this.directPrior(cursor, now)
+      reverse.push({ record: cursor, outcome })
+      const captured = cursor.capturedPrior
+      if (captured === undefined) {
+        cursor = this.directPrior(cursor, now)
+        outcome = cursor?.outcome
+      } else {
+        cursor = this.recordsById.get(captured.executionId)
+        outcome = captured.outcome
+      }
     }
     if (cursor !== undefined) truncated = true
     const session = record.session.deref()
@@ -655,7 +680,9 @@ export class RetryEscalationAnalyzer {
     if (record.nearestPriorOrdinal !== undefined) {
       const prior = this.findRecord(state, record.nearestPriorOrdinal)
       if (record.nearestPriorExpired || prior === undefined) reasons.push('NEAREST_MATCH_UNAVAILABLE')
-      else if (prior.evidenceState === 'SETTLED' && prior.outcome?.status === 'SUCCESS') {
+      else if (record.capturedPrior !== undefined) {
+        // The retry edge was frozen at capture and is not rewritten by later conflict.
+      } else if (prior.evidenceState === 'SETTLED' && prior.outcome?.status === 'SUCCESS') {
         // A complete nearest success is an intentional blocker, not degraded evidence.
       } else if (this.directPrior(record, this.clock()) === undefined) reasons.push('NEAREST_MATCH_BLOCKED')
     }
@@ -685,18 +712,19 @@ export class RetryEscalationAnalyzer {
     const recent = chain.records.map(item => {
       const failure = item.outcome?.status === 'FAILURE' && item.outcome.failureKind !== undefined
         ? {
-            executionId: item.executionId,
+            executionId: item.record.executionId,
             failureKind: item.outcome.failureKind,
             ...item.outcome.errorCode === undefined ? {} : { errorCode: item.outcome.errorCode },
           }
-        : { executionId: item.executionId }
+        : { executionId: item.record.executionId }
       return Object.freeze(failure)
     })
-    const recentFailureCount = chain.records.filter(item => item.outcome?.status === 'FAILURE' && item.evidenceState === 'SETTLED').length
+    const recentFailureCount = chain.records.filter(item => item.outcome?.status === 'FAILURE' && item.record.evidenceState !== 'UNSUPPORTED').length
     let sameRootCause: boolean | 'unknown' = 'unknown'
-    if (prior !== undefined && record.outcome?.status === 'FAILURE' && prior.outcome?.status === 'FAILURE') {
-      sameRootCause = record.outcome.signature !== undefined && prior.outcome.signature !== undefined
-        ? record.outcome.signature.key === prior.outcome.signature.key
+    const priorOutcome = record.capturedPrior?.outcome ?? prior?.outcome
+    if (prior !== undefined && record.outcome?.status === 'FAILURE' && priorOutcome?.status === 'FAILURE') {
+      sameRootCause = record.outcome.signature !== undefined && priorOutcome.signature !== undefined
+        ? record.outcome.signature.key === priorOutcome.signature.key
         : 'unknown'
     }
     let permissionEscalation: boolean | 'unknown' = 'unknown'

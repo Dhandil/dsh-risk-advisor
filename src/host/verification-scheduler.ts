@@ -85,6 +85,17 @@ export class VerificationScheduler {
     for (const item of this.active.values()) this.cancelActive(item, 'VERIFIER_ABORTED')
   }
 
+  /** Fence the generation and await every underlying verifier promise. */
+  async fenceAndDrain(): Promise<void> {
+    if (!this.disposed) this.fence()
+    await this.drain()
+  }
+
+  /** Await owned work without releasing any active slot early. */
+  async drain(): Promise<void> {
+    while (this.inflight.size > 0) await Promise.allSettled([...this.inflight])
+  }
+
   cancelSession(session: object): void {
     for (let index = this.pending.length - 1; index >= 0; index -= 1) {
       const job = this.pending[index]!
@@ -99,14 +110,14 @@ export class VerificationScheduler {
 
   async dispose(): Promise<void> {
     if (this.disposed) {
-      await Promise.allSettled([...this.inflight])
+      await this.drain()
       return
     }
     this.disposed = true
     this.generation += 1
     for (const job of this.pending.splice(0)) job.complete(job.unknown('VERIFIER_ABORTED'))
     for (const item of this.active.values()) this.cancelActive(item, 'VERIFIER_ABORTED')
-    await Promise.allSettled([...this.inflight])
+    await this.drain()
   }
 
   private pump(): void {
@@ -134,24 +145,36 @@ export class VerificationScheduler {
 
   private async run(item: ActiveJob): Promise<void> {
     let timer: ReturnType<typeof setTimeout> | undefined
-    const timeout = new Promise<never>((_, reject) => {
+    const timeout = new Promise<void>(resolve => {
       timer = this.setTimer(() => {
         item.timedOut = true
         item.controller.abort()
-        reject(new Error('verification timeout'))
+        resolve()
       }, this.timeoutMs)
     })
+    const underlying = Promise.resolve().then(() => item.job.run(item.controller.signal))
     try {
-      const result = await Promise.race([item.job.run(item.controller.signal), timeout])
-      if (!item.settled && !this.disposed && item.job.generation === this.generation && !item.cancelled) {
+      const winner = await Promise.race([
+        underlying.then(result => ({ kind: 'result' as const, result }), () => ({ kind: 'error' as const })),
+        timeout.then(() => ({ kind: 'timeout' as const })),
+      ])
+      if (winner.kind === 'result') {
+        if (!item.settled && !this.disposed && item.job.generation === this.generation && !item.cancelled) {
+          item.settled = true
+          item.job.complete(winner.result)
+        }
+      } else if (winner.kind === 'error') {
+        if (!item.settled && !this.disposed && item.job.generation === this.generation) {
+          item.settled = true
+          item.job.complete(item.job.unknown(item.cancelled ? 'VERIFIER_ABORTED' : 'VERIFIER_RESULT_UNSUPPORTED', Math.max(0, this.clock() - item.startedAt)))
+        }
+      } else if (!item.settled && !this.disposed && item.job.generation === this.generation) {
         item.settled = true
-        item.job.complete(result)
+        item.job.complete(item.job.unknown('VERIFIER_TIMEOUT', Math.max(0, this.clock() - item.startedAt)))
       }
-    } catch {
-      if (!item.settled && !this.disposed && item.job.generation === this.generation) {
-        item.settled = true
-        item.job.complete(item.job.unknown(item.timedOut ? 'VERIFIER_TIMEOUT' : item.cancelled ? 'VERIFIER_ABORTED' : 'VERIFIER_RESULT_UNSUPPORTED', Math.max(0, this.clock() - item.startedAt)))
-      }
+      // A timeout/cancellation only publishes a logical terminal record. The
+      // underlying shell operation remains owned until this await settles.
+      await underlying.catch(() => undefined)
     } finally {
       if (timer !== undefined) this.clearTimer(timer)
       this.active.delete(item.job.executionId)

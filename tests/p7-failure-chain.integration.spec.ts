@@ -38,4 +38,34 @@ describe('Phase 7 FailureChain overlay', () => {
     chain.observeVerification({ schemaVersion: 1, executionId: 'late-first', adapterId: 'tool.write.v1', source: 'tool-contract', status: 'MISMATCHED', semanticSuccess: false, evidenceQuality: 'high', reasonCodes: ['POSTCONDITION_MISMATCH'], observedAt: 1, durationMs: 0 })
     expect(chain.diagnostics.get('late-retry').retryOf).toBeUndefined()
   })
+
+  it('freezes a captured retry relation across later verification conflict', () => {
+    const chain = new RetryEscalationAnalyzer()
+    const registry = new ExpectedEffectRegistry()
+    const verifier = new PostconditionVerifier(registry, { onRecord: record => chain.observeVerification(record) })
+    const first = exec('conflict-first')
+    chain.observePreExecute(first, 'conflict-first')
+    registry.capture(first, 'conflict-first')
+    chain.observeResult(first, { isError: false, value: { path: 'a.txt', operation: 'update', before: 'x', after: 'wrong' }, content: [] })
+    verifier.observeResult(first, { isError: false, value: { path: 'a.txt', operation: 'update', before: 'x', after: 'wrong' }, content: [] })
+
+    const second = exec('conflict-second')
+    chain.observePreExecute(second, 'conflict-second')
+    const beforeConflict = chain.diagnostics.get('conflict-second')
+    expect(beforeConflict.retryOf).toBe('conflict-first')
+    expect(beforeConflict.recentFailureCount).toBe(1)
+
+    chain.observeVerification({ schemaVersion: 1, executionId: 'conflict-first', adapterId: 'tool.write.v1', source: 'tool-contract', status: 'UNKNOWN', semanticSuccess: 'unknown', evidenceQuality: 'low', reasonCodes: ['VERIFICATION_CONFLICT'], observedAt: 2, durationMs: 0 })
+    const afterConflict = chain.diagnostics.get('conflict-second')
+    expect(afterConflict.retryOf).toBe('conflict-first')
+    expect(afterConflict.recentFailureCount).toBe(1)
+
+    const third = exec('conflict-third')
+    chain.observePreExecute(third, 'conflict-third')
+    expect(chain.diagnostics.get('conflict-third').retryOf).toBeUndefined()
+
+    chain.observeVerification({ schemaVersion: 1, executionId: 'conflict-first', adapterId: 'tool.write.v1', source: 'tool-contract', status: 'UNKNOWN', semanticSuccess: 'unknown', evidenceQuality: 'low', reasonCodes: ['VERIFICATION_CONFLICT'], observedAt: 3, durationMs: 0 })
+    expect(chain.diagnostics.get('conflict-second').retryOf).toBe('conflict-first')
+    void verifier.dispose()
+  })
 })

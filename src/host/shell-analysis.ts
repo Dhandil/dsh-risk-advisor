@@ -95,7 +95,7 @@ function lowerTokens(tokens: readonly string[]): string[] {
   return tokens.map(token => token.toLowerCase())
 }
 
-function splitShell(command: string): { segments: ShellSegment[]; ambiguous: boolean; unsupported: boolean } {
+function splitShell(command: string, dialect: Dialect): { segments: ShellSegment[]; ambiguous: boolean; unsupported: boolean } {
   const segments: ShellSegment[] = []
   let current = ''
   let quote: 'single' | 'double' | undefined
@@ -123,7 +123,7 @@ function splitShell(command: string): { segments: ShellSegment[]; ambiguous: boo
       escaped = false
       continue
     }
-    if (char === '\\' && quote !== 'single') {
+    if (dialect === 'bash' && char === '\\' && quote !== 'single') {
       current += char
       if (index === command.length - 1) ambiguous = true
       else escaped = true
@@ -183,7 +183,7 @@ function splitShell(command: string): { segments: ShellSegment[]; ambiguous: boo
   return { segments, ambiguous, unsupported }
 }
 
-function tokenizeSegment(segment: string): { tokens: string[]; ambiguous: boolean } {
+function tokenizeSegment(segment: string, dialect: Dialect): { tokens: string[]; ambiguous: boolean } {
   const tokens: string[] = []
   let current = ''
   let quote: 'single' | 'double' | undefined
@@ -197,7 +197,7 @@ function tokenizeSegment(segment: string): { tokens: string[]; ambiguous: boolea
       escaped = false
       continue
     }
-    if (char === '\\' && quote !== 'single') {
+    if (dialect === 'bash' && char === '\\' && quote !== 'single') {
       escaped = true
       continue
     }
@@ -324,7 +324,7 @@ function systemTargetOperands(action: string | undefined, args: readonly string[
 }
 
 export function analyzeShell(command: string, dialect: Dialect): ShellScan {
-  const split = splitShell(command)
+  const split = splitShell(command, dialect)
   const codes = new Set<ShellFindingCode>()
   let ambiguous = split.ambiguous || split.unsupported
   let systemLocation = false
@@ -334,7 +334,7 @@ export function analyzeShell(command: string, dialect: Dialect): ShellScan {
   ])
   if (/^\s*&\s+\$/.test(command)) codes.add('SHELL_DYNAMIC_EXECUTION')
   for (const segment of split.segments) {
-    const tokenized = tokenizeSegment(segment.text)
+    const tokenized = tokenizeSegment(segment.text, dialect)
     ambiguous ||= tokenized.ambiguous
     const tokens = tokenized.tokens
     const lower = lowerTokens(tokens)
@@ -421,7 +421,7 @@ export function analyzeShell(command: string, dialect: Dialect): ShellScan {
   const degradedByFinding = [...codes].some(code => ['SHELL_SEMANTICS_AMBIGUOUS', 'SHELL_DYNAMIC_EXECUTION', 'SHELL_ENCODED_EXECUTION', 'SHELL_ENVIRONMENT_INJECTION'].includes(code))
   if (ambiguous) codes.add('SHELL_SEMANTICS_AMBIGUOUS')
   const degraded = ambiguous || degradedByFinding
-  return { codes: [...codes], ambiguous, degraded, tokens: split.segments.flatMap(segment => tokenizeSegment(segment.text).tokens), systemLocation }
+  return { codes: [...codes], ambiguous, degraded, tokens: split.segments.flatMap(segment => tokenizeSegment(segment.text, dialect).tokens), systemLocation }
 }
 
 /**
@@ -429,9 +429,9 @@ export function analyzeShell(command: string, dialect: Dialect): ShellScan {
  * It deliberately reuses the same splitter/tokenizer/wrapper as analyzeShell.
  */
 export function parseSimpleShell(command: string, dialect: Dialect): SimpleShellCommand | undefined {
-  const split = splitShell(command)
+  const split = splitShell(command, dialect)
   if (split.segments.length !== 1 || split.ambiguous || split.unsupported) return undefined
-  const tokenized = tokenizeSegment(split.segments[0]!.text)
+  const tokenized = tokenizeSegment(split.segments[0]!.text, dialect)
   if (tokenized.ambiguous || split.segments[0]!.pipedFrom || tokenized.tokens.length === 0) return undefined
   const parsed = commandToken(tokenized.tokens)
   if (parsed.command === undefined || parsed.assignments.length > 0) return undefined
