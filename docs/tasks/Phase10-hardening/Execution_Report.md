@@ -2,15 +2,15 @@
 
 ## Outcome
 
-`PHASE10_R3_PUBLISHED_READY_FOR_REVIEW`
+`PHASE10_R4_PUBLISHED_READY_FOR_REVIEW`
 
 This is Codex implementation and execution evidence only. It is not an
 Acceptance Report and does not declare `PHASE10_ACCEPTED`.
 
 ## Identity and governance
 
-- Synchronized starting baseline: `6c7edec254d77658ba6fa157034a646913812350`.
-- Implementation / Tested SHA: `a911b325b7282576ce7b4bba4014ed0205289cb3`.
+- Synchronized starting baseline: `32aae897fa5a7e4ba428ab163ae1ff65b23e74d6`.
+- Implementation / Tested SHA: `1fa84e2a8a9de465cdb85fef928ec9e19086bba2`.
 - Harness reference: `deepseek-ai/deepseek-harness @ ddefc45fbc7f8e46dd73185e68295696d1297887`.
 - Harness Core was read-only; no later product phase was started.
 - Existing user drift was preserved and excluded from commits: `.vitest-cache/`,
@@ -54,6 +54,28 @@ exactly one Risk Advisor detail entry, disposal restores the native detail,
 leaves zero Risk Advisor entries, and the native Allow-once button remains
 usable after every cycle. Slot entry count never grows and each cycle uses a
 fresh session/call binding.
+
+## R4 held-work proof fidelity
+
+PASS. The held-work Host HMR test has no artificial plugin cleanup gate: it
+does not register an RA-owned test effect, `ownedWork` promise, or cleanup
+release. The only held work is the actual Risk Advisor Fast Judge scheduler's
+request to a deterministic local reviewer whose stream records start, ignores
+the supplied `AbortSignal`, waits on its own release promise, then emits a
+bounded valid candidate and finish event.
+
+PASS. With `adapter.requests === 1`, the real RA child fiber's
+`dispose()` remains unresolved while the reviewer remains unresolved. During
+that interval no new RPC handler is installed and the pre-dispose assessment
+does not acquire a post-dispose A2. Releasing the reviewer allows the
+Risk-Advisor-owned scheduler to quiesce; disposal then resolves, the old
+handler count is zero, old services are unavailable, and old diagnostics are
+unable to publish.
+
+PASS. A fresh child fiber and adapter process a new bounded approval
+independently. The old adapter remains at one request, old diagnostics remain
+empty/unavailable for the fresh Session, the fresh generation receives one
+request and one native answer, and its RPC handler returns to zero on dispose.
 
 ## R2 proof-fidelity repairs
 
@@ -143,7 +165,7 @@ P4 2/17, P5 4/23, P6 5/27, P7 6/26, P8 5/21, P9 6/20, and P10 12/35.
 ## Fresh complete Full
 
 Exactly one final fresh complete `pnpm test` ran on the exact Tested SHA
-`a911b325b7282576ce7b4bba4014ed0205289cb3`, after the final
+`1fa84e2a8a9de465cdb85fef928ec9e19086bba2`, after the final
 executable/test/config/package candidate was committed. Result: PASS — 17
 scripted groups, 58 test files, 302 tests. No intended tracked drift was
 present before Full; after Full, only this `Execution_Report.md` is changed.
