@@ -22,8 +22,8 @@ const retainedState = [
 
 const lifecycle = [
   ['A2 native-close fencing', 'tests/p5-lifecycle.integration.spec.ts', 'native decision'],
-  ['Evidence/A3 native-close fencing', 'tests/p8-evidence-lifecycle.integration.spec.ts', 'dispose'],
-  ['A4 native-close fencing', 'tests/p9-deep-judge-lifecycle.integration.spec.ts', 'dispose'],
+  ['Evidence/A3 native-close fencing', 'tests/p10-native-close.integration.spec.ts', 'held Evidence work'],
+  ['A4 native-close fencing', 'tests/p10-native-close.integration.spec.ts', 'held Deep runtime'],
   ['Session disposal', 'tests/p6-lifecycle.integration.spec.ts', 'session'],
   ['Plugin disposal', 'tests/p10-coexistence.integration.spec.ts', 'fiber.dispose'],
   ['Capability replacement', 'tests/p9-deep-judge-coordinator.integration.spec.ts', 'replacement'],

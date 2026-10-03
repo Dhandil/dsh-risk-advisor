@@ -11,8 +11,8 @@ const HARNESS = resolve(process.env.DSH_HARNESS_PATH ?? 'D:/Harness/deepseek-har
 const HARNESS_BIN = join(HARNESS, 'apps/cli/lib/bin.js')
 const PNPM_BIN = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
 const RA_PACKAGE = '@dhandil/dsh-risk-advisor'
-const PROBE_PACKAGE = 'phase10-r1-cold-probe'
-const MARKER = 'PHASE10_R1_PROBE_SERVICE_READY'
+const PROBE_PACKAGE = 'phase10-r2-cold-probe'
+const MARKER = 'PROFILE_READY_WITH_RISK_ADVISOR_SERVICE'
 
 async function runNode(args, env, cwd, timeout = 60_000) {
   try {
@@ -40,28 +40,21 @@ async function runCommand(command, args, env, cwd, timeout = 60_000) {
 async function runNodeUntilMarker(args, env, cwd, markerFile, timeout = 60_000) {
   return await new Promise((resolveResult, rejectResult) => {
     const child = spawn(process.execPath, args, { cwd, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
-    let stdout = ''; let stderr = ''; let stopped = false
+    let stdout = ''; let stderr = ''; let timedOut = false; let settled = false
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8')
     child.stdout.on('data', value => { stdout += value })
     child.stderr.on('data', value => { stderr += value })
     const deadline = Date.now() + timeout
-    const timer = setInterval(async () => {
-      if (Date.now() >= deadline) {
-        clearInterval(timer); child.kill('SIGKILL'); rejectResult(new Error(`cold process marker timeout: ${stderr.slice(0, 1000)}`)); return
-      }
-      if (stopped) return
-      try {
-        if (exactMarkerCount(await readFile(markerFile, 'utf8')) === 1) {
-          stopped = true
-          child.kill('SIGTERM')
-        }
-      } catch { /* marker is not ready yet */ }
-    }, 20)
-    child.on('error', error => { clearInterval(timer); rejectResult(error) })
+    const timer = setTimeout(() => {
+      timedOut = true
+      child.kill('SIGKILL')
+    }, timeout)
+    child.on('error', error => { if (settled) return; settled = true; clearTimeout(timer); rejectResult(error) })
     child.on('close', (code, signal) => {
-      clearInterval(timer)
-      if (code === 0 || (stopped && signal === 'SIGTERM')) resolveResult({ code: 0, stdout: stdout.slice(0, 32_000), stderr: stderr.slice(0, 32_000) })
-      else resolveResult({ code: typeof code === 'number' ? code : 1, stdout: stdout.slice(0, 32_000), stderr: stderr.slice(0, 32_000) })
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolveResult({ code: typeof code === 'number' ? code : 1, signal, timedOut, stdout: stdout.slice(0, 32_000), stderr: stderr.slice(0, 32_000) })
     })
   })
 }
@@ -117,13 +110,14 @@ async function readProfileFacts(home) {
 
 function exactMarkerCount(value) { return value.split(MARKER).length - 1 }
 
-function assertBoot(name, result, markerFile, violations, home) {
-  if (result.code !== 0) throw new Error(`${name} failed with exit ${result.code}: stdout=${result.stdout.slice(0, 2000)} stderr=${result.stderr.slice(0, 2000)}`)
+async function assertBoot(name, result, markerFile, violations, home) {
+  if (result.code !== 0 || result.signal !== null || result.timedOut) throw new Error(`${name} failed with exit ${result.code}/${result.signal ?? 'none'}: stdout=${result.stdout.slice(0, 2000)} stderr=${result.stderr.slice(0, 2000)}`)
   const combined = `${result.stdout}\n${result.stderr}`
   if (combined.includes(home)) throw new Error(`${name} leaked disposable profile path`)
   const markerText = result.stdout + result.stderr
   if (exactMarkerCount(markerText) !== 0) throw new Error(`${name} leaked marker to process output`)
-  return { code: result.code, markerFile, stdoutBytes: result.stdout.length, stderrBytes: result.stderr.length, violationBytes: violations }
+  if (exactMarkerCount(await readFile(markerFile, 'utf8')) !== 1) throw new Error(`${name} did not produce exactly one public-ready marker`)
+  return { code: result.code, signal: result.signal, markerFile, stdoutBytes: result.stdout.length, stderrBytes: result.stderr.length, violationBytes: violations }
 }
 
 export async function main() {
@@ -137,7 +131,7 @@ export async function main() {
   try {
     await writeNetworkGuard(guard)
     await mkdir(probeDir, { recursive: true })
-    await writeFile(join(probeDir, 'probe.mjs'), `import { appendFileSync } from 'node:fs'\nexport const name = 'phase10-r1-cold-probe'\nexport const inject = ['riskAdvisorAssessments']\nexport function apply(ctx) {\n  if (ctx.get('riskAdvisorAssessments', false) === undefined) throw new Error('risk advisor service unavailable')\n  appendFileSync(process.env.PHASE10_MARKER_FILE, '${MARKER}\\n')\n  ctx.effect(() => () => undefined, 'phase10-r1-cold-probe-lifecycle')\n}\n`, 'utf8')
+    await writeFile(join(probeDir, 'probe.mjs'), `import { appendFileSync } from 'node:fs'\nexport const name = 'phase10-r2-cold-probe'\nexport const inject = ['riskAdvisorAssessments', 'appReady', 'appExit']\nexport function apply(ctx) {\n  if (ctx.get('riskAdvisorAssessments', false) === undefined) throw new Error('risk advisor service unavailable')\n  const appReady = ctx.get('appReady')\n  const appExit = ctx.get('appExit')\n  if (!appReady || typeof appReady.onReady !== 'function' || typeof appExit !== 'function') throw new Error('public app lifecycle unavailable')\n  let marked = false\n  appReady.onReady(() => {\n    if (marked) return\n    marked = true\n    appendFileSync(process.env.PHASE10_MARKER_FILE, '${MARKER}\\n')\n    appExit(0)\n  })\n  ctx.effect(() => () => undefined, 'phase10-r2-cold-probe-lifecycle')\n}\n`, 'utf8')
     await writeFile(join(probeDir, 'cordis.patch.yml'), `- insert:\n    - id: phase10-r1-cold-probe\n      name: ${JSON.stringify(pathToFileURL(join(probeDir, 'probe.mjs')).href)}\n`, 'utf8')
     await writeFile(join(probeDir, 'package.json'), JSON.stringify({ name: PROBE_PACKAGE, version: '0.0.0', type: 'module', files: ['probe.mjs', 'cordis.patch.yml'], dsh: { bundle: { patch: './cordis.patch.yml' } } }, null, 2), 'utf8')
     const packEnvironment = { ...process.env, COREPACK_ENABLE_NETWORK: '0', PNPM_CONFIG_OFFLINE: 'true', npm_config_offline: 'true', DSH_TELEMETRY_DISABLED: '1', CI: '1' }
@@ -147,7 +141,7 @@ export async function main() {
     if (probePacked.code !== 0) throw new Error(`offline probe pack failed: ${probePacked.stdout.slice(0, 1000)} ${probePacked.stderr.slice(0, 2000)}`)
     const tarballs = await readdir(temp)
     const packageTarball = tarballs.find(item => item.includes('dsh-risk-advisor') && item.endsWith('.tgz'))
-    const probeTarball = tarballs.find(item => item.startsWith('phase10-r1-cold-probe-') && item.endsWith('.tgz'))
+    const probeTarball = tarballs.find(item => item.startsWith('phase10-r2-cold-probe-') && item.endsWith('.tgz'))
     if (packageTarball === undefined || probeTarball === undefined) throw new Error('offline packs did not produce both tarballs')
     const packagePath = join(temp, packageTarball)
     const probePath = join(temp, probeTarball)
@@ -156,21 +150,21 @@ export async function main() {
     const before = await readProfileFacts(home)
     if (before.riskAdvisorBundleCount !== 1 || before.probeBundleCount !== 1) throw new Error(`profile bundle list is not exact: ${JSON.stringify(before.bundleNames)}`)
     await writeFile(marker, '', 'utf8'); await writeFile(violations, '', 'utf8')
-    const bootArgs = [HARNESS_BIN, '--profile', 'phase10', '--help']
+    const bootArgs = [HARNESS_BIN, '--profile', 'phase10']
     const processA = await runNodeUntilMarker(bootArgs, environment(home, guard, marker, violations), HARNESS, marker)
     const markerA = exactMarkerCount(await readFile(marker, 'utf8'))
     if (markerA !== 1) throw new Error(`cold process A activation marker count was ${markerA}`)
-    assertBoot('cold process A', processA, marker, 0, home)
+    await assertBoot('cold process A', processA, marker, 0, home)
     await writeFile(marker, '', 'utf8')
     const processB = await runNodeUntilMarker(bootArgs, environment(home, guard, marker, violations), HARNESS, marker)
     const markerB = exactMarkerCount(await readFile(marker, 'utf8'))
     if (markerB !== 1) throw new Error(`cold process B activation marker count was ${markerB}`)
-    assertBoot('cold process B', processB, marker, 0, home)
+    await assertBoot('cold process B', processB, marker, 0, home)
     const violationText = await readFile(violations, 'utf8')
     if (violationText.length !== 0) throw new Error(`cold proof observed denied external network activity: ${violationText.slice(0, 1000)}`)
     const after = await readProfileFacts(home)
     if (after.serialized !== before.serialized) throw new Error('cold restart changed persisted profile bundle state')
-    return Object.freeze({ schema: 'dsh-risk-advisor.phase10.cold-start.v2', evidenceClass: 'REAL_PINNED_RUNTIME', install: 'PASS', processA: 'PASS', processB: 'PASS', activationMarkerA: markerA, activationMarkerB: markerB, riskAdvisorBundleCountA: before.riskAdvisorBundleCount, riskAdvisorBundleCountB: after.riskAdvisorBundleCount, probeBundleCountA: before.probeBundleCount, probeBundleCountB: after.probeBundleCount, samePersistedProfile: true, networkGuardViolations: 0, providerCalls: 0, externalNetworkCalls: 0, registryCalls: 0, gitRemoteCalls: 0, harnessTrackedMutations: 0, harnessVerifiedSha: harness.sha })
+    return Object.freeze({ schema: 'dsh-risk-advisor.phase10.cold-start.v3', evidenceClass: 'REAL_PINNED_RUNTIME', lifecycle: 'APP_READY_PUBLIC_APP_EXIT', readyMarker: MARKER, install: 'PASS', processA: 'PASS', processB: 'PASS', activationMarkerA: markerA, activationMarkerB: markerB, naturalExitA: true, naturalExitB: true, riskAdvisorBundleCountA: before.riskAdvisorBundleCount, riskAdvisorBundleCountB: after.riskAdvisorBundleCount, probeBundleCountA: before.probeBundleCount, probeBundleCountB: after.probeBundleCount, samePersistedProfile: true, networkGuardViolations: 0, providerCalls: 0, externalNetworkCalls: 0, registryCalls: 0, gitRemoteCalls: 0, harnessTrackedMutations: 0, harnessVerifiedSha: harness.sha })
   } finally {
     await rm(temp, { recursive: true, force: true })
   }

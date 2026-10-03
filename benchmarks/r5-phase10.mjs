@@ -197,31 +197,43 @@ export async function main({ smoke = false, writeArtifact = true } = {}) {
   const deepConfig = deep.normalizeDeepJudgeConfig({ enabled: true, isolationMode: 'trusted-parent-composition', timeoutMs: 5000, maxConcurrentJudges: 2, maxPendingJudges: 8, maxTokens: 128 })
   const fastRuntime = localLlm()
   const deepRuntime = localDeepRuntime()
-  const runFast = async index => {
-    const result = await fast.executeFastJudge(fastRuntime, { provider: 'local', model: 'p10-deterministic' }, builtContext, ['AUTHORIZATION'], fastConfig, new AbortController().signal)
+  const actualFastScheduler = new fast.JudgeScheduler(2, 8)
+  const actualDeepScheduler = new DeepJudgeScheduler(2, 8)
+  const runFast = async (assessmentId, contextSnapshot = builtContext.snapshot) => {
+    const result = await actualFastScheduler.enqueue(`fast-${assessmentId}`, signal => fast.executeFastJudge(fastRuntime, { provider: 'local', model: 'p10-deterministic' }, { ...builtContext, snapshot: contextSnapshot }, ['AUTHORIZATION'], fastConfig, signal))
     if (!result.ok) throw new Error(`local fast lane failed: ${result.failure}`)
     return result.candidate
   }
-  const runDeep = async (assessment, evidenceValue) => {
-    const payload = deep.buildDeepJudgePayload(builtContext, assessment, evidenceValue, ['AUTHORIZATION'])
-    const result = await deep.executeDeepJudge(deepRuntime, { label: 'p10-local-parent' }, payload, ['AUTHORIZATION'], new Set(builtContext.snapshot.features.features.map(item => item.id)), deepConfig, new AbortController().signal)
+  const runDeep = async (assessment, evidenceValue, deepContext = builtContext) => {
+    const payload = deep.buildDeepJudgePayload(deepContext, assessment, evidenceValue, ['AUTHORIZATION'])
+    const result = await actualDeepScheduler.enqueue(`deep-${assessment.assessmentId}`, signal => deep.executeDeepJudge(deepRuntime, { label: 'p10-local-parent' }, payload, ['AUTHORIZATION'], new Set(deepContext.snapshot.features.features.map(item => item.id)), deepConfig, signal))
     if (!result.ok) throw new Error(`local deep lane failed: ${result.failure}`)
     return result.candidate
   }
-  const actualFastScheduler = new fast.JudgeScheduler(2, 8)
-  const actualDeepScheduler = new DeepJudgeScheduler(2, 8)
   const actualFast = await measureAsync(async () => {
-    const candidate = await actualFastScheduler.enqueue(`fast-${crypto.randomUUID()}`, signal => fast.executeFastJudge(fastRuntime, { provider: 'local', model: 'p10-deterministic' }, builtContext, ['AUTHORIZATION'], fastConfig, signal))
-    if (!candidate.ok) throw new Error(`fast scheduler lane failed: ${candidate.failure}`)
+    const a1 = createDeterministicAssessment(builtContext.snapshot, `p10-fast-a1-${crypto.randomUUID()}`, 1)
+    const candidate = await runFast(a1.assessmentId)
+    const a2 = mergeJudgeAssessment(a1, builtContext.snapshot, { dimensions: ['AUTHORIZATION'], ...candidate }, `p10-fast-a2-${crypto.randomUUID()}`, 2, 'p10-deterministic')
+    if (a2.supersedesAssessmentId !== a1.assessmentId) throw new Error('fast lane did not measure the A2 merge')
   }, n, smoke ? 1 : 5)
-  const actualEvidence = await measureAsync(async () => { const value = await collectEvidence(evidenceFixture, crypto.randomUUID()); if (value?.status !== 'COMPLETE') throw new Error('local evidence lane did not complete') }, n, smoke ? 1 : 5)
+  const actualEvidence = await measureAsync(async () => {
+    const a1 = createDeterministicAssessment(builtContext.snapshot, `p10-evidence-a1-${crypto.randomUUID()}`, 1)
+    const value = await collectEvidence(evidenceFixture, crypto.randomUUID())
+    if (value?.status !== 'COMPLETE') throw new Error('local evidence lane did not complete')
+    const evidenceContext = overlayEvidenceContext(builtContext.snapshot, value)
+    const a3 = mergeEvidenceAssessment(a1, builtContext.snapshot, evidenceContext, value, `p10-evidence-a3-${crypto.randomUUID()}`, 2)
+    if (a3.supersedesAssessmentId !== a1.assessmentId || a3.provenance.evidence?.invoked !== true) throw new Error('evidence lane did not measure the A3 merge')
+  }, n, smoke ? 1 : 5)
   const actualDeep = await measureAsync(async () => {
     const a1 = createDeterministicAssessment(builtContext.snapshot, `p10-deep-a1-${crypto.randomUUID()}`, 1)
     const value = await collectEvidence(evidenceFixture, crypto.randomUUID())
     const evidenceContext = overlayEvidenceContext(builtContext.snapshot, value)
     const a3 = mergeEvidenceAssessment(a1, builtContext.snapshot, evidenceContext, value, `p10-deep-a3-${crypto.randomUUID()}`, 2)
-    const result = await actualDeepScheduler.enqueue(`deep-${crypto.randomUUID()}`, signal => deep.executeDeepJudge(deepRuntime, { label: 'p10-local-parent' }, deep.buildDeepJudgePayload(builtContext, a3, value, ['AUTHORIZATION']), ['AUTHORIZATION'], new Set(builtContext.snapshot.features.features.map(item => item.id)), deepConfig, signal))
-    if (!result.ok) throw new Error(`deep scheduler lane failed: ${result.failure}`)
+    const deepContext = { ...builtContext, snapshot: evidenceContext }
+    const result = await actualDeepScheduler.enqueue(`deep-${crypto.randomUUID()}`, signal => deep.executeDeepJudge(deepRuntime, { label: 'p10-local-parent' }, deep.buildDeepJudgePayload(deepContext, a3, value, ['AUTHORIZATION']), ['AUTHORIZATION'], new Set(deepContext.snapshot.features.features.map(item => item.id)), deepConfig, signal))
+    if (!result.ok || result.candidate === undefined) throw new Error(`deep scheduler lane failed: ${result.failure}`)
+    const a4 = mergeDeepJudgeAssessment(a3, evidenceContext, { dimensions: ['AUTHORIZATION'], ...result.candidate }, `p10-deep-a4-${crypto.randomUUID()}`, 3, 'p10-deterministic')
+    if (a4.supersedesAssessmentId !== a3.assessmentId) throw new Error('deep lane did not measure the A4 merge')
   }, n, smoke ? 1 : 5)
   const actualBrowserQuery = await measureAsync(async () => {
     const query = browserCoordinator.queryOpenPresentationByAssessmentId(browserAssessmentId)
@@ -230,14 +242,19 @@ export async function main({ smoke = false, writeArtifact = true } = {}) {
   }, n, smoke ? 1 : 5)
   const composedActual = await measureAsync(async () => {
     const a1 = createDeterministicAssessment(builtContext.snapshot, `p10-composed-a1-${crypto.randomUUID()}`, 1)
-    const fastResult = await runFast(0)
+    const fastResult = await runFast(a1.assessmentId)
     const a2 = mergeJudgeAssessment(a1, builtContext.snapshot, { dimensions: ['AUTHORIZATION'], ...fastResult }, `p10-composed-a2-${crypto.randomUUID()}`, 2, 'p10-deterministic')
     const evidenceValue = await collectEvidence(evidenceFixture, crypto.randomUUID())
     const evidenceContext = overlayEvidenceContext(builtContext.snapshot, evidenceValue)
     const a3 = mergeEvidenceAssessment(a2, builtContext.snapshot, evidenceContext, evidenceValue, `p10-composed-a3-${crypto.randomUUID()}`, 3)
-    const deepResult = await runDeep(a3, evidenceValue)
+    const deepContext = { ...builtContext, snapshot: evidenceContext }
+    const deepPayload = deep.buildDeepJudgePayload(deepContext, a3, evidenceValue, ['AUTHORIZATION'])
+    if (!deepPayload.includes('canonicalTargetsKnown')) throw new Error('composed Deep payload omitted evidence-enriched features')
+    const deepResult = await runDeep(a3, evidenceValue, deepContext)
     const a4 = mergeDeepJudgeAssessment(a3, evidenceContext, { dimensions: ['AUTHORIZATION'], ...deepResult }, `p10-composed-a4-${crypto.randomUUID()}`, 4, 'p10-deterministic')
-    const view = phase6View({ sessionId: 'p10-benchmark-session', callId: 'p10-benchmark-call', toolName: 'write', association: 'BOUND', assessmentId: a4.assessmentId, assessment: a4, seed: context.seed, ruleEvaluation: rule, failureSummary, stage: 'deep', status: 'pending', reasonCodes: [], updatedAt: 4, evidence: evidenceValue })
+    if (a4.supersedesAssessmentId !== a3.assessmentId) throw new Error('composed path did not publish A4')
+    const view = phase6View({ sessionId: 'p10-benchmark-session', callId: 'p10-benchmark-call', toolName: 'write', association: 'BOUND', assessmentId: a4.assessmentId, assessment: a4, seed: context.seed, ruleEvaluation: rule, failureSummary, stage: 'complete', status: 'ready', reasonCodes: [], updatedAt: 4, evidence: evidenceValue })
+    if (view.stage !== 'complete' || view.status !== 'ready' || view.assessmentId !== a4.assessmentId) throw new Error('composed path did not reach terminal Browser state')
     if (parseBridgeRead({ kind: 'VIEW', view })?.kind !== 'VIEW') throw new Error('browser projection lane rejected product view')
   }, n, smoke ? 1 : 5)
   const benchmarkCanary = `P10-${crypto.randomUUID()}-CANARY`
