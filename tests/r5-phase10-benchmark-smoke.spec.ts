@@ -3,7 +3,7 @@ import { main } from '../benchmarks/r5-phase10.mjs'
 
 describe('Phase 10 benchmark smoke', () => {
   it('measures real pinned ApprovalService and bounded local product lanes', async () => {
-    const output = await main({ smoke: true })
+    const output = await main({ smoke: true, writeArtifact: false })
     expect(output.run).toMatchObject({ mode: 'SMOKE', harnessPinned: 'ddefc45fbc7f8e46dd73185e68295696d1297887' })
     expect(output.realPinnedRuntime).toMatchObject({ evidenceClass: 'REAL_PINNED_RUNTIME', outcome: 'allowed-once', nativeAnswerer: 'one-per-iteration' })
     expect(output.local.distributions.shellAnalysis.summary.n).toBe(20)

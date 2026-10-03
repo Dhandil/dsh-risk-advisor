@@ -3,7 +3,7 @@ import { main } from '../benchmarks/r5-phase10.mjs'
 
 describe('Phase 10 benchmark full', () => {
   it('records bounded distributions with honest evidence classes', async () => {
-    const output = await main({ smoke: false })
+    const output = await main({ smoke: false, writeArtifact: false })
     expect(output.run).toMatchObject({ mode: 'FULL', cheapSamples: 300, heavySamples: 100 })
     expect(output.realPinnedRuntime.baseline.summary.n).toBe(100)
     expect(output.realPinnedRuntime.treatment.summary.n).toBe(100)

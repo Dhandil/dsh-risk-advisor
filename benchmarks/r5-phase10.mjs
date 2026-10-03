@@ -78,7 +78,7 @@ async function pairedPinnedRuntime(n, warmup) {
   return { evidenceClass: 'REAL_PINNED_RUNTIME', baseline: stats(baseline, warmup), treatment: stats(treatment, warmup), delta: stats(pairedDelta(baseline, treatment), warmup), nativeAnswerer: 'one-per-iteration', outcome: 'allowed-once' }
 }
 
-export async function main({ smoke = false } = {}) {
+export async function main({ smoke = false, writeArtifact = true } = {}) {
   const n = smoke ? 8 : 100
   const cheapN = smoke ? 20 : 300
   const warmup = smoke ? 2 : 20
@@ -118,8 +118,10 @@ export async function main({ smoke = false } = {}) {
     privacy: { rawArguments: 0, rawPrompts: 0, secrets: 0, privatePaths: 0 },
     external: { providerCalls: 0, networkCalls: 0, registryCalls: 0, gitRemoteCalls: 0, harnessTrackedMutations: 0 },
   })
-  await mkdir(resolve(ROOT, 'docs/tasks/Phase10-hardening/evidence'), { recursive: true })
-  await writeFile(OUTPUT, `${JSON.stringify(output, null, 2)}\n`, 'utf8')
+  if (writeArtifact) {
+    await mkdir(resolve(ROOT, 'docs/tasks/Phase10-hardening/evidence'), { recursive: true })
+    await writeFile(OUTPUT, `${JSON.stringify(output, null, 2)}\n`, 'utf8')
+  }
   return output
 }
 
