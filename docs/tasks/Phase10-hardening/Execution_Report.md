@@ -70,7 +70,7 @@ hypotheses as hypotheses, and keeps alternatives
 
 ## Corrected benchmark
 
-Artifact: [`r5-phase10-measurements.json`](evidence/r5-phase10-measurements.json).  
+Artifact: [`r5-phase10-measurements.json`](evidence/r5-phase10-measurements.json).
 Policy: [`AdvisoryLatencyPolicy.md`](AdvisoryLatencyPolicy.md).
 
 The corrected stage lanes include their named merges inside the timed work:
