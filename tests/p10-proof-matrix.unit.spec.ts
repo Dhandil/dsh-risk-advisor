@@ -28,7 +28,7 @@ const lifecycle = [
   ['Actual RA fiber disposal', 'tests/p10-coexistence.integration.spec.ts', 'actual RA fiber dispose-before-answer'],
   ['Host HMR generation', 'tests/p10-host-hmr.integration.spec.ts', 'three actual mount-dispose-remount cycles'],
   ['Client slot HMR generation', 'tests/p10-client-hmr.integration.spec.tsx', 'three cycles'],
-  ['Held Host HMR work', 'tests/p10-host-hmr.integration.spec.ts', 'held owned work'],
+  ['Held Host HMR work', 'tests/p10-host-hmr.integration.spec.ts', 'held abort-ignoring Judge'],
   ['Capability replacement', 'tests/p9-deep-judge-coordinator.integration.spec.ts', 'replacement'],
   ['Abort-ignoring work', 'tests/p8-evidence-lifecycle.integration.spec.ts', 'abort'],
   ['Duplicate approval observation', 'tests/p10-coexistence.integration.spec.ts', 'duplicate'],

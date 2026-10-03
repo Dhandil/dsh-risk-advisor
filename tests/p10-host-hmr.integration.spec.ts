@@ -57,10 +57,16 @@ class CycleAdapter extends LlmAdapter {
     this.gate = new Promise(resolve => { this.releaseGate = resolve })
   }
 
-  override async *stream(_options: GenerateOptions): AsyncIterable<StreamChunk> {
+  override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     this.requests += 1
     if (this.hold) await this.gate
-    const text = JSON.stringify({ schemaVersion: 1, results: [], suggestedAlternatives: [] })
+    const block = options.messages.flatMap(message => message.content).find(item => item.type === 'text')
+    const payload = block?.type === 'text' ? JSON.parse(block.text) as { requestedDimensions?: readonly string[] } : {}
+    const text = JSON.stringify({
+      schemaVersion: 1,
+      results: (payload.requestedDimensions ?? []).map(dimension => ({ dimension, verdict: 'UNKNOWN', rationale: 'bounded local HMR fixture', referencedFeatureIds: [] })),
+      suggestedAlternatives: [],
+    })
     yield { type: 'block-start', index: 0, blockType: 'text' }
     yield { type: 'text-delta', index: 0, text }
     yield { type: 'block-end', index: 0, block: { type: 'text', text } }
@@ -156,7 +162,7 @@ describe('Phase 10 actual Host Risk Advisor fiber HMR', () => {
     expect(answerCount).toBe(3)
   })
 
-  it('drains held owned work before actual Host Risk Advisor fiber disposal and fences remount', async () => {
+  it('proves held abort-ignoring Judge quiescence, no late A2, and remount generation fencing', async () => {
     root = new Context()
     const ctx = root
     const rpc = new RpcFixture()
@@ -166,7 +172,6 @@ describe('Phase 10 actual Host Risk Advisor fiber HMR', () => {
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(ToolRuntime)
     await ctx.plugin(ApprovalService, { policy: 'ask' })
-    ctx.on('approval/request', () => Promise.resolve('allowed-once'))
     ctx.tools.register(defineContentToolFixture({
       name: 'read', description: 'held HMR fixture', parameters: {},
       async execute(_args, exec) {
@@ -175,19 +180,15 @@ describe('Phase 10 actual Host Risk Advisor fiber HMR', () => {
       },
     }))
 
+    let answerCount = 0
+    ctx.on('approval/request', () => { answerCount += 1; return Promise.resolve('allowed-once') })
     const held = new CycleAdapter(true)
     ctx.llm.registerAdapter(['p10-held-hmr'], held)
-    let releaseOwnedWork: (() => void) | undefined
-    const ownedWork = new Promise<void>(resolve => { releaseOwnedWork = resolve })
     const first = ctx.plugin({
       name: 'p10-risk-advisor-held-hmr',
       inject: ['tools'],
       apply(owner) {
         apply(owner, { fastJudge: { enabled: true, timeoutMs: 10, maxConcurrentJudges: 1, maxPendingJudges: 1, reviewer: { provider: 'p10-held-hmr', model: 'local' } } })
-        owner.effect(() => async () => {
-          held.release()
-          await ownedWork
-        }, 'p10-test-held-work-release')
       },
     })
     await first.await()
@@ -196,19 +197,60 @@ describe('Phase 10 actual Host Risk Advisor fiber HMR', () => {
     session.append('user/message', createUserMessage({ content: [{ type: 'text', text: 'Read the held local fixture.' }], source: { kind: 'user' } }), { surfaceOp: 'append' })
     const result = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId('p10-held-hmr-call'), name: 'read', arguments: { file_path: 'safe.txt' }, agent: { session } as unknown as Agent })
     expect(result.isError).toBe(false)
+    const deadline = Date.now() + 250
+    while (held.requests === 0 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 2))
     expect(held.requests).toBe(1)
+    const asked = session.snapshotEvents().find(event => event.type === 'approval/asked')
+    expect(asked?.type).toBe('approval/asked')
+    if (asked?.type !== 'approval/asked') throw new Error('held HMR approval was not recorded')
+    const oldAssessments = first.ctx.get('riskAdvisorAssessments')
+    const oldCorrelation = first.ctx.get('riskAdvisorCorrelation')
+    const oldAssessment = oldAssessments.getForApproval(session, String(asked.data.id))
+    const oldAssessmentId = oldAssessment.latestAssessmentId
+    expect(oldAssessmentId).toMatch(/^ra-assessment-/)
+    expect(oldCorrelation.snapshotObservations()).toHaveLength(1)
+    expect(answerCount).toBe(1)
     let disposed = false
     const dispose = first.dispose().then(() => { disposed = true })
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(disposed).toBe(false)
-    releaseOwnedWork!()
+    expect(held.requests).toBe(1)
+    expect(rpc.count(RISK_ADVISOR_RPC_CHANNEL)).toBeLessThanOrEqual(1)
+    expect(rpc.maxActive).toBe(1)
+    const duringDisposal = oldAssessments.getForApproval(session, String(asked.data.id))
+    if (duringDisposal.status !== 'not-found') expect(duringDisposal.latestAssessmentId).toBe(oldAssessmentId)
+    held.release()
     await dispose
     expect(disposed).toBe(true)
     expect(rpc.count(RISK_ADVISOR_RPC_CHANNEL)).toBe(0)
+    expect(ctx.get('riskAdvisorAssessments', false)).toBeUndefined()
+    expect(oldAssessments.getForApproval(session, String(asked.data.id)).status).toBe('not-found')
 
-    const second = ctx.plugin({ name: 'p10-risk-advisor-held-hmr-remount', inject: ['tools'], apply })
+    const fresh = new CycleAdapter(false)
+    ctx.llm.registerAdapter(['p10-held-hmr-remount'], fresh)
+    const second = ctx.plugin({
+      name: 'p10-risk-advisor-held-hmr-remount',
+      inject: ['tools'],
+      apply(owner) {
+        apply(owner, { fastJudge: { enabled: true, timeoutMs: 10, maxConcurrentJudges: 1, maxPendingJudges: 1, reviewer: { provider: 'p10-held-hmr-remount', model: 'local' } } })
+      },
+    })
     await second.await()
     expect(rpc.count(RISK_ADVISOR_RPC_CHANNEL)).toBe(1)
+    const freshSession = ctx.sessions.create('p10-held-hmr-remount-session')
+    freshSession.append('turn/start', { turn: 1 })
+    freshSession.append('user/message', createUserMessage({ content: [{ type: 'text', text: 'Read the remounted local fixture.' }], source: { kind: 'user' } }), { surfaceOp: 'append' })
+    const freshResult = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId('p10-held-hmr-remount-call'), name: 'read', arguments: { file_path: 'safe.txt' }, agent: { session: freshSession } as unknown as Agent })
+    expect(freshResult.isError).toBe(false)
+    expect(fresh.requests).toBe(1)
+    expect(held.requests).toBe(1)
+    expect(answerCount).toBe(2)
+    expect(oldCorrelation.snapshotObservations()).toHaveLength(0)
+    const freshAsked = freshSession.snapshotEvents().find(event => event.type === 'approval/asked')
+    expect(freshAsked?.type).toBe('approval/asked')
+    if (freshAsked?.type === 'approval/asked') {
+      expect(second.ctx.get('riskAdvisorAssessments').getForApproval(freshSession, String(freshAsked.data.id)).status).not.toBe('not-found')
+    }
     await second.dispose()
     expect(rpc.count(RISK_ADVISOR_RPC_CHANNEL)).toBe(0)
   })
