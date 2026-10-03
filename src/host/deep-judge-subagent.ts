@@ -4,6 +4,8 @@
  * This deliberately does not name or import a concrete Harness subagent
  * package.  Deep Judge consumes only this small public capability surface.
  */
+import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+
 export interface DeepJudgeSubagentCapabilitiesLike {
   readonly agentOptions: boolean
   readonly outputSchema: boolean
@@ -32,7 +34,7 @@ export interface DeepJudgeSubagentRunLike {
 export interface DeepJudgeSubagentStartRequestLike {
   readonly parent: unknown
   readonly label: string
-  readonly prompt: string
+  readonly prompt: ContentBlock[]
   readonly signal: AbortSignal
   readonly agentOptions: Readonly<Record<string, unknown>>
   readonly outputSchema: Readonly<Record<string, unknown>>

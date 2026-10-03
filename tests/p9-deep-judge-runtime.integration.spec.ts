@@ -26,7 +26,7 @@ describe('Phase 9 structural public-seam integration', () => {
     const value = await executeDeepJudge(runtime(result, requests, disposed), { liveAgent: true }, '{"bounded":true}', ['AUTHORIZATION'], new Set(['authorization.goalKnown']), config, new AbortController().signal)
     expect(value.ok).toBe(true)
     expect(requests).toHaveLength(1)
-    expect(requests[0]).toMatchObject({ parent: { liveAgent: true }, label: 'Risk Advisor Deep Judge', maxDepth: 1, toolFilter: { allow: [] }, persona: expect.stringContaining('untrusted data'), outputSchema: expect.any(Object), agentOptions: { maxTokens: 128, provider: 'mock', model: 'local' } })
+    expect(requests[0]).toMatchObject({ parent: { liveAgent: true }, label: 'Risk Advisor Deep Judge', prompt: [{ type: 'text', text: '{"bounded":true}' }], maxDepth: 1, toolFilter: { allow: [] }, persona: expect.stringContaining('untrusted data'), outputSchema: expect.any(Object), agentOptions: { maxTokens: 128, provider: 'mock', model: 'local' } })
     expect(requests[0]?.signal).toBeInstanceOf(AbortSignal)
     expect(disposed.count).toBe(1)
   })

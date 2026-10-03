@@ -82,17 +82,16 @@ const DEEP_JUDGE_RESULT_SCHEMA: Readonly<Record<string, unknown>> = Object.freez
   properties: {
     dimension: { type: 'string', enum: ['RISK', 'AUTHORIZATION', 'NECESSITY', 'PRIVILEGE'] },
     verdict: { type: 'string' },
-    rationale: { type: 'string', maxLength: 1200 },
-    referencedFeatureIds: { type: 'array', maxItems: 32, items: { type: 'string' } },
+    rationale: { type: 'string' },
+    referencedFeatureIds: { type: 'array', items: { type: 'string' } },
     proposedFacts: {
       type: 'array',
-      maxItems: 8,
       items: {
         type: 'object',
         additionalProperties: false,
         required: ['statement', 'status'],
         properties: {
-          statement: { type: 'string', maxLength: 500 },
+          statement: { type: 'string' },
           status: { type: 'string', const: 'HYPOTHESIS' },
         },
       },
@@ -105,8 +104,8 @@ const DEEP_JUDGE_ALTERNATIVE_SCHEMA: Readonly<Record<string, unknown>> = Object.
   additionalProperties: false,
   required: ['title', 'description'],
   properties: {
-    title: { type: 'string', maxLength: 160 },
-    description: { type: 'string', maxLength: 800 },
+    title: { type: 'string' },
+    description: { type: 'string' },
   },
 })
 
@@ -116,8 +115,8 @@ export const DEEP_JUDGE_OUTPUT_SCHEMA: Readonly<Record<string, unknown>> = Objec
   required: ['schemaVersion', 'results'],
   properties: {
     schemaVersion: { type: 'integer', const: 1 },
-    results: { type: 'array', minItems: 1, maxItems: 4, items: DEEP_JUDGE_RESULT_SCHEMA },
-    suggestedAlternatives: { type: 'array', maxItems: 3, items: DEEP_JUDGE_ALTERNATIVE_SCHEMA },
+    results: { type: 'array', items: DEEP_JUDGE_RESULT_SCHEMA },
+    suggestedAlternatives: { type: 'array', items: DEEP_JUDGE_ALTERNATIVE_SCHEMA },
   },
 })
 
@@ -236,7 +235,7 @@ export async function executeDeepJudge(
     const request: DeepJudgeSubagentStartRequestLike = {
       parent,
       label: 'Risk Advisor Deep Judge',
-      prompt: payload,
+      prompt: [{ type: 'text', text: payload }],
       signal: controller.signal,
       agentOptions: {
         maxTokens: config.maxTokens,

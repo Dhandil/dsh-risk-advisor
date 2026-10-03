@@ -9,7 +9,18 @@ function mockRuntime(result, calls, disposals, stopReason = 'completed') {
   return {
     getProvider: name => name === 'spawn' ? { name: 'spawn', capabilities, inheritsParentContext: false } : undefined,
     start: async (_name, request) => {
-      calls.push({ maxDepth: request.maxDepth, allow: [...request.toolFilter.allow], persona: request.persona, hasSchema: typeof request.outputSchema === 'object' })
+      calls.push({
+        parent: request.parent,
+        label: request.label,
+        prompt: request.prompt,
+        signal: request.signal instanceof AbortSignal,
+        agentOptions: request.agentOptions,
+        outputSchema: request.outputSchema,
+        hasSchema: typeof request.outputSchema === 'object',
+        maxDepth: request.maxDepth,
+        allow: [...request.toolFilter.allow],
+        persona: request.persona,
+      })
       return { result: Promise.resolve({ structured: result, stopReason }), dispose: async () => { disposals.count += 1 } }
     },
   }
@@ -58,7 +69,7 @@ async function runCoordinatorProductPath() {
   await new Promise(resolve => setTimeout(resolve, 25))
   const latest = coordinator.diagnostics.getLatestForApproval(session, 'p9-benchmark-approval')
   const view = latest === undefined ? undefined : coordinator.queryOpenPresentationByAssessmentId(latest.assessmentId)
-  const payload = calls[0] === undefined ? undefined : JSON.parse(calls[0].prompt)
+  const payload = calls[0] === undefined ? undefined : JSON.parse(calls[0].prompt[0].text)
   await coordinator.dispose()
   return {
     materialEvidenceRequired: latest?.provenance.evidence?.status === 'COMPLETE',
@@ -66,6 +77,7 @@ async function runCoordinatorProductPath() {
     a4SupersedesA3: latest?.supersedesAssessmentId !== undefined,
     evidencePreserved: latest?.contextId === `ra-context-evidence-benchmark-${executionId}` && latest.uncertainties.some(item => item.code === 'CANONICAL_TARGETS_UNAVAILABLE') === false,
     requestIsolation: calls[0] !== undefined && calls[0].maxDepth === 1 && calls[0].toolFilter.allow.length === 0,
+    promptWireShape: calls[0] !== undefined && calls[0].prompt.length === 1 && calls[0].prompt[0].type === 'text' && typeof calls[0].prompt[0].text === 'string',
     payloadOverlayMatches: payload?.features?.some(item => item.id === 'scope.canonicalTargetsKnown' && item.value === true) === true,
     disposalCount: disposals,
     browserStage: view?.kind === 'VIEW' ? view.view.stage : 'unknown',
@@ -86,11 +98,15 @@ export async function main({ smoke = true } = {}) {
     const { executeDeepJudge, normalizeDeepJudgeConfig } = await import('../src/host/deep-judge.ts')
     const { DeepJudgeScheduler } = await import('../src/host/deep-judge-scheduler.ts')
     const { parseBridgeRead } = await import('../src/bridge-contract.ts')
+    const { assertObjectJsonSchema, validateJsonSchemaValue } = await import('@deepseek-ai/dsh-tools')
     const config = normalizeDeepJudgeConfig({ enabled: true, isolationMode: 'trusted-parent-composition', timeoutMs: 25, maxConcurrentJudges: 1, maxPendingJudges: 2, maxTokens: 128 })
     const valid = await executeDeepJudge(mockRuntime(result, calls, disposals), { session: 'local-mock-parent' }, JSON.stringify({ bounded: true }), ['AUTHORIZATION', 'NECESSITY'], new Set(['authorization.goalKnown']), config, new AbortController().signal)
     const partial = await executeDeepJudge(mockRuntime(result, [], { count: 0 }, 'max-tokens'), { session: 'local-mock-parent' }, JSON.stringify({ bounded: true }), ['AUTHORIZATION', 'NECESSITY'], new Set(['authorization.goalKnown']), config, new AbortController().signal)
     const productPath = await runCoordinatorProductPath()
     const browserDeep = parseBridgeRead({ kind: 'VIEW', view: { schemaVersion: 4, sessionId: 's', callId: 'c', association: 'BOUND', status: 'pending', stage: 'deep', reasonCodes: [], updatedAt: 1 } })
+    assertObjectJsonSchema(calls[0].outputSchema)
+    const schemaErrors = validateJsonSchemaValue(calls[0].outputSchema, result)
+    const promptWireShape = calls[0].prompt.length === 1 && calls[0].prompt[0].type === 'text' && calls[0].prompt[0].text === JSON.stringify({ bounded: true })
 
     const timeoutScheduler = new DeepJudgeScheduler(1, 1)
     const timeoutGate = deferred()
@@ -135,7 +151,7 @@ export async function main({ smoke = true } = {}) {
     const output = {
       run: { benchmark: 'R5_PHASE9_LOCAL_DEEP_JUDGE', mode: smoke ? 'SMOKE' : 'FULL', samples: smoke ? 1 : 2, labels: ['LOCAL_REVIEWER_ONLY', 'EXTERNAL_PROVIDER_NOT_USED', 'NETWORK_NOT_USED', 'REGISTRY_NOT_USED', 'GIT_REMOTE_NOT_USED'], realProductExecution: true, elapsedMs: performance.now() - started },
       trigger: { executed: true, a4CandidateValidated: valid.ok, candidateDimensions: valid.candidate?.results.map(item => item.dimension) ?? [], alternativeVerification: valid.candidate?.suggestedAlternatives.length === 1 ? 'UNVERIFIED' : 'NONE', nonCompletedRejected: partial.ok === false && partial.failure === 'DEEP_JUDGE_RESULT_FAILED', productPath },
-      request: calls[0],
+      request: { ...calls[0], schemaErrors, promptWireShape },
       lifecycle: { timeout: timeout.failure === 'DEEP_JUDGE_NATIVE_DECISION' ? 'CANCELLED' : timeout.failure, runDisposals: disposals.count, browserStage: browserDeep?.kind === 'VIEW' && browserDeep.view.schemaVersion === 4 && browserDeep.view.stage === 'deep' ? 'deep' : 'UNKNOWN' },
       saturation: { maxConcurrent: 1, pendingBound: 2, saturated: saturation.filter(item => item.ok === false).length },
       timeoutOwnership: { logicalTimeout: lateResult.failure, heldSlot, queuedBeforeDrain: queuedBeforeDrain !== undefined, queuedAfterDrain: queuedAfterDrain.ok, lateDisposed },

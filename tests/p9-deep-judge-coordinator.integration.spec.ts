@@ -62,8 +62,8 @@ describe('Phase 9 A4 coordinator path', () => {
     expect(latest.supersedesAssessmentId).toBeDefined()
     expect(latest.dimensions.authorization.verdict).toBe('EXPLICITLY_AUTHORIZED')
     expect(latest.alternatives).toHaveLength(0)
-    expect(requests[0]).toMatchObject({ maxDepth: 1, toolFilter: { allow: [] } })
-    const deepPayload = JSON.parse(requests[0]!.prompt) as { readonly features: readonly { readonly id: string; readonly value: unknown }[] }
+    expect(requests[0]).toMatchObject({ maxDepth: 1, toolFilter: { allow: [] }, prompt: [{ type: 'text', text: expect.any(String) }] })
+    const deepPayload = JSON.parse(requests[0]!.prompt[0]!.text) as { readonly features: readonly { readonly id: string; readonly value: unknown }[] }
     expect(deepPayload.features).toContainEqual(expect.objectContaining({ id: 'scope.canonicalTargetsKnown', value: true }))
     expect(latest.contextId).toBe('ra-context-evidence-evidence-p9')
     expect(latest.evidence.featureIds).toContain('scope.canonicalTargetsKnown')

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { assertObjectJsonSchema, validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 import { DEEP_JUDGE_OUTPUT_SCHEMA, normalizeDeepJudgeConfig, parseDeepJudgeCandidate, requestedDeepJudgeDimensions } from '../src/host/deep-judge.ts'
 import { getSubagentsCapability, preflightDeepJudgeProvider, type DeepJudgeSubagentRunLike } from '../src/host/deep-judge-subagent.ts'
 import { DeepJudgeParentBindingStore } from '../src/host/deep-judge-parent.ts'
@@ -12,23 +13,10 @@ function candidate(dimension = 'AUTHORIZATION'): Record<string, unknown> {
   }
 }
 
-function conforms(value: unknown, schema: Record<string, any>): boolean {
-  if (schema.const !== undefined && value !== schema.const) return false
-  if (schema.enum !== undefined && (!Array.isArray(schema.enum) || !schema.enum.includes(value))) return false
-  if (schema.type === 'integer') return Number.isSafeInteger(value)
-  if (schema.type === 'string') return typeof value === 'string' && (schema.maxLength === undefined || value.length <= schema.maxLength)
-  if (schema.type === 'array') {
-    if (!Array.isArray(value) || (schema.minItems !== undefined && value.length < schema.minItems) || (schema.maxItems !== undefined && value.length > schema.maxItems)) return false
-    return schema.items === undefined || value.every(item => conforms(item, schema.items))
-  }
-  if (schema.type === 'object') {
-    if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
-    const record = value as Record<string, unknown>
-    if ((schema.required ?? []).some((key: string) => !Object.hasOwn(record, key))) return false
-    if (schema.additionalProperties === false && Object.keys(record).some(key => !Object.hasOwn(schema.properties ?? {}, key))) return false
-    return Object.entries(record).every(([key, item]) => schema.properties?.[key] === undefined || conforms(item, schema.properties[key]))
-  }
-  return schema.type === undefined
+function schemaKeys(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap(schemaKeys)
+  if (value === null || typeof value !== 'object') return []
+  return Object.entries(value).flatMap(([key, child]) => [key, ...schemaKeys(child)])
 }
 
 describe('Phase 9 dependency recovery seam and config', () => {
@@ -68,15 +56,17 @@ describe('Phase 9 dependency recovery seam and config', () => {
     expect(() => parseDeepJudgeCandidate({ ...candidate(), results: [{ ...candidate().results[0], referencedFeatureIds: ['unknown'] }] }, ['AUTHORIZATION'], new Set(['authorization.goalKnown']))).toThrow()
   })
 
-  it('emits a complete frozen schema and proves valid/extra-field shapes', () => {
-    expect(conforms(candidate(), DEEP_JUDGE_OUTPUT_SCHEMA)).toBe(true)
-    expect(conforms({ ...candidate(), extra: true }, DEEP_JUDGE_OUTPUT_SCHEMA)).toBe(false)
+  it('matches the pinned public JSON-schema contract without unsupported keywords', () => {
+    expect(() => assertObjectJsonSchema(DEEP_JUDGE_OUTPUT_SCHEMA)).not.toThrow()
+    expect(validateJsonSchemaValue(DEEP_JUDGE_OUTPUT_SCHEMA, candidate())).toEqual([])
+    expect(validateJsonSchemaValue(DEEP_JUDGE_OUTPUT_SCHEMA, { ...candidate(), extra: true })).not.toEqual([])
     const extraResult = candidate()
     extraResult.results = [{ ...(extraResult.results as any[])[0], extra: true }]
-    expect(conforms(extraResult, DEEP_JUDGE_OUTPUT_SCHEMA)).toBe(false)
+    expect(validateJsonSchemaValue(DEEP_JUDGE_OUTPUT_SCHEMA, extraResult)).not.toEqual([])
     const malformedFact = candidate()
     malformedFact.results = [{ ...(malformedFact.results as any[])[0], proposedFacts: [{ statement: 'x', status: 'HYPOTHESIS', extra: true }] }]
-    expect(conforms(malformedFact, DEEP_JUDGE_OUTPUT_SCHEMA)).toBe(false)
+    expect(validateJsonSchemaValue(DEEP_JUDGE_OUTPUT_SCHEMA, malformedFact)).not.toEqual([])
+    expect(schemaKeys(DEEP_JUDGE_OUTPUT_SCHEMA)).not.toEqual(expect.arrayContaining(['minItems', 'maxItems', 'minLength', 'maxLength', 'pattern', 'format', 'minimum', 'maximum']))
   })
 
   it('shares Phase-8 materiality rather than treating collection status as evidence', () => {
