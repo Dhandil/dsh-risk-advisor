@@ -2,20 +2,58 @@
 
 ## Outcome
 
-`PHASE10_R2_PUBLISHED_READY_FOR_REVIEW`
+`PHASE10_R3_PUBLISHED_READY_FOR_REVIEW`
 
 This is Codex implementation and execution evidence only. It is not an
 Acceptance Report and does not declare `PHASE10_ACCEPTED`.
 
 ## Identity and governance
 
-- Synchronized starting baseline: `6232e0cacf41b201d503bf0c7143d03b9678a9f3`.
-- Implementation / Tested SHA: `01a26b2e14cf7c5ec4102dd4d70b6550f2b1d036`.
+- Synchronized starting baseline: `6c7edec254d77658ba6fa157034a646913812350`.
+- Implementation / Tested SHA: `a911b325b7282576ce7b4bba4014ed0205289cb3`.
 - Harness reference: `deepseek-ai/deepseek-harness @ ddefc45fbc7f8e46dd73185e68295696d1297887`.
 - Harness Core was read-only; no later product phase was started.
 - Existing user drift was preserved and excluded from commits: `.vitest-cache/`,
   `docs/risk-advisor-current/`, historical instruction/design files, `lib/`,
   `node_modules/`, and `pnpm-lock.yaml`.
+
+## R3 real plugin lifecycle and HMR proof
+
+PASS. The no-op Risk Advisor disposer was removed. The dispose-before-answer
+proof now mounts the real package `apply()` through a Cordis child fiber,
+verifies its scoped services are unavailable after `await riskFiber.dispose()`,
+then resolves the real pinned Native Approval path. The native result remains
+`allowed-once`, the separate fixture answerer is called exactly once, and no
+late RA publication is observable.
+
+PASS. Actual package timeout/failure coexistence uses the real child plugin
+fiber, real `LlmRuntime`, deterministic local adapter, pinned
+`ApprovalService`, and separate native answerer. The component fixture supplies
+only a bounded healthy `LedgerDiagnostics` seam so the reviewer path can run
+while the native approval is intentionally pending; production live-ledger
+degradation semantics are unchanged. Held reviewer timeout and throwing
+reviewer failure both start through the actual package Fast Judge seam; native
+completion remains independent, exactly one native answerer is observed, and
+late held release cannot publish after close/disposal.
+
+PASS. Host HMR is `3/3`: one persistent root Context mounts and disposes the
+actual Risk Advisor child fiber three times. Each cycle performs a bounded
+tool/native-approval traversal and produces one current-generation observation.
+The public `RISK_ADVISOR_RPC_CHANNEL` fixture observed maximum simultaneous
+handlers `1`, exactly `1` after each mount, and `0` after each dispose. Old
+correlation/assessment diagnostics remained empty after disposal and did not
+observe later-generation work; old adapters received no remount requests.
+
+PASS. Held-work Host HMR keeps a deterministic local reviewer stream owned by
+the actual Risk Advisor fiber. Disposal does not report complete until the
+held work is released and drained; the remounted generation registers a fresh
+bridge handler and is independent of the old generation.
+
+PASS. Client slot HMR is `3/3`: the actual client plugin/fiber contributes
+exactly one Risk Advisor detail entry, disposal restores the native detail,
+leaves zero Risk Advisor entries, and the native Allow-once button remains
+usable after every cycle. Slot entry count never grows and each cycle uses a
+fresh session/call binding.
 
 ## R2 proof-fidelity repairs
 
@@ -91,7 +129,7 @@ measurements. External provider latency remains
 
 ## Validation matrix
 
-All affected and inherited gates passed: P10 focused (10 files / 31 tests),
+All affected and inherited gates passed: P10 focused (12 files / 35 tests),
 P5 (4 / 23), P8 (5 / 21), P9 (6 / 20), typecheck, build, Host/Client export,
 declaration/root-export audit, pack, diff check, scope/privacy/no-network/
 no-provider/no-registry/no-Git-remote checks, no custom Risk Advisor Session
@@ -100,15 +138,15 @@ and AppReady cold-start gates passed.
 
 The fresh complete run also passed every inherited group: R1 2/9, R2 2/16,
 R3 2/17, R4 2/21, R5 1/3, P1A 2/13, P1B 2/14, P1C 1/8, P2 2/15, P3 2/17,
-P4 2/17, P5 4/23, P6 5/27, P7 6/26, P8 5/21, P9 6/20, and P10 10/31.
+P4 2/17, P5 4/23, P6 5/27, P7 6/26, P8 5/21, P9 6/20, and P10 12/35.
 
 ## Fresh complete Full
 
-Exactly one fresh complete `pnpm test` ran on the exact Tested SHA
-`01a26b2e14cf7c5ec4102dd4d70b6550f2b1d036`, after the executable/test/config/
-package/benchmark candidate was committed. Result: PASS — 17 scripted groups,
-56 test files, 298 tests. No intended tracked drift was present before Full;
-after Full, only this `Execution_Report.md` is changed.
+Exactly one final fresh complete `pnpm test` ran on the exact Tested SHA
+`a911b325b7282576ce7b4bba4014ed0205289cb3`, after the final
+executable/test/config/package candidate was committed. Result: PASS — 17
+scripted groups, 58 test files, 302 tests. No intended tracked drift was
+present before Full; after Full, only this `Execution_Report.md` is changed.
 
 ## External activity and handoff
 
