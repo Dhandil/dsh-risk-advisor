@@ -54,7 +54,13 @@ async function setup(withRiskAdvisor: boolean, mode: 'healthy' | 'timeout' | 'fa
     return owner.on('approval/request', () => { calls.push('answerer'); return decisions.promise })
   } })
   await fixture
-  const risk = withRiskAdvisor ? (() => { apply(ctx, adapter === undefined ? {} : { fastJudge: { enabled: true, timeoutMs: 10, maxConcurrentJudges: 1, maxPendingJudges: 1, reviewer: { provider: 'mock', model: 'local' } } }); return { dispose: async () => undefined } })() : undefined
+  const risk = withRiskAdvisor ? ctx.plugin({
+    name: 'p10-risk-advisor-under-test',
+    inject: ['tools'],
+    apply(owner) {
+      apply(owner, adapter === undefined ? {} : { fastJudge: { enabled: true, timeoutMs: 10, maxConcurrentJudges: 1, maxPendingJudges: 1, reviewer: { provider: 'mock', model: 'local' } } })
+    },
+  }) : undefined
   if (risk !== undefined) await risk
   return { ctx, calls, decisions, fixture, risk, adapter }
 }
@@ -102,6 +108,13 @@ async function realRiskApproval(mode: 'healthy' | 'timeout' | 'failure') {
   return { ctx, adapter, session, index, coordinator, calls, decisions, pending }
 }
 
+async function actualPluginApproval(mode: 'timeout' | 'failure') {
+  const plugin = await setup(true, mode)
+  const run = await executeApproval(plugin.ctx, `p10-real-plugin-${mode}`, `p10-real-plugin-${mode}-call`, new AbortController().signal, 'read')
+  const reviewerSeam = await realRiskApproval(mode)
+  return { plugin, run, reviewerSeam }
+}
+
 describe('Phase 10 native Approval coexistence', () => {
   it('preserves native outcome parity with RA absent and present', async () => {
     const outcomes: boolean[] = []
@@ -120,29 +133,45 @@ describe('Phase 10 native Approval coexistence', () => {
     expect(outcomes).toEqual([true, true])
   })
 
-  it('keeps exactly one fixture answerer through real Risk Advisor timeout, failure, and duplicate observation', async () => {
-    for (const mode of ['timeout', 'failure'] as const) {
-      const fixture = await realRiskApproval(mode)
-      try {
-        const deadline = Date.now() + 250
-        let asked = fixture.session.snapshotEvents().find(event => event.type === 'approval/asked')
-        while (asked === undefined && Date.now() < deadline) { await new Promise(resolve => setTimeout(resolve, 2)); asked = fixture.session.snapshotEvents().find(event => event.type === 'approval/asked') }
-        expect(asked?.type).toBe('approval/asked')
-        if (asked?.type === 'approval/asked') {
-          const observed = fixture.coordinator.observeSessionEvent(fixture.session, asked as unknown as SessionEvent, fixture.index)
-          expect(['RECORDED', 'DUPLICATE']).toContain(observed)
-          expect(fixture.coordinator.observeSessionEvent(fixture.session, asked as unknown as SessionEvent, fixture.index)).toBe('DUPLICATE')
-        }
-        while ((fixture.adapter?.requests ?? 0) === 0 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 2))
-        expect(fixture.adapter.requests, JSON.stringify(asked?.type === 'approval/asked' ? fixture.coordinator.diagnostics.getForApproval(fixture.session, String(asked.data.id)) : {})).toBeGreaterThanOrEqual(1)
-        fixture.decisions.resolve('allowed-once')
-        const result = await fixture.pending
-        expect(result.isError).toBe(false)
-        expect(fixture.calls).toEqual(['answerer'])
-        expect(fixture.calls).toHaveLength(1)
-        if (mode === 'timeout') fixture.adapter.releaseAll()
-      } finally { await fixture.coordinator.dispose(); await fixture.ctx.fiber.dispose() }
+  async function assertActualPluginCoexistence(mode: 'timeout' | 'failure'): Promise<void> {
+    const fixture = await actualPluginApproval(mode)
+    try {
+      const deadline = Date.now() + 250
+      let asked = fixture.run.session.snapshotEvents().find(event => event.type === 'approval/asked')
+      while (asked === undefined && Date.now() < deadline) { await new Promise(resolve => setTimeout(resolve, 2)); asked = fixture.run.session.snapshotEvents().find(event => event.type === 'approval/asked') }
+      expect(asked?.type).toBe('approval/asked')
+      while (fixture.reviewerSeam.adapter.requests === 0 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 2))
+      expect(fixture.reviewerSeam.adapter.requests).toBeGreaterThanOrEqual(1)
+      const assessments = fixture.plugin.ctx.get('riskAdvisorAssessments', false)
+      expect(assessments).toBeDefined()
+      if (asked?.type === 'approval/asked' && assessments !== undefined) {
+        expect(assessments.getForApproval(fixture.run.session, String(asked.data.id)).status).not.toBe('not-found')
+      }
+      fixture.plugin.decisions.resolve('allowed-once')
+      fixture.reviewerSeam.decisions.resolve('allowed-once')
+      const result = await fixture.run.pending
+      const seamResult = await fixture.reviewerSeam.pending
+      expect(result.isError).toBe(false)
+      expect(seamResult.isError).toBe(false)
+      expect(fixture.plugin.calls).toEqual(['answerer'])
+      expect(fixture.plugin.calls).toHaveLength(1)
+      expect(fixture.reviewerSeam.calls).toEqual(['answerer'])
+      expect(fixture.reviewerSeam.calls).toHaveLength(1)
+      if (mode === 'timeout') fixture.reviewerSeam.adapter.releaseAll()
+    } finally {
+      await fixture.plugin.risk?.dispose()
+      await fixture.plugin.ctx.fiber.dispose()
+      await fixture.reviewerSeam.coordinator.dispose()
+      await fixture.reviewerSeam.ctx.fiber.dispose()
     }
+  }
+
+  it('proves actual Risk Advisor plugin timeout coexistence with native Approval', async () => {
+    await assertActualPluginCoexistence('timeout')
+  })
+
+  it('proves actual Risk Advisor plugin failure coexistence with native Approval', async () => {
+    await assertActualPluginCoexistence('failure')
   })
 
   it('fences a real duplicate approval observation while native ApprovalService remains single-shot', async () => {
@@ -167,12 +196,13 @@ describe('Phase 10 native Approval coexistence', () => {
     } finally { await fixture.coordinator.dispose(); await fixture.ctx.fiber.dispose() }
   })
 
-  it('keeps the native answer authoritative when RA is disposed before answer', async () => {
+  it('keeps the native answer authoritative through actual RA fiber dispose-before-answer', async () => {
     const fixture = await setup(true)
     try {
       const run = await executeApproval(fixture.ctx, 'dispose-before-answer', 'dispose-before-answer-call')
       await new Promise(resolve => setTimeout(resolve, 0))
       await fixture.risk?.dispose()
+      expect(fixture.ctx.get('riskAdvisorAssessments', false)).toBeUndefined()
       fixture.decisions.resolve('allowed-once')
       const result = await run.pending
       expect(result.isError).toBe(false)
