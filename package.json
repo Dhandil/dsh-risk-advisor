@@ -75,6 +75,7 @@
     "bench:r5:p10:smoke": "pnpm run build && vitest run --config vitest.config.ts tests/r5-phase10-benchmark-smoke.spec.ts",
     "bench:r5:p10": "pnpm run build && vitest run --config vitest.config.ts tests/r5-phase10-benchmark-full.spec.ts",
     "gate:p10:cold": "pnpm run build && node benchmarks/phase10-cold-start.mjs",
+    "gate:v1:release": "pnpm run build && node benchmarks/v1-release-candidate.mjs && vitest run --config vitest.config.ts tests/v1-release-candidate.spec.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "license": "MIT",

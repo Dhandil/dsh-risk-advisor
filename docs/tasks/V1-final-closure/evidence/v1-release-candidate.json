@@ -1,0 +1,41 @@
+{
+  "schema": "dsh-risk-advisor.v1.final-closure.release-candidate.v1",
+  "evidenceClass": "REAL_PINNED_INSTALLED_PROFILE",
+  "harnessSha": "ddefc45fbc7f8e46dd73185e68295696d1297887",
+  "productExecutableSha": "1fa84e2a8a9de465cdb85fef928ec9e19086bba2",
+  "productExecutableStatus": "PRODUCT_EXECUTABLE_UNCHANGED_FROM_PHASE10",
+  "profileIdentity": "phase10",
+  "processA": {
+    "appReady": true,
+    "naturalExit": true,
+    "riskAdvisorBundleCount": 1,
+    "probeBundleCount": 1
+  },
+  "processB": {
+    "appReady": true,
+    "naturalExit": true,
+    "schema": "dsh-risk-advisor.v1.release-candidate.process-b.v1",
+    "toolTraversals": 1,
+    "approvalAskedCount": 1,
+    "nativeAnswererCalls": 1,
+    "nativeOutcome": "allowed-once",
+    "riskAdvisorAssessmentPresent": true,
+    "riskAdvisorAssociation": "BOUND",
+    "riskAdvisorApprovalAnswererCalls": 0,
+    "riskAdvisorApprovalOutcomeReturns": 0,
+    "duplicateNativeAnswers": 0,
+    "toolCompletedSuccessfully": true,
+    "noLateAdvisoryReopen": true
+  },
+  "external": {
+    "providerCalls": 0,
+    "externalNetworkCalls": 0,
+    "registryCalls": 0,
+    "gitRemoteCalls": 0,
+    "harnessTrackedMutation": 0,
+    "userProfileMutation": 0
+  },
+  "browserDeployment": "DEPLOYED_INTERACTIVE_BROWSER_NOT_RUN",
+  "externalProviderLatency": "NOT_VALIDATED_EXTERNAL_PROVIDER",
+  "realConcreteSubagentSpawn": "NOT_RUN"
+}
