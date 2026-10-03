@@ -2,15 +2,15 @@
 
 ## Outcome
 
-`PHASE9_REPAIR_PUBLISHED_READY_FOR_REVIEW`
+`PHASE9_REPAIR2_PUBLISHED_READY_FOR_REVIEW`
 
 Codex implementation and execution evidence are complete. This is not an acceptance report and does not declare `PHASE9_ACCEPTED`.
 
 ## Baselines and dependency recovery
 
-- Plugin start and confirmed remote baseline: `6e4e6a50ac8fc4d6b0413f64bf887cb002191fe1`.
-- Previous Tested SHA: `9948e416b52544c59c24a35c441874d52df4b906`.
-- Repair Implementation/Tested SHA: `25cb8b60f0164b350cf289b22a46dade9d75bc87`.
+- Plugin start and confirmed remote baseline for this repair: `fa7676d83942b0743a1fee3a5fc2e8e8b8edfb52`.
+- Previous Repair Tested SHA: `25cb8b60f0164b350cf289b22a46dade9d75bc87`.
+- Repair 2 Implementation/Tested SHA: `45115742be6ad93e58eb8f9967f5b176ff67cc9c`.
 - Recovery Amendment: `820fabd27aa99c5ff79142b9662a89c3479a7637`.
 - Frozen Harness reference: `deepseek-ai/deepseek-harness @ ddefc45fbc7f8e46dd73185e68295696d1297887`.
 - Original stop condition was `PHASE9_DEPENDENCY_UNAVAILABLE`; the Recovery Amendment authorizes the optional runtime capability plus internal structural adapter.
@@ -29,7 +29,8 @@ The adapter is host-private and uses an erased optional lookup of `ctx.get('suba
 - Deep Judge only fills eligible `UNKNOWN` semantic dimensions. Deterministic facts, evidence facts, authorization, necessity, and existing hazards are preserved. Suggestions remain `MODEL_SUGGESTED` / `UNVERIFIED`; the host performs the deterministic A4 merge.
 - Payloads are bounded and sanitized; raw operation paths, content, package/branch data, transcripts, tool details, and provider diagnostics are not retained or surfaced.
 - Bridge V4 adds `rules | fast | evidence | deep | complete`; the client polls the deep stage and preserves V1/V2/V3 behavior.
-- The emitted Deep Judge schema now describes every candidate object explicitly: required properties, bounded arrays/strings, hypothesis status, and `additionalProperties: false` at every object level. Host-side strict validation remains authoritative.
+- The emitted Deep Judge schema now uses only the pinned public JSON-schema subset (`type`, `oneOf`, `properties`, `required`, `additionalProperties`, `items`, `enum`, and `const`), with explicit candidate object shapes and `additionalProperties: false` at every object level. Host-side strict validation retains all semantic array/string bounds and remains authoritative.
+- Deep Judge start requests use the pinned public `ContentBlock[]` seam: exactly one `{ type: 'text', text: serializedPayload }` block, with no persona or dynamic extra prompt content.
 - Only `stopReason === 'completed'` can produce a candidate. Non-completed structured output and disposal failure fail closed.
 - Phase-8 materiality is one shared fact-resolution predicate used by A3 and the Phase-9 trigger; collection status alone cannot trigger Deep Judge.
 - Deep Judge payloads use the Phase-8 evidence overlay. A4 starts from A3, preserves evidence findings/summary and non-semantic uncertainties, removes only filled semantic UNKNOWN uncertainty, and updates only the derived Judge count.
@@ -40,7 +41,8 @@ The adapter is host-private and uses an erased optional lookup of `ctx.get('suba
 All pre-Full gates passed in the required order:
 
 - Phase 9 focused: 6 files / 20 tests PASS.
-- Phase 9 schema proof: valid frozen candidate PASS; root/result/fact/alternative extra-field and malformed-shape proofs PASS.
+- Phase 9 public-schema-contract proof: real pinned `assertObjectJsonSchema()` accepted the provider schema; `validateJsonSchemaValue()` accepted the valid candidate and rejected root/result/fact extra fields; forbidden-key static walk PASS.
+- Phase 9 prompt wire proof: real structural request captured exact single text `ContentBlock[]`, bounded payload text, static persona, `maxDepth: 1`, and `toolFilter.allow: []`.
 - Phase 9 lifecycle proof: non-completed result, dispose failure, abort-ignoring late start, queued-slot fencing, materiality gating, A3 evidence overlay, and subagents generation replacement PASS.
 - Phase 9 benchmark smoke and full: PASS with local deterministic mock reviewer; no real provider.
 - Phase 9 benchmark traversed Evidence → deep trigger → structural runtime → completed structured result → disposal → A4 → complete Browser lifecycle; it also proved non-completed rejection and late-start queue ownership.
@@ -79,7 +81,7 @@ After all executable/source/test/config/package/benchmark changes were committed
 
 ## Publication chronology
 
-The repaired executable implementation was committed as `25cb8b60f0164b350cf289b22a46dade9d75bc87`, then the fresh complete regression was run on that exact SHA. This report is the only post-Full change and is published as a docs-only commit; the final report commit SHA and `origin/main` SHA are recorded in the publication verification below.
+The repaired executable implementation was committed as `45115742be6ad93e58eb8f9967f5b176ff67cc9c`, then the fresh complete regression was run on that exact SHA. This report is the only post-Full change and is published as a docs-only commit; the final report commit SHA and `origin/main` SHA are recorded in the publication verification below.
 
 ## Publication verification
 
