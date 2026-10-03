@@ -5,9 +5,27 @@ import SessionStore from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ApprovalService from '@deepseek-ai/dsh-user-approval'
 import ToolRuntime, { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { apply } from '../src/index.ts'
 import { RISK_ADVISOR_RPC_CHANNEL } from '../src/bridge-contract.ts'
+import type { LedgerDiagnostics } from '../src/host/ledger.ts'
+
+vi.mock('../src/host/ledger.ts', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/host/ledger.ts')>()
+  return {
+    ...actual,
+    installLedger(ctx: Context): LedgerDiagnostics {
+      const diagnostics = {
+        snapshot: (session: { readonly id: unknown; readonly seq: number }) => ({
+          sessionId: String(session.id), health: 'HEALTHY' as const, sourceWatermark: session.seq - 1,
+          sourceComplete: true, truncated: false, issues: [], executions: [], approvals: [],
+        }),
+      } as unknown as LedgerDiagnostics
+      ctx.provide('riskAdvisorLedger', diagnostics)
+      return diagnostics
+    },
+  }
+})
 
 class RpcFixture {
   readonly active = new Map<symbol, { readonly channel: string; readonly handler: unknown }>()
@@ -84,6 +102,7 @@ describe('Phase 10 actual Host Risk Advisor fiber HMR', () => {
     let previousCorrelation: ReturnType<typeof ctx.get<'riskAdvisorCorrelation'>> | undefined
     let previousAssessments: ReturnType<typeof ctx.get<'riskAdvisorAssessments'>> | undefined
     let previousAdapter: CycleAdapter | undefined
+    let previousAdapterRequests = 0
     for (let cycle = 1; cycle <= 3; cycle += 1) {
       const adapter = new CycleAdapter(false)
       ctx.llm.registerAdapter([`p10-hmr-${cycle}`], adapter)
@@ -113,6 +132,7 @@ describe('Phase 10 actual Host Risk Advisor fiber HMR', () => {
       })
       expect(result.isError).toBe(false)
       expect(answerCount).toBe(cycle)
+      expect(adapter.requests).toBeGreaterThanOrEqual(1)
 
       const correlation = fiber.ctx.get('riskAdvisorCorrelation')
       const assessments = fiber.ctx.get('riskAdvisorAssessments')
@@ -120,11 +140,12 @@ describe('Phase 10 actual Host Risk Advisor fiber HMR', () => {
       expect(assessments.getIssueSummary().orphanDecisions).toBe(0)
       if (previousCorrelation !== undefined) expect(previousCorrelation.snapshotObservations()).toHaveLength(0)
       if (previousAssessments !== undefined) expect(previousAssessments.getIssueSummary().orphanDecisions).toBe(0)
-      if (previousAdapter !== undefined) expect(previousAdapter.requests).toBe(0)
+      if (previousAdapter !== undefined) expect(previousAdapter.requests).toBe(previousAdapterRequests)
 
       previousCorrelation = correlation
       previousAssessments = assessments
       previousAdapter = adapter
+      previousAdapterRequests = adapter.requests
       await fiber.dispose()
       expect(rpc.count(RISK_ADVISOR_RPC_CHANNEL)).toBe(0)
       expect(ctx.get('riskAdvisorAssessments', false)).toBeUndefined()
@@ -163,9 +184,6 @@ describe('Phase 10 actual Host Risk Advisor fiber HMR', () => {
       inject: ['tools'],
       apply(owner) {
         apply(owner, { fastJudge: { enabled: true, timeoutMs: 10, maxConcurrentJudges: 1, maxPendingJudges: 1, reviewer: { provider: 'p10-held-hmr', model: 'local' } } })
-        void (async () => {
-          for await (const _chunk of held.stream({ messages: [], signal: new AbortController().signal } as GenerateOptions)) {}
-        })()
         owner.effect(() => async () => {
           held.release()
           await ownedWork
@@ -173,12 +191,12 @@ describe('Phase 10 actual Host Risk Advisor fiber HMR', () => {
       },
     })
     await first.await()
-    expect(held.requests).toBe(1)
     const session = ctx.sessions.create('p10-held-hmr-session')
     session.append('turn/start', { turn: 1 })
     session.append('user/message', createUserMessage({ content: [{ type: 'text', text: 'Read the held local fixture.' }], source: { kind: 'user' } }), { surfaceOp: 'append' })
-    const result = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId('p10-held-hmr-call'), name: 'read', arguments: {}, agent: { session } as unknown as Agent })
+    const result = await ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId('p10-held-hmr-call'), name: 'read', arguments: { file_path: 'safe.txt' }, agent: { session } as unknown as Agent })
     expect(result.isError).toBe(false)
+    expect(held.requests).toBe(1)
     let disposed = false
     const dispose = first.dispose().then(() => { disposed = true })
     await new Promise(resolve => setTimeout(resolve, 0))
