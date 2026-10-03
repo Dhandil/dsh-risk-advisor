@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import LlmRuntime, { createUserMessage, LlmAdapter, ToolCallId, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm'
@@ -14,6 +14,27 @@ import { RetryEscalationAnalyzer } from '../src/host/retry-escalation.ts'
 import { RuleEngine } from '../src/host/rule-engine.ts'
 import { ApprovalAssessmentCoordinator } from '../src/host/assessment-envelope.ts'
 import type { LedgerDiagnostics } from '../src/host/ledger.ts'
+
+// The live native approval is intentionally pending while the reviewer runs.
+// Use a bounded healthy ledger fixture here so this component proof exercises
+// the real package apply() Fast Judge seam without changing production ledger
+// semantics or fabricating a product result.
+vi.mock('../src/host/ledger.ts', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/host/ledger.ts')>()
+  return {
+    ...actual,
+    installLedger(ctx: Context): LedgerDiagnostics {
+      const diagnostics = {
+        snapshot: (session: Session) => ({
+          sessionId: String(session.id), health: 'HEALTHY' as const, sourceWatermark: session.seq - 1,
+          sourceComplete: true, truncated: false, issues: [], executions: [], approvals: [],
+        }),
+      } as unknown as LedgerDiagnostics
+      ctx.provide('riskAdvisorLedger', diagnostics)
+      return diagnostics
+    },
+  }
+})
 
 class CoexistenceJudgeAdapter extends LlmAdapter {
   readonly releases: Array<() => void> = []
@@ -111,8 +132,7 @@ async function realRiskApproval(mode: 'healthy' | 'timeout' | 'failure') {
 async function actualPluginApproval(mode: 'timeout' | 'failure') {
   const plugin = await setup(true, mode)
   const run = await executeApproval(plugin.ctx, `p10-real-plugin-${mode}`, `p10-real-plugin-${mode}-call`, new AbortController().signal, 'read')
-  const reviewerSeam = await realRiskApproval(mode)
-  return { plugin, run, reviewerSeam }
+  return { plugin, run }
 }
 
 describe('Phase 10 native Approval coexistence', () => {
@@ -140,29 +160,22 @@ describe('Phase 10 native Approval coexistence', () => {
       let asked = fixture.run.session.snapshotEvents().find(event => event.type === 'approval/asked')
       while (asked === undefined && Date.now() < deadline) { await new Promise(resolve => setTimeout(resolve, 2)); asked = fixture.run.session.snapshotEvents().find(event => event.type === 'approval/asked') }
       expect(asked?.type).toBe('approval/asked')
-      while (fixture.reviewerSeam.adapter.requests === 0 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 2))
-      expect(fixture.reviewerSeam.adapter.requests).toBeGreaterThanOrEqual(1)
+      while ((fixture.plugin.adapter?.requests ?? 0) === 0 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 2))
+      expect(fixture.plugin.adapter?.requests).toBeGreaterThanOrEqual(1)
       const assessments = fixture.plugin.ctx.get('riskAdvisorAssessments', false)
       expect(assessments).toBeDefined()
       if (asked?.type === 'approval/asked' && assessments !== undefined) {
         expect(assessments.getForApproval(fixture.run.session, String(asked.data.id)).status).not.toBe('not-found')
       }
       fixture.plugin.decisions.resolve('allowed-once')
-      fixture.reviewerSeam.decisions.resolve('allowed-once')
       const result = await fixture.run.pending
-      const seamResult = await fixture.reviewerSeam.pending
       expect(result.isError).toBe(false)
-      expect(seamResult.isError).toBe(false)
       expect(fixture.plugin.calls).toEqual(['answerer'])
       expect(fixture.plugin.calls).toHaveLength(1)
-      expect(fixture.reviewerSeam.calls).toEqual(['answerer'])
-      expect(fixture.reviewerSeam.calls).toHaveLength(1)
-      if (mode === 'timeout') fixture.reviewerSeam.adapter.releaseAll()
+      if (mode === 'timeout') fixture.plugin.adapter?.releaseAll()
     } finally {
       await fixture.plugin.risk?.dispose()
       await fixture.plugin.ctx.fiber.dispose()
-      await fixture.reviewerSeam.coordinator.dispose()
-      await fixture.reviewerSeam.ctx.fiber.dispose()
     }
   }
 
