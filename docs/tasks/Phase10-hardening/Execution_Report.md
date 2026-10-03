@@ -2,93 +2,157 @@
 
 ## Outcome
 
-`PHASE10_PUBLISHED_READY_FOR_REVIEW`
+`PHASE10_R1_PUBLISHED_READY_FOR_REVIEW`
 
-Codex implementation and execution report only. This is not an Acceptance Report and does not declare `PHASE10_ACCEPTED`.
+This is Codex implementation and execution evidence only. It is not an
+Acceptance Report and does not declare `PHASE10_ACCEPTED`.
 
 ## Identity and governance
 
-- Start/preflight baseline: `a96147bb0444c2468d895e8354f945d97ec461f2`.
+- Starting synchronized baseline: `487e5b7be6e27736ff41c718a6e6cdd6b431e707`.
 - Harness reference: `deepseek-ai/deepseek-harness @ ddefc45fbc7f8e46dd73185e68295696d1297887`.
+- Candidate / Tested SHA: `d17f844d0c4c377af450d07cce2ec072c1b1efe9`.
+- Final report SHA: the docs-only publication commit containing this report;
+  remote equality is recorded after publication.
 - Harness Core tracked mutation: `0`.
-- Candidate / Tested SHA: `b6e1650bb40a3ba7bdfd0140e23f57e4d827087b`.
-- Final report SHA: the final docs-only commit containing this report; verified against `origin/main` and `git ls-remote` after publication.
-- Phase 11+: not started.
-- Existing untracked user drift was preserved and excluded from the Phase 10 commits (`.vitest-cache/`, historical instruction/design files, `lib/`, `node_modules/`, `pnpm-lock.yaml`).
+- Phase 11+ and later product phases: not started.
+- Existing user drift was preserved and excluded from commits: `.vitest-cache/`,
+  `docs/risk-advisor-current/`, historical instruction/design files, `lib/`,
+  `node_modules/`, and `pnpm-lock.yaml`.
 
-## H1 — shell and semantic hardening
+## R1 hardening proof
 
-PASS. Existing `src/host/shell-analysis.ts` remained the single shell-analysis authority. The P10 focused corpus exercised 7 adversarial forms: chaining, dynamic wrapper, command substitution, encoded PowerShell, environment injection, redirection, and destructive chained semantics. It also exercised 4 inert/segment-local role checks and 3 no-execution sentinel inputs. No corpus command was executed.
+### Shell and semantic corpus
 
-The inherited P4 parser and runtime suites passed. No second parser, RuleFinding code, or Harness change was added.
+PASS. The existing shared `src/host/shell-analysis.ts` / Rule Engine authority
+was reused. The table-driven corpus directly covered `sh -c`, `node -e`,
+`python -c`, `perl -e`, `cmd /c`, PowerShell and `pwsh`, Invoke-Expression/iex,
+PowerShell variable invocation, `find -exec`, `xargs`, `parallel`, backticks,
+newline and semicolon chaining, quoted inert separators, `LD_PRELOAD`,
+`NODE_OPTIONS`, generic environment prefixes, and PowerShell environment
+assignment. Expected dangerous findings, dynamic/degraded cases, and inert
+role-sensitive cases were asserted. No corpus command executed.
 
-## H2 — prompt-injection and privacy hardening
+### Prompt injection and privacy
 
-PASS. A runtime-generated synthetic canary was exercised through ReviewerSeed, DirectUserRing, and Fast Judge candidate surfaces. It was not stored as an exact committed literal and did not appear in sanitized outputs. Malformed duplicate-key/extra-field reviewer output was rejected; malformed credential-bearing URLs failed closed. Fast/Deep paths remain advisory-only, bounded, redacted, and provider-free in ordinary validation.
+PASS. One runtime-generated canary was denied through ReviewerOperationSeed,
+DirectUserContext, real Fast serialization/accepted candidate, Evidence
+projection, Deep payload/accepted candidate, A1/A2/A3/A4, Browser V4 DTO/parser,
+diagnostics, benchmark result, and captured logger surfaces. The benchmark
+recorded 16 bounded serialized surfaces with zero canary, raw-field,
+private-path, and captured-logger matches; the exact canary was not persisted.
+Hostile local Fast/Deep candidates could not lower deterministic/evidence risk,
+add authority, convert hypotheses to facts, or promote alternatives beyond
+`MODEL_SUGGESTED / UNVERIFIED`. Duplicate keys, unknown fields, and malformed
+credential URLs failed closed.
 
-## H3 — retry, semantic, and truthfulness hardening
+### Native Approval coexistence
 
-PASS. The P10 retry matrix proved no correlation across session, target, or unknown-failure boundaries. ExpectedEffect capture remained limited to the frozen local adapters and reused the existing execution identity. Operation hash remains internal; Browser presentation discloses that Evidence was observed before execution and may be stale at execution time.
+PASS. The real pinned `ApprovalService` remained the sole native answerer and
+outcome authority. A separate Cordis fixture fiber proved RA absent/present
+parity, one answerer call, side-path fault/timeout parity, RA disposal before
+answer, fixture answerer removal, remount without duplicates, and duplicate
+approval observation without double answer. No named external approval plugin
+was available without installation: `NAMED_EXTERNAL_APPROVAL_PLUGIN_NOT_AVAILABLE`.
+Risk Advisor registered zero approval answerers and returned zero approval
+outcomes.
 
-## H4 — lifecycle, resource, and coexistence hardening
+### TOCTOU and retained-state matrix
 
-PASS. Focused proof covered verifier timeout ownership, held slots until underlying settlement, bounded pending work, duplicate-key fencing, Evidence disposal, Fast/Deep scheduler disposal, and native ApprovalService coexistence. The real pinned `ApprovalService` remained the sole answerer/outcome authority; the P10 coexistence fixture observed one native answerer call and one native approval event. Inherited P6/P8/P9 lifecycle suites covered replacement, generation fencing, disposal, and late-result behavior.
+PASS. Real evidence-bearing Browser disclosure proves pre-execution Evidence may
+be stale. Private operation identity proof shows equivalent normalized operations
+share a hash while materially different operations do not; public diagnostics and
+Browser surfaces contain neither raw args nor the private hash. The concise proof
+matrix maps ActiveExecutionIndex, OperationFoundation, Ledger/PTC, FailureChain,
+ReviewerSeed, ExpectedEffect, Verification, Evidence raw/sanitized state,
+Assessment records, Deep parent bindings, and Fast/Evidence/Deep queues to their
+executable owner tests, including caps and lifecycle fencing.
 
-Native Approval was not answered, reopened, or mutated by Risk Advisor. No `PendingApproval.answer()`, composer replacement, mutation RPC, hidden Judge/Evidence Tool, or custom Risk Advisor Session event was added.
+## Product-local benchmark
 
-## H5 — benchmark and latency policy
+PASS. Artifact: [`r5-phase10-measurements.json`](evidence/r5-phase10-measurements.json).
+Policy: [`AdvisoryLatencyPolicy.md`](AdvisoryLatencyPolicy.md). Cheap lanes use
+300 samples/20 warmups; heavier lanes use 100 samples/5 warmups. The artifact's
+actual product path is `REAL_PRODUCT_LOCAL` and uses disposable local files,
+actual schedulers, deterministic local LLM/subagent adapters, the Evidence
+collector, A1→A4 merges, and coordinator Browser query/projection.
 
-PASS. Benchmark artifact: [`r5-phase10-measurements.json`](evidence/r5-phase10-measurements.json). Policy: [`AdvisoryLatencyPolicy.md`](AdvisoryLatencyPolicy.md).
-
-- Real pinned ApprovalService: 100 baseline and 100 Risk Advisor treatment samples, 5 warmups; treatment P99 `1.282 ms`, MAX `1.706 ms`; paired delta P99 `0.950 ms`, MAX `1.399 ms`.
-- Real product-local distributions: 300 samples / 20 warmups for shell analysis, deterministic A1, context builder, Evidence/A3 overlay, Browser presentation, and composed local path.
-- Structural local reviewer: 300 samples / 20 warmups for Fast and Deep schema seams.
+- Real pinned ApprovalService (`REAL_PINNED_RUNTIME`): baseline P99 `1.519 ms`,
+  MAX `1.540 ms`; treatment P99 `2.685 ms`, MAX `6.298 ms`; paired delta P99
+  `2.227 ms`, MAX `5.717 ms`; each n=100/warmup=5. Observation only.
+- Shared shell analysis: P99 `0.076 ms`, MAX `0.229 ms`; deterministic A1:
+  P99 `0.035 ms`, MAX `0.064 ms`; context builder: P99 `0.061 ms`, MAX
+  `0.148 ms` (each n=300/warmup=20).
+- Actual Fast scheduler + `executeFastJudge` + A2: P99 `0.210 ms`, MAX
+  `0.228 ms`; actual Evidence collector + A3: P99 `1.081 ms`, MAX `2.069 ms`;
+  actual Deep scheduler + structural adapter + A4: P99 `1.318 ms`, MAX
+  `2.118 ms`; actual Browser presentation/query: P99 `0.208 ms`, MAX `0.844
+  ms` (each n=100/warmup=5).
+- Composed actual A1→Fast/A2→Evidence/A3→Deep/A4→Browser: P99 `1.927 ms`,
+  MAX `2.672 ms`, n=100/warmup=5.
+- Fast and Deep contract bounds remained `timeout=5000 ms`,
+  `maxConcurrent=2`, `maxPending=8`; no production configuration was tuned.
 - External provider latency: `NOT_VALIDATED_EXTERNAL_PROVIDER / NOT_RUN`.
-- No production timeout, concurrency, or provider policy was tuned from local fake speed.
 
-## Productization and cold restart
+## Cold-start and package proof
 
-PASS. `package.json` preserves the existing `dsh.client`, adds one `dsh.bundle.patch`, and publishes `cordis.patch.yml` with exactly one `risk-advisor` insertion. `pnpm pack --dry-run --json` showed the manifest, Host/Client bundles, declaration tree, README, and patch; tests/benchmarks were excluded.
+PASS. `pnpm pack --dry-run --json` passed Host/Client export, declaration,
+manifest, README, and patch checks. The disposable offline external-bundle gate
+verified local Harness HEAD and tracked status before install, then activated a
+test-only probe waiting on `riskAdvisorAssessments`. The true two-process cold
+restart result was:
 
-The disposable offline install gate activated the package through the pinned Harness CLI without registry/network/provider/Git-remote calls. True cold restart passed with two separate OS child processes booting the same persisted disposable profile sequentially: process A `PASS`, process B `PASS`. The disposable profile was cleaned after each successful run.
+```text
+install/process A/process B       PASS / PASS / PASS
+activation markers A/B            1 / 1
+risk-advisor bundles A/B          1 / 1
+probe bundles A/B                 1 / 1
+same persisted profile            true
+network guard violations          0
+provider/network/registry calls   0 / 0 / 0
+Git remote calls                  0
+Harness tracked mutations         0
+verified Harness SHA              ddefc45fbc7f8e46dd73185e68295696d1297887
+```
+
+No `PendingApproval.answer()`, composer replacement, mutation RPC, hidden Judge
+or Evidence Tool, custom Risk Advisor Session event, or Risk Advisor approval
+authority was added.
 
 ## Validation matrix
 
-All pre-Full gates passed in the frozen order, including:
+All frozen pre-Full gates passed, including P10 focused, P9/P8/P7 focused and
+smoke/full benchmarks, P6/P5/P4/P3/P2/P1A/P1B/P1C, R1–R5/T05, typecheck,
+build, Host/Client export, declaration/private-export audit, bundle/patch
+contract, pack, diff check, scope/privacy/canary, no-provider/no-network/
+no-registry/no-Git-remote audit, no custom Session event, no RA answerer, and
+Harness mutation=0.
 
-- P10 focused: 8 files / 18 tests.
-- P9 focused: 6 files / 20 tests; P9 smoke/full benchmark PASS.
-- P8 focused: 5 files / 21 tests; P8 smoke/full benchmark PASS.
-- P7 focused: 6 files / 26 tests; P7 smoke/full benchmark PASS.
-- P6: 5 files / 27 tests.
-- P5: 4 files / 23 tests.
-- P4: 2 files / 17 tests.
-- P3: 2 files / 17 tests.
-- P2: 2 files / 15 tests.
-- P1A: 2 files / 13 tests.
-- P1B: 2 files / 14 tests.
-- P1C: 1 file / 8 tests.
-- R1: 2 files / 9 tests; R2: 2 files / 16 tests; R3: 2 files / 17 tests; R4: 2 files / 21 tests; R5: 1 file / 3 tests.
-- Typecheck, build, Host export, Client bundle wrapper, declaration/private-export audit, pack, `git diff --check`, scope/privacy/canary, no-provider/no-network/no-registry/no-Git-remote, no custom Session event, and Harness mutation `0`: PASS.
-- Final exact-SHA P10 smoke/full and external-bundle/cold gate: PASS.
+Focused result counts were: P10 9 files/26 tests; P9 6/20; P8 5/21; P7 6/26;
+P6 5/27; P5 4/23; P4 2/17; P3 2/17; P2 2/15; P1A 2/13; P1B 2/14; P1C 1/8;
+R1 2/9; R2 2/16; R3 2/17; R4 2/21; R5 1/3. Exact-SHA P10 benchmark
+smoke/full and cold-start gates also passed.
 
 ## Fresh complete Full
 
-Exactly one fresh complete `pnpm test` ran on Tested SHA `b6e1650bb40a3ba7bdfd0140e23f57e4d827087b` after all executable/test/config/package/benchmark/policy content was committed.
+Exactly one fresh complete `pnpm test` ran on the exact Tested SHA
+`d17f844d0c4c377af450d07cce2ec072c1b1efe9`, after the executable/test/config/
+package/benchmark candidate was committed. Result: PASS — 17 scripted groups,
+55 test files, 293 tests. No tracked semantic drift was present before Full;
+after Full, only this `Execution_Report.md` is changed.
 
-Result: PASS — 17 scripted test groups, 54 test files, 285 tests. The Full run produced no tracked semantic drift. After Full, only this `Execution_Report.md` is changed.
-
-## External activity and boundaries
+## External activity and handoff
 
 ```text
-provider calls              0
-external network calls      0
-registry calls               0
-Git remote runtime calls     0
-Harness tracked mutations    0
-custom RA Session events     0
-Risk Advisor approval calls  0
-Risk Advisor approval answerers 0
+provider calls                    0
+external network calls            0
+registry calls                    0
+Git remote runtime calls          0
+Harness tracked mutations         0
+custom Risk Advisor Session events 0
+Risk Advisor approval calls       0
+Risk Advisor approval answerers   0
 ```
 
-The final state is ready for independent ChatGPT Web review. Codex does not perform final acceptance.
+This report is ready for independent ChatGPT Web review. Codex does not perform
+final acceptance.
