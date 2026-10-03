@@ -38,6 +38,7 @@ function ReadyCard({ view, t }: { readonly view: RiskAdvisorView; readonly t: Ca
     <div data-testid="risk-advisor-source">{assessment.judgeAssisted ? t('judgeAssisted') : t('rulesOnly')}</div>
     <details data-testid="risk-advisor-failure-context"><summary>{t('failureContext')}</summary><span>{t('failureDetails')}</span><span>{view.failureContext!.retryCount}/{view.failureContext!.recentFailureCount}</span><span>{t('sameRootCause')}: {displayUnknown(view.failureContext!.sameRootCause, t)}</span><span>{t('permissionEscalation')}: {displayUnknown(view.failureContext!.permissionEscalation, t)}</span><span>{t('truncated')}: {view.failureContext!.truncated ? 'true' : 'false'}</span></details>
     <div data-testid="risk-advisor-evidence"><span>{t('ledgerHealth')}: {assessment.evidence.ledgerHealth}</span><span>{t('evidenceQuality')}: {assessment.dimensions.evidenceQuality.verdict} / {assessment.dimensions.evidenceQuality.evidenceQuality}</span>{(view.schemaVersion === 3 || view.schemaVersion === 4) && view.evidence !== undefined ? <span data-testid="risk-advisor-evidence-summary">{view.evidence.status}: {view.evidence.itemCount}</span> : null}</div>
+    {(view.schemaVersion === 3 || view.schemaVersion === 4) && view.evidence !== undefined ? <div data-testid="risk-advisor-toctou-disclosure">{t('preExecutionEvidence')}</div> : null}
     <AlternativeList alternatives={assessment.alternatives} t={t} />
   </section>
 }

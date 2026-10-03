@@ -18,6 +18,9 @@
     "./package.json": "./package.json"
   },
   "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "inject": [
         "@deepseek-ai/dsh-client-locale",
@@ -33,7 +36,7 @@
     "build": "tsc -p tsconfig.json && tsdown",
     "bundle": "tsdown",
     "watch": "tsdown --watch",
-    "test": "pnpm run test:r1 && pnpm run test:r2 && pnpm run test:r3 && pnpm run test:r4 && pnpm run test:r5 && pnpm run test:p1a && pnpm run test:p1b && pnpm run test:p1c && pnpm run test:p2 && pnpm run test:p3 && pnpm run test:p4 && pnpm run test:p5 && pnpm run test:p6 && pnpm run test:p7 && pnpm run test:p8 && pnpm run test:p9",
+    "test": "pnpm run test:r1 && pnpm run test:r2 && pnpm run test:r3 && pnpm run test:r4 && pnpm run test:r5 && pnpm run test:p1a && pnpm run test:p1b && pnpm run test:p1c && pnpm run test:p2 && pnpm run test:p3 && pnpm run test:p4 && pnpm run test:p5 && pnpm run test:p6 && pnpm run test:p7 && pnpm run test:p8 && pnpm run test:p9 && pnpm run test:p10",
     "test:r1": "vitest run tests/r1-fixture.unit.spec.tsx tests/r1-slot.integration.spec.tsx",
     "test:r2": "vitest run tests/r2-correlation.unit.spec.ts tests/r2-runtime.integration.spec.ts",
     "test:r3": "vitest run tests/r3-ptc-replay.unit.spec.ts tests/r3-runtime.integration.spec.ts",
@@ -58,6 +61,7 @@
     "test:p7": "vitest run tests/p7-expected-effect.unit.spec.ts tests/p7-postcondition-verifier.unit.spec.ts tests/p7-scheduler.unit.spec.ts tests/p7-failure-chain.integration.spec.ts tests/p7-runtime.integration.spec.ts tests/p7-boundary.integration.spec.ts",
     "test:p8": "vitest run tests/p8-evidence-target.unit.spec.ts tests/p8-evidence-collector.unit.spec.ts tests/p8-evidence-repair.unit.spec.ts tests/p8-evidence-bridge.spec.ts tests/p8-evidence-lifecycle.integration.spec.ts",
     "test:p9": "vitest run tests/p9-deep-judge-config.unit.spec.ts tests/p9-deep-judge-runtime.integration.spec.ts tests/p9-deep-judge-lifecycle.integration.spec.ts tests/p9-deep-judge-bridge.spec.ts tests/p9-deep-judge-coordinator.integration.spec.ts tests/p9-boundary.integration.spec.ts",
+    "test:p10": "vitest run tests/p10-shell-hardening.unit.spec.ts tests/p10-prompt-privacy.integration.spec.ts tests/p10-retry-semantic.integration.spec.ts tests/p10-lifecycle-resource.integration.spec.ts tests/p10-coexistence.integration.spec.ts tests/p10-toctou-presentation.spec.tsx tests/p10-package-contract.spec.ts tests/p10-boundary.integration.spec.ts",
     "bench:r5:smoke": "pnpm run build && vitest run --config vitest.config.ts tests/r5-benchmark-smoke.spec.ts",
     "bench:r5": "pnpm run build && vitest run --config vitest.config.ts tests/r5-benchmark-full.spec.ts",
     "bench:r5:p5:smoke": "pnpm run build && vitest run --config vitest.config.ts tests/r5-phase5-benchmark-smoke.spec.ts",
@@ -68,6 +72,9 @@
     "bench:r5:p8": "pnpm run build && vitest run --config vitest.config.ts tests/r5-phase8-benchmark-full.spec.ts",
     "bench:r5:p9:smoke": "pnpm run build && vitest run --config vitest.config.ts tests/r5-phase9-benchmark-smoke.spec.ts",
     "bench:r5:p9": "pnpm run build && vitest run --config vitest.config.ts tests/r5-phase9-benchmark-full.spec.ts",
+    "bench:r5:p10:smoke": "pnpm run build && vitest run --config vitest.config.ts tests/r5-phase10-benchmark-smoke.spec.ts",
+    "bench:r5:p10": "pnpm run build && vitest run --config vitest.config.ts tests/r5-phase10-benchmark-full.spec.ts",
+    "gate:p10:cold": "pnpm run build && node benchmarks/phase10-cold-start.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "license": "MIT",
@@ -106,6 +113,7 @@
     "lib/index.js",
     "lib/client.js",
     "lib/types/**/*.d.ts",
-    "README.md"
+    "README.md",
+    "cordis.patch.yml"
   ]
 }

@@ -1,0 +1,3 @@
+- insert:
+    - id: risk-advisor
+      name: '@dhandil/dsh-risk-advisor'

@@ -38,6 +38,7 @@ export type RiskAdvisorLocaleKey =
   | 'copy'
   | 'copied'
   | 'copyFailed'
+  | 'preExecutionEvidence'
 
 export const NS = 'risk-advisor.r1'
 
@@ -87,6 +88,7 @@ export const en = {
   copy: 'Copy',
   copied: 'Copied',
   copyFailed: 'Copy unavailable',
+  preExecutionEvidence: 'Evidence was observed before execution; execution-time state may change.',
 } satisfies Record<RiskAdvisorLocaleKey, string>
 
 export const zh = {
@@ -129,4 +131,5 @@ export const zh = {
   copy: '复制',
   copied: '已复制',
   copyFailed: '无法复制',
+  preExecutionEvidence: '证据采集于执行前，实际执行时状态可能已变化。',
 } satisfies Record<RiskAdvisorLocaleKey, string>
