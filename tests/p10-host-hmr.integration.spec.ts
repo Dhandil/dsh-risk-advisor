@@ -28,22 +28,22 @@ vi.mock('../src/host/ledger.ts', async importOriginal => {
 })
 
 class RpcFixture {
-  readonly active = new Map<symbol, { readonly channel: string; readonly handler: unknown }>()
+  readonly active = new Map<symbol, { readonly path: string; readonly fetch: unknown }>()
   maxActive = 0
 
   readonly connection = {
-    rpc: {
-      handle: (channel: string, handler: unknown): (() => void) => {
-        const key = Symbol(channel)
-        this.active.set(key, { channel, handler })
+    fetch: {
+      register: (route: { readonly path: string; readonly fetch: unknown }): (() => Promise<void>) => {
+        const key = Symbol(route.path)
+        this.active.set(key, { path: route.path, fetch: route.fetch })
         this.maxActive = Math.max(this.maxActive, this.active.size)
-        return () => { this.active.delete(key) }
+        return async () => { this.active.delete(key) }
       },
     },
   }
 
   count(channel: string): number {
-    return [...this.active.values()].filter(item => item.channel === channel).length
+    return [...this.active.values()].filter(item => item.path.startsWith(`${channel}/risk-advisor/`)).length
   }
 }
 
@@ -124,8 +124,8 @@ describe('Phase 10 actual Host Risk Advisor fiber HMR', () => {
       await fiber.await()
       expect(fiber.ctx.get('riskAdvisorAssessments', false)).toBeDefined()
       expect(fiber.ctx.get('riskAdvisorCorrelation', false)).toBeDefined()
-      expect(rpc.count(RISK_ADVISOR_RPC_CHANNEL)).toBe(1)
-      expect(rpc.maxActive).toBe(1)
+      expect(rpc.count(RISK_ADVISOR_RPC_CHANNEL)).toBe(2)
+      expect(rpc.maxActive).toBe(2)
 
       const session = ctx.sessions.create(`p10-host-hmr-${cycle}`)
       session.append('turn/start', { turn: 1 })
@@ -157,7 +157,7 @@ describe('Phase 10 actual Host Risk Advisor fiber HMR', () => {
       expect(ctx.get('riskAdvisorAssessments', false)).toBeUndefined()
       expect(previousAssessments.getIssueSummary().orphanDecisions).toBe(0)
     }
-    expect(rpc.maxActive).toBe(1)
+    expect(rpc.maxActive).toBe(2)
     expect(rpc.count(RISK_ADVISOR_RPC_CHANNEL)).toBe(0)
     expect(answerCount).toBe(3)
   })
@@ -215,8 +215,8 @@ describe('Phase 10 actual Host Risk Advisor fiber HMR', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(disposed).toBe(false)
     expect(held.requests).toBe(1)
-    expect(rpc.count(RISK_ADVISOR_RPC_CHANNEL)).toBeLessThanOrEqual(1)
-    expect(rpc.maxActive).toBe(1)
+    expect(rpc.count(RISK_ADVISOR_RPC_CHANNEL)).toBeLessThanOrEqual(2)
+    expect(rpc.maxActive).toBe(2)
     const duringDisposal = oldAssessments.getForApproval(session, String(asked.data.id))
     if (duringDisposal.status !== 'not-found') expect(duringDisposal.latestAssessmentId).toBe(oldAssessmentId)
     held.release()
@@ -236,7 +236,7 @@ describe('Phase 10 actual Host Risk Advisor fiber HMR', () => {
       },
     })
     await second.await()
-    expect(rpc.count(RISK_ADVISOR_RPC_CHANNEL)).toBe(1)
+    expect(rpc.count(RISK_ADVISOR_RPC_CHANNEL)).toBe(2)
     const freshSession = ctx.sessions.create('p10-held-hmr-remount-session')
     freshSession.append('turn/start', { turn: 1 })
     freshSession.append('user/message', createUserMessage({ content: [{ type: 'text', text: 'Read the remounted local fixture.' }], source: { kind: 'user' } }), { surfaceOp: 'append' })

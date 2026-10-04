@@ -1,23 +1,28 @@
 import type { Context } from '@deepseek-ai/cordis'
+import {
+  clientRequestSchema,
+  RpcId,
+  type ConnectionFetchRoute,
+  type HostConnectionFetch,
+} from '@deepseek-ai/dsh-client-connection'
 import type { SessionId, SessionStore } from '@deepseek-ai/dsh-session'
 import type {
   ApprovalAssessmentCoordinator,
   Phase6PresentationQuery,
 } from './assessment-envelope.ts'
 import {
-  RISK_ADVISOR_RPC_CHANNEL,
+  RISK_ADVISOR_ACTIVE_ENDPOINT,
+  RISK_ADVISOR_ACTIVE_ROUTE,
+  RISK_ADVISOR_ASSESSMENT_ENDPOINT,
+  RISK_ADVISOR_ASSESSMENT_ROUTE,
   isBoundedIdentifier,
   isPlainRecord,
   type RiskAdvisorBridgeRead,
   freezeBridgeRead,
 } from '../bridge-contract.ts'
 
-export interface HostConnectionRpcLike {
-  handle: (channel: string, handler: ConnectionRpcHandler) => () => void | Promise<void>
-}
-
 export interface HostConnectionLike {
-  readonly rpc: HostConnectionRpcLike
+  readonly fetch: HostConnectionFetch
 }
 
 export interface ConnectionRpcFailureLike {
@@ -44,9 +49,90 @@ export function installRiskAdvisorBrowserBridge(
   coordinator: ApprovalAssessmentCoordinator,
 ): void {
   ctx.effect(
-    () => connection.rpc.handle(RISK_ADVISOR_RPC_CHANNEL, (endpoint, payload, signal) => handleRiskAdvisorRpc(ctx.sessions, coordinator, endpoint, payload, signal)),
+    async () => {
+      const registrations: (() => Promise<void>)[] = []
+      const handler: ConnectionRpcHandler = (endpoint, payload, signal) => handleRiskAdvisorRpc(ctx.sessions, coordinator, endpoint, payload, signal)
+      try {
+        registrations.push(connection.fetch.register(createRiskAdvisorRoute(
+          RISK_ADVISOR_ACTIVE_ROUTE,
+          RISK_ADVISOR_ACTIVE_ENDPOINT,
+          'active',
+          handler,
+        )))
+        registrations.push(connection.fetch.register(createRiskAdvisorRoute(
+          RISK_ADVISOR_ASSESSMENT_ROUTE,
+          RISK_ADVISOR_ASSESSMENT_ENDPOINT,
+          'assessment',
+          handler,
+        )))
+      } catch (error) {
+        await disposeRegistrations(registrations)
+        throw error
+      }
+      return async () => { await disposeRegistrations(registrations) }
+    },
     'risk-advisor-browser-bridge-generation',
   )
+}
+
+const INVALID_REQUEST_RPC_ID = RpcId('invalid-request')
+
+function createRiskAdvisorRoute(
+  path: string,
+  wireEndpoint: typeof RISK_ADVISOR_ACTIVE_ENDPOINT | typeof RISK_ADVISOR_ASSESSMENT_ENDPOINT,
+  endpoint: 'active' | 'assessment',
+  handler: ConnectionRpcHandler,
+): ConnectionFetchRoute {
+  return {
+    path,
+    methods: ['POST'],
+    requestBody: 'buffered',
+    fetch: request => handleConnectionFetch(request, wireEndpoint, endpoint, handler),
+  }
+}
+
+async function handleConnectionFetch(
+  request: Request,
+  wireEndpoint: typeof RISK_ADVISOR_ACTIVE_ENDPOINT | typeof RISK_ADVISOR_ASSESSMENT_ENDPOINT,
+  endpoint: 'active' | 'assessment',
+  handler: ConnectionRpcHandler,
+): Promise<Response> {
+  if (request.method !== 'POST') return new Response('not found', { status: 404 })
+  const mediaType = request.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase()
+  if (mediaType !== 'application/json') return new Response('content type must be application/json', { status: 415 })
+
+  let body: unknown
+  try {
+    body = await request.json()
+  } catch {
+    return new Response('body is not JSON', { status: 400 })
+  }
+
+  const parsed = clientRequestSchema.safeParse(body)
+  if (!parsed.success) {
+    return connectionResponse(INVALID_REQUEST_RPC_ID, failure('gateway/bad-request', 'invalid client-request message'))
+  }
+  const message = parsed.data
+  if (message.method !== wireEndpoint) {
+    return connectionResponse(message.rpcId, failure('gateway/bad-request', 'request method does not match route endpoint'))
+  }
+
+  try {
+    const result = await handler(endpoint, message.payload, request.signal)
+    return connectionResponse(message.rpcId, result)
+  } catch {
+    return connectionResponse(message.rpcId, failure('risk-advisor/internal', 'bridge unavailable'))
+  }
+}
+
+function connectionResponse(rpcId: string, result: ConnectionRpcResultLike): Response {
+  return Response.json({ type: 'server-response', rpcId, result })
+}
+
+async function disposeRegistrations(registrations: readonly (() => Promise<void>)[]): Promise<void> {
+  for (const dispose of [...registrations].reverse()) {
+    try { await dispose() } catch { /* Preserve the owning fiber's failure while draining all routes. */ }
+  }
 }
 
 export async function handleRiskAdvisorRpc(

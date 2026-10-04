@@ -1,4 +1,8 @@
-export const RISK_ADVISOR_RPC_CHANNEL = '/risk-advisor' as const
+export const RISK_ADVISOR_RPC_CHANNEL = '/api' as const
+export const RISK_ADVISOR_ACTIVE_ENDPOINT = 'risk-advisor/active' as const
+export const RISK_ADVISOR_ASSESSMENT_ENDPOINT = 'risk-advisor/assessment' as const
+export const RISK_ADVISOR_ACTIVE_ROUTE = '/api/risk-advisor/active' as const
+export const RISK_ADVISOR_ASSESSMENT_ROUTE = '/api/risk-advisor/assessment' as const
 export const BRIDGE_IDENTIFIER_LIMIT = 256
 
 export const BROWSER_SAFE_REASON_CODES = [

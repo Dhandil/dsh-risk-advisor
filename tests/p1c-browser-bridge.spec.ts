@@ -8,34 +8,40 @@ import ApprovalService, { type ApprovalOutcome } from '@deepseek-ai/dsh-user-app
 import ToolRuntime, { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
 import { apply } from '../src/index.ts'
 import { createRiskAdvisorBridgeClient } from '../src/client/assessment-bridge.ts'
-import type { BrowserBridgeClientResult } from '../src/bridge-contract.ts'
-import type { ConnectionRpcHandler, ConnectionRpcResultLike, HostConnectionLike } from '../src/host/browser-bridge.ts'
+import { installRiskAdvisorBrowserBridge } from '../src/host/browser-bridge.ts'
+import {
+  RISK_ADVISOR_ACTIVE_ROUTE,
+  RISK_ADVISOR_ASSESSMENT_ROUTE,
+  RISK_ADVISOR_RPC_CHANNEL,
+  type BrowserBridgeClientResult,
+} from '../src/bridge-contract.ts'
+import type { ConnectionRpcResultLike, HostConnectionLike } from '../src/host/browser-bridge.ts'
 
 class InMemoryAuthenticatedConnection {
-  private handler: ConnectionRpcHandler | undefined
-  private channel: string | undefined
+  private readonly routes = new Map<string, { readonly fetch: (request: Request) => Promise<Response> }>()
+  private requestCount = 0
   private readonly routeRegistry: Set<string>
+  private readonly failPath: string | undefined
   registrations = 0
   disposals = 0
-  readonly webRouteRegistrations = 0
-  constructor(routeRegistry = new Set<string>()) {
+  constructor(routeRegistry = new Set<string>(), failPath?: string) {
     this.routeRegistry = routeRegistry
+    this.failPath = failPath
   }
 
   readonly connection: HostConnectionLike = {
-    rpc: {
-      handle: (channel, handler) => {
-        expect(this.handler).toBeUndefined()
-        expect(this.routeRegistry.has(channel)).toBe(false)
-        this.channel = channel
-        this.handler = handler
-        this.routeRegistry.add(channel)
+    fetch: {
+      register: route => {
+        if (route.path === this.failPath) throw new Error('simulated second route registration failure')
+        expect(route.methods).toEqual(['POST'])
+        expect(this.routes.has(route.path)).toBe(false)
+        expect(this.routeRegistry.has(route.path)).toBe(false)
+        this.routes.set(route.path, route)
+        this.routeRegistry.add(route.path)
         this.registrations += 1
         return async () => {
-          if (this.handler === handler) {
-            this.handler = undefined
-            this.routeRegistry.delete(channel)
-          }
+          this.routes.delete(route.path)
+          this.routeRegistry.delete(route.path)
           this.disposals += 1
         }
       },
@@ -43,16 +49,40 @@ class InMemoryAuthenticatedConnection {
   }
 
   async dispatch(endpoint: string, payload: unknown, signal = new AbortController().signal): Promise<ConnectionRpcResultLike> {
-    if (this.handler === undefined) throw new Error('authenticated RPC channel is not registered')
-    return this.handler(endpoint, payload, signal)
+    const path = `/api/risk-advisor/${endpoint}`
+    const route = this.routes.get(path)
+    if (route === undefined) throw new Error('authenticated exact route is not registered')
+    const response = await route.fetch(new Request(`http://dsh.internal${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        type: 'client-request',
+        rpcId: `p1c-rpc-${++this.requestCount}`,
+        method: `risk-advisor/${endpoint}`,
+        payload,
+      }),
+      signal,
+    }))
+    const body = await response.json() as { readonly result: ConnectionRpcResultLike }
+    return body.result
   }
 
-  registeredChannel(): string | undefined {
-    return this.channel
+  async request(path: string, body: unknown, headers: HeadersInit = { 'content-type': 'application/json' }, method = 'POST'): Promise<Response> {
+    const route = this.routes.get(path)
+    if (route === undefined) throw new Error(`route is not registered: ${path}`)
+    return route.fetch(new Request(`http://dsh.internal${path}`, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }))
+  }
+
+  registeredPaths(): string[] {
+    return [...this.routes.keys()].sort()
   }
 
   isRegistered(): boolean {
-    return this.handler !== undefined
+    return this.routes.size > 0
   }
 }
 
@@ -148,9 +178,8 @@ describe('Phase 1C authenticated read-only browser bridge', () => {
     let disposed = false
     try {
       const approval = await openApproval(ctx, session, agent, 'p1c-live-probe', 'p1c-live-call')
-      expect(connection.registeredChannel()).toBe('/risk-advisor')
-      expect(connection.registrations).toBe(1)
-      expect(connection.webRouteRegistrations).toBe(0)
+      expect(connection.registeredPaths()).toEqual([RISK_ADVISOR_ACTIVE_ROUTE, RISK_ADVISOR_ASSESSMENT_ROUTE].sort())
+      expect(connection.registrations).toBe(2)
 
       const active = expectOk(await connection.dispatch('active', { sessionId: session.id, callId: 'p1c-live-call' })) as Record<string, unknown>
       expect(active).toMatchObject({ kind: 'VIEW' })
@@ -177,7 +206,7 @@ describe('Phase 1C authenticated read-only browser bridge', () => {
 
       await ctx.fiber.dispose()
       disposed = true
-      expect(connection.disposals).toBe(1)
+      expect(connection.disposals).toBe(2)
       expect(connection.isRegistered()).toBe(false)
     } finally {
       if (!disposed) await ctx.fiber.dispose()
@@ -202,28 +231,28 @@ describe('Phase 1C authenticated read-only browser bridge', () => {
   const first = new InMemoryAuthenticatedConnection(routeRegistry)
   const removeFirst = ctx.provide('connection', first.connection)
   await new Promise<void>(resolve => setTimeout(resolve, 0))
-  expect(first.registrations).toBe(1)
+  expect(first.registrations).toBe(2)
   expect(first.isRegistered()).toBe(true)
-  expect(routeRegistry).toEqual(new Set(['/risk-advisor']))
+  expect(routeRegistry).toEqual(new Set([RISK_ADVISOR_ACTIVE_ROUTE, RISK_ADVISOR_ASSESSMENT_ROUTE]))
 
   // Connection replacement first unloads the old dependency-owned bridge.
   await removeFirst()
   await new Promise<void>(resolve => setTimeout(resolve, 0))
-  expect(first.disposals).toBe(1)
+  expect(first.disposals).toBe(2)
   expect(first.isRegistered()).toBe(false)
   expect(routeRegistry).toEqual(new Set())
 
   const replacement = new InMemoryAuthenticatedConnection(routeRegistry)
   ctx.provide('connection', replacement.connection)
   await new Promise<void>(resolve => setTimeout(resolve, 0))
-  expect(replacement.registrations).toBe(1)
+  expect(replacement.registrations).toBe(2)
   expect(replacement.isRegistered()).toBe(true)
-  expect(routeRegistry).toEqual(new Set(['/risk-advisor']))
-  expect(first.registrations + replacement.registrations).toBe(2)
+  expect(routeRegistry).toEqual(new Set([RISK_ADVISOR_ACTIVE_ROUTE, RISK_ADVISOR_ASSESSMENT_ROUTE]))
+  expect(first.registrations + replacement.registrations).toBe(4)
 
   // Final tree disposal withdraws the replacement route as well.
   await ctx.fiber.dispose()
-  expect(replacement.disposals).toBe(1)
+  expect(replacement.disposals).toBe(2)
   expect(replacement.isRegistered()).toBe(false)
   expect(routeRegistry).toEqual(new Set())
   })
@@ -284,13 +313,62 @@ describe('Phase 1C authenticated read-only browser bridge', () => {
       expectFailure(await connection.dispatch('active', { sessionId: 's', callId: 'c', extra: 'secret' }), 'risk-advisor/bad-request')
       expectFailure(await connection.dispatch('active', { sessionId: huge, callId: 'c' }), 'risk-advisor/bad-request')
       expectFailure(await connection.dispatch('active', { sessionId: '', callId: 'c' }), 'risk-advisor/bad-request')
-      expectFailure(await connection.dispatch('unknown', { sessionId: 'secret-session' }), 'risk-advisor/endpoint-not-found')
+      const unknown = await connection.request(RISK_ADVISOR_ACTIVE_ROUTE, {
+        type: 'client-request', rpcId: 'p1c-unknown', method: 'risk-advisor/unknown', payload: { sessionId: 'secret-session' },
+      })
+      expect(unknown.status).toBe(200)
+      expect(await unknown.json()).toMatchObject({ result: { ok: false, error: { code: 'gateway/bad-request', details: {} } } })
       const abort = new AbortController()
       abort.abort()
       expectFailure(await connection.dispatch('active', { sessionId: 's', callId: 'c' }, abort.signal), 'risk-advisor/cancelled')
     } finally {
       await ctx.fiber.dispose()
     }
+  })
+
+  it('P1C-maintenance validates the shared Connection envelope and bounded failures', async () => {
+    const { ctx, connection } = await setupConnection()
+    try {
+      const malformed = await connection.request(RISK_ADVISOR_ACTIVE_ROUTE, { type: 'not-client-request', payload: 'secret-raw-payload' })
+      expect(malformed.status).toBe(200)
+      const malformedBody = JSON.stringify(await malformed.json())
+      expect(malformedBody).toContain('invalid client-request message')
+      expect(malformedBody).not.toContain('secret-raw-payload')
+
+      const mismatch = await connection.request(RISK_ADVISOR_ACTIVE_ROUTE, {
+        type: 'client-request', rpcId: 'p1c-mismatch', method: 'risk-advisor/assessment', payload: { assessmentId: 'secret-assessment' },
+      })
+      expect(mismatch.status).toBe(200)
+      expect(await mismatch.json()).toMatchObject({
+        type: 'server-response',
+        rpcId: 'p1c-mismatch',
+        result: { ok: false, error: { code: 'gateway/bad-request', details: {} } },
+      })
+
+      const wrongContentType = await connection.request(RISK_ADVISOR_ACTIVE_ROUTE, {}, { 'content-type': 'text/plain' })
+      expect(wrongContentType.status).toBe(415)
+      const wrongMethod = await connection.request(RISK_ADVISOR_ACTIVE_ROUTE, undefined, {}, 'GET')
+      expect(wrongMethod.status).toBe(404)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('P1C-maintenance drains the first exact route when the second registration fails', async () => {
+    const ctx = new Context()
+    const connection = new InMemoryAuthenticatedConnection(new Set(), RISK_ADVISOR_ASSESSMENT_ROUTE)
+    ctx.provide('connection', connection.connection)
+    await ctx.plugin(SessionStore)
+    const coordinator = {
+      queryActivePresentationForCall: () => ({ kind: 'NOT_FOUND' as const }),
+      queryOpenPresentationByAssessmentId: () => ({ kind: 'NOT_FOUND' as const }),
+    }
+    installRiskAdvisorBrowserBridge(ctx, connection.connection, coordinator)
+    await new Promise<void>(resolve => setTimeout(resolve, 0))
+    expect(connection.registrations).toBe(1)
+    expect(connection.disposals).toBe(1)
+    expect(connection.registeredPaths()).toEqual([])
+    await ctx.fiber.dispose()
   })
 
   it('P1C-08/P1C-09 validates Browser DTOs and maps Host/transport failures safely', async () => {
@@ -308,7 +386,7 @@ describe('Phase 1C authenticated read-only browser bridge', () => {
       expect(Object.isFrozen(valid.view)).toBe(true)
       expect(Object.isFrozen(valid.view.reasonCodes)).toBe(true)
     }
-    expect((calls[0] as unknown[]).slice(0, 3)).toEqual(['/risk-advisor', 'active', { sessionId: 'session-1', callId: 'call-1' }])
+    expect((calls[0] as unknown[]).slice(0, 3)).toEqual([RISK_ADVISOR_RPC_CHANNEL, 'risk-advisor/active', { sessionId: 'session-1', callId: 'call-1' }])
 
     const malformed = createRiskAdvisorBridgeClient({
       call: async () => ({ ok: true, value: { ...validView(), view: { ...(validView() as { view: Record<string, unknown> }).view, approvalId: 'secret' } } }),
@@ -332,10 +410,9 @@ describe('Phase 1C authenticated read-only browser bridge', () => {
   it('P1C-11 leaves the T01 fixture store and detail renderer path untouched', async () => {
     const { ctx, connection } = await setupConnection()
     try {
-      const client = createRiskAdvisorBridgeClient({ call: (...args) => connection.dispatch(args[1], args[2], args[3]) })
+      const client = createRiskAdvisorBridgeClient({ call: (...args) => connection.dispatch(String(args[1]).replace('risk-advisor/', ''), args[2], args[3]) })
       expect(client).toBeDefined()
-      expect(connection.registeredChannel()).toBe('/risk-advisor')
-      expect(connection.webRouteRegistrations).toBe(0)
+      expect(connection.registeredPaths()).toEqual([RISK_ADVISOR_ACTIVE_ROUTE, RISK_ADVISOR_ASSESSMENT_ROUTE].sort())
     } finally {
       await ctx.fiber.dispose()
     }

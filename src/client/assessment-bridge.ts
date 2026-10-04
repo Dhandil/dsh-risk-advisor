@@ -1,4 +1,7 @@
 import {
+  RISK_ADVISOR_ACTIVE_ENDPOINT,
+  RISK_ADVISOR_ASSESSMENT_ENDPOINT,
+  RISK_ADVISOR_RPC_CHANNEL,
   freezeBridgeRead,
   isBoundedIdentifier,
   isPlainRecord,
@@ -13,18 +16,16 @@ export interface RiskAdvisorBridgeClient {
   readonly assessment: (assessmentId: string, signal?: AbortSignal) => Promise<BrowserBridgeClientResult>
 }
 
-const CHANNEL = '/risk-advisor'
-
 export function createRiskAdvisorBridgeClient(rpc: ClientConnectionRpcLike): RiskAdvisorBridgeClient {
   return Object.freeze({
-    active: (sessionId: string, callId: string, signal?: AbortSignal) => read(rpc, 'active', { sessionId, callId }, [sessionId, callId], signal),
-    assessment: (assessmentId: string, signal?: AbortSignal) => read(rpc, 'assessment', { assessmentId }, [assessmentId], signal),
+    active: (sessionId: string, callId: string, signal?: AbortSignal) => read(rpc, RISK_ADVISOR_ACTIVE_ENDPOINT, { sessionId, callId }, [sessionId, callId], signal),
+    assessment: (assessmentId: string, signal?: AbortSignal) => read(rpc, RISK_ADVISOR_ASSESSMENT_ENDPOINT, { assessmentId }, [assessmentId], signal),
   })
 }
 
 async function read(
   rpc: ClientConnectionRpcLike,
-  endpoint: 'active' | 'assessment',
+  endpoint: typeof RISK_ADVISOR_ACTIVE_ENDPOINT | typeof RISK_ADVISOR_ASSESSMENT_ENDPOINT,
   payload: Record<string, string>,
   identifiers: readonly string[],
   signal?: AbortSignal,
@@ -32,7 +33,7 @@ async function read(
   if (isAborted(signal)) return unavailable('CANCELLED')
   if (identifiers.some(identifier => !isBoundedIdentifier(identifier))) return unavailable('PROTOCOL_INVALID')
   try {
-    const carrier = await rpc.call(CHANNEL, endpoint, Object.freeze({ ...payload }), signal)
+    const carrier = await rpc.call(RISK_ADVISOR_RPC_CHANNEL, endpoint, Object.freeze({ ...payload }), signal)
     if (isAborted(signal)) return unavailable('CANCELLED')
     if (!isPlainRecord(carrier) || typeof carrier.ok !== 'boolean') return unavailable('PROTOCOL_INVALID')
     if (carrier.ok === false) return unavailable(isRpcFailure(carrier.error) ? 'HOST_REJECTED' : 'PROTOCOL_INVALID')

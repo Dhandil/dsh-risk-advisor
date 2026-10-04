@@ -1,15 +1,11 @@
 /*
- * Phase 1C recovery acceptance-only probe.
+ * Phase 1C maintenance probe.
  *
- * This intentionally imports the frozen Harness build by absolute repository
- * path. It is not part of the package test chain: adding a normal plugin test
- * would require installing the pinned Connection package or coupling the
- * published plugin to this repository layout. The probe uses the actual
- * HostConnectionService and only isolates WebServer/BrowserAuth seams.
+ * This imports the frozen Harness build by absolute repository path and uses
+ * the real HostConnectionService public exact-fetch registry. The only local
+ * seam is the WebServer/auth carrier around the already-mounted /api route.
  */
 import { strict as assert } from 'node:assert'
-import { EventEmitter } from 'node:events'
-import { Readable } from 'node:stream'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
@@ -17,60 +13,10 @@ const harnessRoot = process.env.RISK_ADVISOR_FROZEN_HARNESS_ROOT ?? 'D:\\Harness
 const harnessModule = (...segments) => import(pathToFileURL(join(harnessRoot, ...segments)).href)
 const { Context } = await harnessModule('vendor', 'cordis', 'lib', 'index.js')
 const { HostConnectionService } = await harnessModule('packages', 'client', 'connection', 'lib', 'index.js')
-const { handleRiskAdvisorRpc } = await import(new URL('../lib/types/host/browser-bridge.js', import.meta.url).href)
-
-const routes = []
-const webServer = {
-  register(route) {
-    assert.equal(routes.some(candidate => candidate.kind === route.kind && candidate.path === route.path), false)
-    routes.push(route)
-    return () => {
-      const index = routes.indexOf(route)
-      if (index >= 0) routes.splice(index, 1)
-    }
-  },
-}
-
-function fakeRequest(headers, url, body) {
-  const request = Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))])
-  Object.assign(request, {
-    url,
-    method: body === undefined ? 'GET' : 'POST',
-    headers: body === undefined ? headers : { 'content-type': 'application/json', ...headers },
-  })
-  return request
-}
-
-function fakeResponse() {
-  const state = { status: undefined, headers: undefined, body: undefined }
-  const chunks = []
-  const response = Object.assign(new EventEmitter(), {
-    writableEnded: false,
-    writeHead(status, headers) {
-      state.status = status
-      state.headers = headers
-      return this
-    },
-    write(value) {
-      chunks.push(Buffer.from(value))
-      return true
-    },
-    end(value) {
-      if (typeof value === 'string' || value instanceof Uint8Array) chunks.push(Buffer.from(value))
-      if (chunks.length > 0) state.body = Buffer.concat(chunks).toString()
-      this.writableEnded = true
-      return this
-    },
-  })
-  return { response, state }
-}
+const { installRiskAdvisorBrowserBridge } = await import(new URL('../lib/types/host/browser-bridge.js', import.meta.url).href)
 
 const session = { id: 'probe-session' }
-const sessions = {
-  get(sessionId) {
-    return sessionId === session.id ? session : undefined
-  },
-}
+const sessions = { get: sessionId => sessionId === session.id ? session : undefined }
 const safeSnapshot = Object.freeze({
   sessionId: session.id,
   callId: 'probe-call',
@@ -82,96 +28,113 @@ const safeSnapshot = Object.freeze({
   updatedAt: 123,
 })
 const coordinator = {
-  queryActiveForCall(currentSession, callId) {
+  queryActivePresentationForCall(currentSession, callId) {
     return currentSession === session && callId === safeSnapshot.callId
-      ? { kind: 'VIEW', snapshot: safeSnapshot }
+      ? { kind: 'VIEW', view: safeSnapshot }
       : { kind: 'NOT_FOUND' }
   },
-  queryOpenByAssessmentId(assessmentId) {
+  queryOpenPresentationByAssessmentId(assessmentId) {
     return assessmentId === safeSnapshot.assessmentId
-      ? { kind: 'VIEW', snapshot: safeSnapshot }
+      ? { kind: 'VIEW', view: safeSnapshot }
       : { kind: 'NOT_FOUND' }
   },
 }
 
-const browserAuthFixture = {
-  isAuthenticated(request) {
-    return request.headers.cookie === 'probe=valid'
-  },
-}
-
+const browserAuthFixture = { isAuthenticated: request => request.headers.get('cookie') === 'probe=valid' }
 const ctx = new Context()
-ctx.provide('webServer', webServer)
+ctx.provide('sessions', sessions)
+ctx.provide('webServer', { register() { throw new Error('exact fetch repair must not register a WebServer route') } })
 const fiber = ctx.plugin({
   apply(owner) {
     const connection = new HostConnectionService(owner, [], browserAuthFixture)
-    assert.equal(connection instanceof HostConnectionService, true)
-    owner.effect(
-      () => connection.rpc.handle('/risk-advisor', (endpoint, payload, signal) =>
-        handleRiskAdvisorRpc(sessions, coordinator, endpoint, payload, signal)),
-      'phase1c-pinned-risk-advisor-bridge',
-    )
+    installRiskAdvisorBrowserBridge(owner, connection, coordinator)
+    ctx.provide('probeConnection', connection)
   },
 })
 await fiber.await()
 
-assert.equal(routes.length, 1)
-const route = routes[0]
-assert.deepEqual({ kind: route.kind, path: route.path }, { kind: 'prefix', path: '/risk-advisor' })
+const connection = ctx.get('probeConnection')
+const shared = connection.createSharedFetchHandler('/api')
 
-const unauthenticated = fakeResponse()
-await route.handler(fakeRequest({ host: 'localhost' }, '/risk-advisor/active'), unauthenticated.response)
-assert.deepEqual({ status: unauthenticated.state.status, body: unauthenticated.state.body }, { status: 401, body: 'unauthorized' })
+function request(path, body, headers = { host: 'localhost', cookie: 'probe=valid', 'content-type': 'application/json' }, method = 'POST') {
+  return new Request(`http://localhost${path}`, {
+    method,
+    headers,
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  })
+}
 
-const untrusted = fakeResponse()
-await route.handler(fakeRequest({ host: 'other.example', cookie: 'probe=valid' }, '/risk-advisor/active'), untrusted.response)
-assert.deepEqual({ status: untrusted.state.status, body: untrusted.state.body }, { status: 403, body: 'forbidden' })
+async function serve(input) {
+  const rejection = connection.requestRejection(input)
+  if (rejection !== undefined) return new Response(rejection === 401 ? 'unauthorized' : 'forbidden', { status: rejection })
+  return shared.fetch(input)
+}
 
-const authenticated = fakeResponse()
-await route.handler(fakeRequest(
-  { host: 'localhost', cookie: 'probe=valid' },
-  '/risk-advisor/active',
-  {
-    type: 'client-request',
-    rpcId: 'p1c-pinned-rpc',
-    method: 'active',
-    payload: { sessionId: session.id, callId: safeSnapshot.callId },
-  },
-), authenticated.response)
-assert.equal(authenticated.state.status, 200)
-const serverResponse = JSON.parse(authenticated.state.body)
-assert.deepEqual(serverResponse.result, {
-  ok: true,
-  value: {
-    kind: 'VIEW',
-    view: {
-      schemaVersion: 1,
-      sessionId: session.id,
-      callId: safeSnapshot.callId,
-      assessmentId: safeSnapshot.assessmentId,
-      association: 'BOUND',
-      status: 'unavailable',
-      stage: 'not-started',
-      reasonCodes: ['ASSESSOR_NOT_IMPLEMENTED'],
-      updatedAt: 123,
-    },
-  },
+const activeRequest = {
+  type: 'client-request',
+  rpcId: 'p1c-maintenance-active',
+  method: 'risk-advisor/active',
+  payload: { sessionId: session.id, callId: safeSnapshot.callId },
+}
+const assessmentRequest = {
+  type: 'client-request',
+  rpcId: 'p1c-maintenance-assessment',
+  method: 'risk-advisor/assessment',
+  payload: { assessmentId: safeSnapshot.assessmentId },
+}
+
+const unauthenticated = await serve(request('/api/risk-advisor/active', activeRequest, { host: 'localhost', 'content-type': 'application/json' }))
+assert.equal(unauthenticated.status, 401)
+const untrusted = await serve(request('/api/risk-advisor/active', activeRequest, { host: 'other.example', cookie: 'probe=valid', 'content-type': 'application/json' }))
+assert.equal(untrusted.status, 403)
+
+const active = await serve(request('/api/risk-advisor/active', activeRequest))
+assert.equal(active.status, 200)
+const activeResponse = await active.json()
+assert.deepEqual(activeResponse, {
+  type: 'server-response',
+  rpcId: activeRequest.rpcId,
+  result: { ok: true, value: { kind: 'VIEW', view: safeSnapshot } },
 })
-const serialized = JSON.stringify(serverResponse)
+
+const assessment = await serve(request('/api/risk-advisor/assessment', assessmentRequest))
+assert.equal(assessment.status, 200)
+const assessmentResponse = await assessment.json()
+assert.deepEqual(assessmentResponse, {
+  type: 'server-response',
+  rpcId: assessmentRequest.rpcId,
+  result: { ok: true, value: { kind: 'VIEW', view: safeSnapshot } },
+})
+
+const mismatch = await serve(request('/api/risk-advisor/active', { ...assessmentRequest }))
+assert.equal(mismatch.status, 200)
+const mismatchResponse = await mismatch.json()
+assert.deepEqual(mismatchResponse.result, {
+  ok: false,
+  error: { code: 'gateway/bad-request', message: 'request method does not match route endpoint', details: {} },
+})
+
+const oldChannel = await serve(request('/risk-advisor/active', activeRequest))
+assert.equal(oldChannel.status, 404)
+
+const serialized = JSON.stringify(activeResponse)
 for (const forbidden of ['approvalId', 'executionId', 'rawArguments', 'cwd', 'operationHash']) {
   assert.equal(serialized.includes(forbidden), false)
 }
 
 await fiber.dispose()
-assert.equal(routes.length, 0)
+assert.equal((await serve(request('/api/risk-advisor/active', activeRequest))).status, 404)
+assert.equal((await serve(request('/api/risk-advisor/assessment', assessmentRequest))).status, 404)
 
 console.log('PINNED_HARNESS_SHA=ddefc45fbc7f8e46dd73185e68295696d1297887')
 console.log('REAL_HOST_CONNECTION_SERVICE=true')
-console.log('ROUTE_REGISTERED=/risk-advisor')
+console.log('EXACT_ROUTE_ACTIVE=/api/risk-advisor/active')
+console.log('EXACT_ROUTE_ASSESSMENT=/api/risk-advisor/assessment')
 console.log('UNAUTHENTICATED_STATUS=401')
 console.log('UNTRUSTED_HOST_STATUS=403')
 console.log('AUTHENTICATED_STATUS=200')
-console.log('RISK_ADVISOR_RESPONSE=VIEW')
+console.log('RPC_ENVELOPE_COMPATIBLE=true')
+console.log('OLD_INDEPENDENT_CHANNEL_STATUS=404')
 console.log('PRIVACY_SAFE=true')
-console.log('ROUTE_AFTER_DISPOSE=0')
+console.log('ROUTES_AFTER_DISPOSE=0')
 console.log('P1C_PINNED_CONNECTION_PROBE=PASS')
