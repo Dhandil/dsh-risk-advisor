@@ -7,9 +7,9 @@
  */
 import { strict as assert } from 'node:assert'
 import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
-const harnessRoot = process.env.RISK_ADVISOR_FROZEN_HARNESS_ROOT ?? 'D:\\Harness\\deepseek-harness'
+const harnessRoot = process.env.RISK_ADVISOR_FROZEN_HARNESS_ROOT ?? fileURLToPath(new URL('../../../deepseek-harness/', import.meta.url))
 const harnessModule = (...segments) => import(pathToFileURL(join(harnessRoot, ...segments)).href)
 const { Context } = await harnessModule('vendor', 'cordis', 'lib', 'index.js')
 const { HostConnectionService } = await harnessModule('packages', 'client', 'connection', 'lib', 'index.js')

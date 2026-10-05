@@ -1,14 +1,14 @@
 import { execFile, spawn } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
 const ROOT = resolve(process.cwd())
 const PINNED_HARNESS = 'ddefc45fbc7f8e46dd73185e68295696d1297887'
 const PRODUCT_EXECUTABLE_SHA = '1fa84e2a8a9de465cdb85fef928ec9e19086bba2'
-const HARNESS = resolve(process.env.DSH_HARNESS_PATH ?? 'D:/Harness/deepseek-harness')
+const HARNESS = resolve(process.env.DSH_HARNESS_PATH ?? fileURLToPath(new URL('../../../deepseek-harness/', import.meta.url)))
 const HARNESS_BIN = join(HARNESS, 'apps/cli/lib/bin.js')
 const PNPM_BIN = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
 const RA_PACKAGE = '@dhandil/dsh-risk-advisor'

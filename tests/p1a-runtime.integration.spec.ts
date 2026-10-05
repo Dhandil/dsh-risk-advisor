@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { isAbsolute, join, resolve } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
@@ -10,6 +11,9 @@ import { apply } from '../src/index.ts'
 
 describe('Phase 1A pinned Host runtime integration', () => {
   it('captures the exact real ToolRuntime traversal once and retains only sanitized result metadata', async () => {
+    const workspace = resolve('tests', '.fixtures', 'p1a-workspace')
+    const reportPath = join(workspace, 'report.txt')
+    expect(isAbsolute(workspace)).toBe(true)
     const ctx = new Context()
     await ctx.plugin(SessionStore)
     await ctx.plugin(SystemPrompt)
@@ -17,7 +21,7 @@ describe('Phase 1A pinned Host runtime integration', () => {
     await ctx.plugin(ApprovalService, { policy: 'ask' })
     apply(ctx)
 
-    const session = ctx.sessions.create('p1a-live-session', { meta: { cwd: 'D:\\Harness\\workspace' } })
+    const session = ctx.sessions.create('p1a-live-session', { meta: { cwd: workspace } })
     session.append('turn/start', { turn: 1 })
     const agent = { session } as unknown as Agent
     const asked = Promise.withResolvers<void>()
@@ -53,7 +57,7 @@ describe('Phase 1A pinned Host runtime integration', () => {
         signal: new AbortController().signal,
         callId: ToolCallId('p1a-live-call'),
         name: 'read',
-        arguments: { file_path: 'D:\\Harness\\workspace\\report.txt', offset: 1, limit: 20 },
+        arguments: { file_path: reportPath, offset: 1, limit: 20 },
         agent,
       })
       await asked.promise
@@ -89,7 +93,8 @@ describe('Phase 1A pinned Host runtime integration', () => {
       })
       const publicDiagnostic = JSON.stringify(foundation.get(lookup.executionId))
       expect(publicDiagnostic).not.toContain('report.txt')
-      expect(publicDiagnostic).not.toContain(session.header.cwd ?? '')
+      expect(publicDiagnostic).not.toContain(reportPath)
+      expect(publicDiagnostic).not.toContain(workspace)
 
       decision.resolve('allowed-once')
       await expect(pending).resolves.toMatchObject({ isError: false })
