@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
-      CANDIDATE_SHA: 3648acc02cb599a74b411cb074e896b7ebe3697c
+      CANDIDATE_SHA: 1897236e28c87752ee7a59ee31deb3fd287a4079
       HARNESS_SHA: ddefc45fbc7f8e46dd73185e68295696d1297887
     steps:
       - name: Checkout pinned Harness
