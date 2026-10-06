@@ -126,7 +126,7 @@ describe('R1 real SlotCore + Native ApprovalPanel integration', () => {
     view.rerender(<NativeHost />)
     expect(screen.getByTestId('risk-advisor-r1-detail')).toBeTruthy()
     expect(screen.getByText('echo native')).toBeTruthy()
-    expect(screen.getByTestId('risk-advisor-card').getAttribute('data-ra-status')).toBe('ANALYZING')
+    expect(screen.getByTestId('risk-advisor-indicator').getAttribute('data-ra-status')).toBe('ANALYZING')
     expect((screen.getByRole('button', { name: 'Reject' }) as HTMLButtonElement).disabled).toBe(false)
     expect((screen.getByRole('button', { name: 'Allow once' }) as HTMLButtonElement).disabled).toBe(false)
 
@@ -210,7 +210,7 @@ describe('R1 real SlotCore + Native ApprovalPanel integration', () => {
     render(<ApprovalPanel matched={pending} renderSlot={renderDetail} t={panelCopy(pending)} />)
 
     expect(screen.getByText('echo native')).toBeTruthy()
-    expect(screen.getByTestId('risk-advisor-card').getAttribute('data-ra-status')).toBe('UNAVAILABLE')
+    expect(screen.getByTestId('risk-advisor-indicator').getAttribute('data-ra-status')).toBe('UNAVAILABLE')
     expect((screen.getByRole('button', { name: 'Reject' }) as HTMLButtonElement).disabled).toBe(false)
     expect((screen.getByRole('button', { name: 'Allow once' }) as HTMLButtonElement).disabled).toBe(false)
     fireEvent.click(screen.getByRole('button', { name: 'Reject' }))
@@ -317,14 +317,14 @@ describe('R1 real SlotCore + Native ApprovalPanel integration', () => {
     await act(async () => { await feature.await() })
     expect(view.getByTestId('risk-advisor-r1-detail').getAttribute('data-session-id')).toBe('session-1')
     expect(view.getByText('echo first')).toBeTruthy()
-    expect(view.getByTestId('risk-advisor-card').getAttribute('data-ra-status')).toBe('ANALYZING')
+    expect(view.getByTestId('risk-advisor-indicator').getAttribute('data-ra-status')).toBe('ANALYZING')
     expect((view.getByRole('button', { name: 'Reject' }) as HTMLButtonElement).disabled).toBe(false)
 
     if (switchSession === undefined) throw new Error('public owner frame did not expose session switch')
     act(() => { switchSession!(second) })
     expect(view.getByTestId('risk-advisor-r1-detail').getAttribute('data-session-id')).toBe('session-2')
     expect(view.getByText('echo second')).toBeTruthy()
-    expect(view.getByTestId('risk-advisor-card').getAttribute('data-ra-status')).toBe('ANALYZING')
+    expect(view.getByTestId('risk-advisor-indicator').getAttribute('data-ra-status')).toBe('ANALYZING')
 
     await act(async () => { await feature.dispose() })
     expect(slots.entriesOfSlot('conversation.approval.detail')[0]?.component).toBe(ApprovalCommand)

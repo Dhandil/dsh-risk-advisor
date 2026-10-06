@@ -9,13 +9,22 @@ import type { BrowserBridgeClientResult } from '../src/bridge-contract.ts'
 afterEach(() => cleanup())
 
 describe('Phase 10 TOCTOU and presentation truthfulness', () => {
-  it('renders pre-execution disclosure for evidence-bearing Bridge V3 data', async () => {
+  it('keeps PARTIAL visible in the compact row and moves pre-execution disclosure into Modal', async () => {
     const t = ((key: string) => en[key as keyof typeof en] ?? key) as never
     const value: BrowserBridgeClientResult = { kind: 'VIEW', view: { schemaVersion: 3, sessionId: 'p10-session', callId: 'p10-call', assessmentId: 'p10-assessment', association: 'BOUND', status: 'ready', stage: 'complete', operation: { schemaVersion: 1, kind: 'filesystem-write', toolName: 'write', title: 'Write a bounded file', summary: 'A pre-execution operation presentation.', resources: [{ kind: 'path', label: 'workspace/target' }], requestedPermission: 'workspace-write', parserConfidence: 'high', mutating: true, externalEffect: false, networkEffect: 'none', workspaceContained: 'unknown', sandboxCovered: 'unknown', reversible: 'unknown' }, assessment: { schemaVersion: 1, assessmentId: 'p10-assessment', status: 'PARTIAL', dimensions: Object.fromEntries(['risk', 'authorization', 'necessity', 'privilege', 'alternatives', 'evidenceQuality'].map(key => [key, { verdict: key === 'evidenceQuality' ? 'MEDIUM' : 'UNKNOWN', source: 'RULE', evidenceQuality: 'MEDIUM', reasons: [] }])) as never, aggregate: { recommendation: 'NEED_MORE_INFORMATION', hazardLevel: 'UNKNOWN', attention: 'ELEVATED', primaryReasonCodes: ['CONTEXT_DEGRADED'] }, findings: [], uncertainties: [], alternatives: [], evidence: { ledgerHealth: 'HEALTHY' }, judgeAssisted: false }, failureContext: { schemaVersion: 1, retryCount: 0, recentFailureCount: 0, sameRootCause: false, permissionEscalation: false, truncated: false }, reasonCodes: ['CONTEXT_DEGRADED'], updatedAt: 1, evidence: { status: 'COMPLETE', workspaceContained: true, canonicalTargetsKnown: true, versionControlled: true, checkpointAvailable: 'unknown', pathAliasObserved: false, itemCount: 1, truncated: false } } } as never
     const client = new PresentationClient({ rpc: { call: vi.fn(async () => ({ ok: true, value })) } })
     render(<RiskAdvisorDetail sessionId={'p10-session' as never} callId={'p10-call' as never} presentationClient={client} t={t} useChat={() => undefined} />)
-    await waitFor(() => expect(screen.getByTestId('risk-advisor-card').getAttribute('data-ra-status')).toBe('READY'))
+    await waitFor(() => expect(screen.getByTestId('risk-advisor-indicator').getAttribute('data-ra-status')).toBe('READY'))
+    const row = screen.getByTestId('risk-advisor-indicator')
+    expect(row.textContent).toContain('PARTIAL')
+    expect(row.querySelector('section, details')).toBeNull()
+    expect(screen.queryByTestId('risk-advisor-toctou-disclosure')).toBeNull()
+    screen.getByRole('button', { name: 'Details' }).click()
+    expect(await screen.findByRole('dialog', { name: 'Risk Advisor details' })).toBeTruthy()
     expect(screen.getByTestId('risk-advisor-toctou-disclosure').textContent).toContain('observed before execution')
+    screen.getByRole('button', { name: 'Close details' }).click()
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(screen.getByTestId('risk-advisor-indicator')).toBe(row)
     client.dispose()
   })
 

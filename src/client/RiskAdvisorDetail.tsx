@@ -2,7 +2,7 @@ import { Component, useEffect, type ReactNode } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { commandForSnapshot } from './command.ts'
 import type { PresentationClient } from './presentation-client.ts'
-import { RiskAdvisorCard } from './components/RiskAdvisorCard.tsx'
+import { RiskAdvisorCard, UnavailableRiskAdvisorIndicator } from './components/RiskAdvisorCard.tsx'
 
 type RiskAdvisorDetailProps = PropsRuntime<'conversation.approval.detail'> & PropsLocale<'risk-advisor.r1'> & { readonly presentationClient?: PresentationClient }
 interface ErrorBoundaryProps { readonly children: ReactNode; readonly t: RiskAdvisorDetailProps['t'] }
@@ -11,16 +11,12 @@ interface ErrorBoundaryState { readonly failed: boolean }
 class LocalErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   override state: ErrorBoundaryState = { failed: false }
   static getDerivedStateFromError(): ErrorBoundaryState { return { failed: true } }
-  override render(): ReactNode { return this.state.failed ? <UnavailableCard t={this.props.t} /> : this.props.children }
+  override render(): ReactNode { return this.state.failed ? <UnavailableRiskAdvisorIndicator t={this.props.t} /> : this.props.children }
 }
 
 function CommandPresentation(props: RiskAdvisorDetailProps): ReactNode {
   const command = typeof props.useChat === 'function' ? props.useChat(snapshot => commandForSnapshot(snapshot, props.callId)) : undefined
   return command === undefined ? null : <div data-testid="risk-advisor-r1-command"><span>{props.t('command.label')}</span><code>{command}</code></div>
-}
-
-function UnavailableCard({ t }: { readonly t: RiskAdvisorDetailProps['t'] }): ReactNode {
-  return <section data-testid="risk-advisor-card" data-ra-status="UNAVAILABLE"><strong>{t('advisory.title')}</strong><span>{t('state.unavailable')}</span></section>
 }
 
 function AdvisoryBody(props: RiskAdvisorDetailProps): ReactNode {
@@ -33,7 +29,7 @@ function AdvisoryBody(props: RiskAdvisorDetailProps): ReactNode {
     return () => { client.release(String(props.sessionId), callId) }
   }, [client, props.sessionId, callId])
   if (callId === undefined) return null
-  return store === undefined ? <UnavailableCard t={props.t} /> : <RiskAdvisorCard store={store} t={props.t} />
+  return store === undefined ? <UnavailableRiskAdvisorIndicator t={props.t} /> : <RiskAdvisorCard store={store} t={props.t} />
 }
 
 export function RiskAdvisorDetail(props: RiskAdvisorDetailProps): ReactNode {

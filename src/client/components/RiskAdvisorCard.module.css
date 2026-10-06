@@ -1,0 +1,126 @@
+.riskAdvisor__row {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  min-height: 28px;
+  max-height: 28px;
+  overflow: hidden;
+  padding: 0 4px;
+  white-space: nowrap;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--dsw-alias-label-primary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.riskAdvisor__provenance {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+  font-weight: 500;
+}
+
+.riskAdvisor__separator {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.riskAdvisor__summary {
+  flex: 1 1 auto;
+  min-width: 24px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.riskAdvisor__tag {
+  flex: none;
+  max-width: 176px;
+}
+
+.riskAdvisor__tagText {
+  display: block;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.riskAdvisor__detailsButton {
+  flex: none;
+}
+
+.riskAdvisor__modalDialog {
+  width: min(720px, 100%);
+  max-height: calc(100vh - 48px);
+}
+
+.riskAdvisor__modalContent {
+  max-height: calc(100vh - 72px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.riskAdvisor__analysis {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.riskAdvisor__analysis section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--dsw-alias-border-l4);
+}
+
+.riskAdvisor__analysis h3 {
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.riskAdvisor__analysis p {
+  margin: 0;
+}
+
+.riskAdvisor__analysis details > summary {
+  cursor: pointer;
+}
+
+.riskAdvisor__analysis article {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 8px 0;
+}
+
+@media (max-width: 480px) {
+  .riskAdvisor__row {
+    gap: 4px;
+    font-size: 11px;
+  }
+
+  .riskAdvisor__provenance {
+    max-width: 70px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .riskAdvisor__tag {
+    max-width: 125px;
+  }
+
+  .riskAdvisor__tagText {
+    max-width: 110px;
+  }
+}

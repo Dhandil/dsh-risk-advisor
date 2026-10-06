@@ -127,6 +127,6 @@ describe('R1 fixture store and public command projection', () => {
   it('isolates a fixture render fault and exposes an unavailable test fixture', () => {
     render(<RiskAdvisorDetail {...componentProps()} />)
     expect(screen.getByTestId('risk-advisor-r1-command').textContent).toContain('echo safe')
-    expect(screen.getByTestId('risk-advisor-card').getAttribute('data-ra-status')).toBe('UNAVAILABLE')
+    expect(screen.getByTestId('risk-advisor-indicator').getAttribute('data-ra-status')).toBe('UNAVAILABLE')
   })
 })
