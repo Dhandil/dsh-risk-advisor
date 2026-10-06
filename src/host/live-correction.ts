@@ -147,10 +147,10 @@ export class LiveCorrectionRuntime {
   private active = true
 
   readonly diagnostics: LiveCorrectionDiagnostics = Object.freeze({
-    get: findingId => this.getFinding(findingId),
-    forExecution: executionId => this.findingsForExecution(executionId),
-    forSession: session => this.findingsForSession(session),
-    render: findingId => this.renderFinding(findingId),
+    get: (findingId: string) => this.getFinding(findingId),
+    forExecution: (executionId: ExecutionId) => this.findingsForExecution(executionId),
+    forSession: (session: Session) => this.findingsForSession(session),
+    render: (findingId: string) => this.renderFinding(findingId),
   })
 
   constructor(options: LiveCorrectionOptions = {}) {
