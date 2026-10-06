@@ -23,10 +23,11 @@ Do not start Phase 11.2.
 Before editing:
 
 1. fetch `origin/main`;
-2. require `origin/main == e08ffb7d36531f6ac6cee9cb133a5275ea6392df`;
-3. require pinned Harness SHA exactly matches;
-4. preserve all user/untracked files;
-5. report and stop on tracked executable drift not belonging to this task.
+2. require Freeze SHA `e08ffb7d36531f6ac6cee9cb133a5275ea6392df` is an ancestor of `origin/main`;
+3. require `e08ffb7d36531f6ac6cee9cb133a5275ea6392df..origin/main` contains only Phase 11.1 implementation-instruction documentation/corrections and no executable/test/package/config/benchmark change;
+4. require pinned Harness SHA exactly matches;
+5. preserve all user/untracked files;
+6. report and stop on tracked executable drift not belonging to this task.
 
 Never reset, clean, force-push, delete `lib/`, `node_modules/`, or other user drift.
 
