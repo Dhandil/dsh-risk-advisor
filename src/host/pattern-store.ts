@@ -50,6 +50,14 @@ export interface PatternDiagnostics {
   readonly reasonCodes: () => readonly string[]
 }
 
+/** Host-private immutable source view for the Phase 11.4 Guidance projection. */
+export interface PatternGuidanceSnapshot {
+  readonly patternId: string
+  readonly revisions: readonly VerifiedExperiencePatternRevisionV1[]
+}
+
+export type PatternGuidanceListener = (revision: VerifiedExperiencePatternRevisionV1) => void
+
 interface EpisodeSource {
   readonly episode: ExperienceEpisodeV1
   readonly revisions: readonly OutcomeRevisionV1[]
@@ -273,6 +281,7 @@ export class PatternRuntime {
   private readonly groups = new Map<string, Map<string, EpisodeContribution>>()
   private readonly projections = new Map<string, PatternProjection>()
   private readonly patternChains = new Map<string, VerifiedExperiencePatternRevisionV1[]>()
+  private readonly guidanceListeners = new Set<PatternGuidanceListener>()
   private outcome: OutcomeRuntime | undefined
   private experienceReady: () => boolean = () => true
   private unsubscribeOutcome: (() => void) | undefined
@@ -287,6 +296,24 @@ export class PatternRuntime {
     revisions: (id: string) => this.readRevisions(id),
     reasonCodes: () => { this.readStatus(); return this.currentReasons },
   })
+
+  /** Complete validated chains are visible only while the Pattern source is READY. */
+  guidanceSnapshot(): readonly PatternGuidanceSnapshot[] {
+    if (this.readStatus() !== 'READY') throw new Error('pattern-guidance-source-unavailable')
+    return Object.freeze([...this.patternChains.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([patternId, revisions]) => Object.freeze({
+        patternId,
+        revisions: Object.freeze([...revisions]),
+      })))
+  }
+
+  /** Subscribe only while READY; append notifications follow durable commit and projection install. */
+  subscribeGuidance(listener: PatternGuidanceListener): () => void {
+    if (this.readStatus() !== 'READY') throw new Error('pattern-guidance-source-unavailable')
+    this.guidanceListeners.add(listener)
+    return () => { this.guidanceListeners.delete(listener) }
+  }
 
   /** Subscribe before taking the source snapshot so no durable Outcome append is missed. */
   attach(storageDomain: DomainFacility, outcome: OutcomeRuntime, experienceReady: () => boolean = () => true): Promise<void> {
@@ -404,6 +431,7 @@ export class PatternRuntime {
       this.groups.clear()
       this.projections.clear()
       this.patternChains.clear()
+      this.guidanceListeners.clear()
       this.pendingSnapshots.splice(0)
       this.provenanceReferences = 0
       this.experienceReady = () => true
@@ -764,6 +792,11 @@ export class PatternRuntime {
       revisions: nextChain,
     })
     this.provenanceReferences += rowRefs
+    if (this.currentStatus === 'READY') {
+      for (const listener of this.guidanceListeners) {
+        try { listener(revision) } catch { /* Guidance is an optional downstream projection. */ }
+      }
+    }
   }
 
   private loadPatternHistory(): void {

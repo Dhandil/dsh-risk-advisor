@@ -30,6 +30,8 @@ import { OutcomeRuntime } from './host/outcome-store.ts'
 import type { OutcomeDiagnostics } from './host/outcome-store.ts'
 import { PatternRuntime } from './host/pattern-store.ts'
 import type { PatternDiagnostics } from './host/pattern-store.ts'
+import { GuidanceRuntime } from './host/guidance-store.ts'
+import type { GuidanceDiagnostics } from './host/guidance-store.ts'
 import type { DomainFacility } from '@deepseek-ai/dsh-storage-domain'
 
 export const inject = ['tools']
@@ -47,6 +49,7 @@ interface Context {
   riskAdvisorExperience: ExperienceDiagnostics
   riskAdvisorOutcomes: OutcomeDiagnostics
   riskAdvisorPatterns: PatternDiagnostics
+  riskAdvisorGuidance: GuidanceDiagnostics
 }
 }
 
@@ -99,6 +102,7 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
   const evidence = new BoundedEvidenceRuntime()
   const outcomes = new OutcomeRuntime()
   const patterns = new PatternRuntime()
+  const guidance = new GuidanceRuntime()
   const verifier = new PostconditionVerifier(expectedEffects, {
     onRecord: (record: VerificationRecordV1) => {
       failureChain.observeVerification(record)
@@ -145,6 +149,7 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
   ctx.provide('riskAdvisorExperience', experience.diagnostics)
   ctx.provide('riskAdvisorOutcomes', outcomes.diagnostics)
   ctx.provide('riskAdvisorPatterns', patterns.diagnostics)
+  ctx.provide('riskAdvisorGuidance', guidance.diagnostics)
   ctx.inject(['storageDomain'], async experienceCtx => {
     const storageDomain = experienceCtx.get('storageDomain', false) as DomainFacility | undefined
     experienceCtx.effect(() => async () => {
@@ -152,6 +157,8 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
       await verifier.fenceAndDrain()
       await experience.drain()
       await outcomes.drain()
+      await patterns.drain()
+      await guidance.detach()
       await patterns.detach()
       await outcomes.detach()
       await experience.detach()
@@ -164,6 +171,7 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
         await outcomes.attach(storageDomain, experience.snapshotEpisodes())
         if (experienceStatus === 'READY' && outcomes.diagnostics.status() === 'READY') {
           await patterns.attach(storageDomain, outcomes, () => experience.diagnostics.status() === 'READY')
+          if (patterns.diagnostics.status() === 'READY') await guidance.attach(storageDomain, patterns)
         }
       }
     }
