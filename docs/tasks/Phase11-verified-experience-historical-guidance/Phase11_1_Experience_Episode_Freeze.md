@@ -195,13 +195,17 @@ This preserves Episode immutability.
 
 ## 9. Episode identity and immutability
 
-Episode key is deterministically derived from Risk Advisor's opaque live `executionId`.
+Episode table key and the stored `episodeId` are deterministically derived from Risk Advisor's opaque live `executionId`.
 
 Required form:
 
 ```text
-ra-episode-v1:<executionId>
+ra-episode-v1_<sha256(executionId)>
 ```
+
+`sha256(executionId)` means the lowercase 64-character hexadecimal SHA-256 digest of the exact UTF-8 bytes of `executionId`. The resulting table key uses only `[A-Za-z0-9_-]`, satisfying the pinned Harness per-record Storage Domain key contract without changing Harness Core. The stored `episodeId` MUST equal this table key; `sourceExecutionId` continues to contain the opaque live execution id.
+
+This path-safe key encoding does not change the Episode authority or lifecycle semantics: one settled Tool attempt still produces at most one immutable Episode; identity remains deterministically executionId-based; identical same-key writes remain idempotent; divergent same-key records remain conflicts; privacy boundaries, capacity, and lifecycle behavior are unchanged.
 
 The stored record also contains that episodeId and source executionId.
 

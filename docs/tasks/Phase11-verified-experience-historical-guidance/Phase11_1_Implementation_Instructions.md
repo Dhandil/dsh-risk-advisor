@@ -102,7 +102,9 @@ Do not wait for asynchronous verifier completion.
 
 Episode key:
 
-`ra-episode-v1:<executionId>`
+`ra-episode-v1_<sha256(executionId)>`
+
+Use the lowercase 64-character hexadecimal SHA-256 digest of the exact UTF-8 bytes of `executionId`. The stored `episodeId` MUST equal this table key. This key form satisfies the pinned Harness per-record Storage Domain key contract and does not change executionId-based identity, one-settled-attempt/one-immutable-Episode semantics, idempotency, divergent-key conflict handling, privacy, capacity, or lifecycle behavior.
 
 Rules:
 
