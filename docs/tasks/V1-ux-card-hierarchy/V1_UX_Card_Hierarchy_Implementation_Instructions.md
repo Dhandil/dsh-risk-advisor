@@ -18,7 +18,9 @@ Sync `origin/main`.
 
 Required baseline includes:
 
-`605e4622094039687ad6b95cbbc548aa3f3a34e2`
+- Mac/cross-platform portability baseline: `e4a729531adcebc30495fea2d514cae21a2c59e0`
+- corrected UX preflight: `90100c6ff349fdd6718de240188e81ea77a1abc8`
+- corrected UX freeze: `76f0a907d7f70d9922773507979675ba3b4063c1`
 
 Read:
 
@@ -29,7 +31,7 @@ Read:
 
 Freeze is authoritative.
 
-Preserve user drift. No reset/clean/force push.
+Before implementation on Mac, perform a read-only local preflight and stop if local HEAD/origin/main, tracked state, or unpushed commits do not match the expected corrected baseline. Preserve user drift. No reset/clean/force push.
 
 ## 2. Implement the compact primary layer
 
