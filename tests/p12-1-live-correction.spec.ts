@@ -221,6 +221,8 @@ describe('Phase 12.1 live correction finding core', () => {
     }))
     expect(runtime.diagnostics.get(id)).toBeUndefined()
     expect(runtime.diagnostics.forExecution('conflict')).toHaveLength(0)
+    runtime.observeVerification(mismatch('conflict', { observedAt: 102 }))
+    expect(runtime.diagnostics.forExecution('conflict')).toHaveLength(0)
   })
 
   it('C10 product wiring associates direct synchronous verifier results before publication', async () => {
@@ -296,17 +298,27 @@ describe('Phase 12.1 live correction finding core', () => {
     const runtime = new LiveCorrectionRuntime({ clock: () => now, maxPerSession: 1, maxGlobal: 2, maxAssociations: 1 })
     const a = owner('a')
     const b = owner('b')
+    const c = owner('c')
     runtime.observeSettledResult(exec(a, 'a1'), 'a1', summary('a1'))
     runtime.observeSettledResult(exec(a, 'a2'), 'a2', summary('a2'))
     expect(runtime.diagnostics.forSession(a).findings).toHaveLength(1)
     expect(runtime.diagnostics.forSession(a).truncated).toBe(true)
     runtime.observeSettledResult(exec(b, 'b1'), 'b1', summary('b1'))
     expect(runtime.diagnostics.forSession(b).findings).toHaveLength(1)
+    runtime.observeSettledResult(exec(c, 'c1'), 'c1', summary('c1'))
+    const retained = [
+      ...runtime.diagnostics.forSession(a).findings,
+      ...runtime.diagnostics.forSession(b).findings,
+      ...runtime.diagnostics.forSession(c).findings,
+    ]
+    expect(retained).toHaveLength(2)
+    expect(runtime.diagnostics.forSession(a).truncated || runtime.diagnostics.forSession(b).truncated).toBe(true)
     runtime.observeVerification(mismatch('a2'))
     expect(runtime.diagnostics.forExecution('a2').some(item => item.kind === 'POSTCONDITION_NOT_SATISFIED')).toBe(false)
     now = LIVE_CORRECTION_TTL_MS
     expect(runtime.diagnostics.forSession(a).findings).toHaveLength(0)
     expect(runtime.diagnostics.forSession(b).findings).toHaveLength(0)
+    expect(runtime.diagnostics.forSession(c).findings).toHaveLength(0)
   })
 
   it('C15 session disposal removes only that session findings and associations', () => {
