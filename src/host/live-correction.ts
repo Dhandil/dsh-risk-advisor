@@ -121,7 +121,7 @@ function assertFindingShape(finding: LiveCorrectionFindingV1): void {
     || finding.recentFailureCount !== undefined
     || finding.verifierSource === undefined
     || finding.verifierAdapterId === undefined
-    || finding.evidenceQuality === undefined
+    || (finding.evidenceQuality !== 'high' && finding.evidenceQuality !== 'medium')
     || !SUPPORTED_F2.has(`${finding.verifierSource}:${finding.verifierAdapterId}`)) {
     throw new Error('invalid-live-correction-f2')
   }
@@ -282,7 +282,11 @@ export class LiveCorrectionRuntime {
       if (oldest === undefined) break
       const item = this.associations.get(oldest)
       this.associations.delete(oldest)
-      if (item !== undefined) this.stateFor(item.session).executionIds.delete(oldest)
+      if (item !== undefined) {
+        const state = this.stateFor(item.session)
+        state.executionIds.delete(oldest)
+        state.truncated = true
+      }
     }
     this.associations.set(executionId, { session, createdAt })
     this.stateFor(session).executionIds.add(executionId)
