@@ -19,6 +19,8 @@ import { RetryEscalationAnalyzer } from '../src/host/retry-escalation.ts'
 import type { FailureChainSummary } from '../src/host/retry-escalation.ts'
 import type { VerificationRecordV1 } from '../src/host/verification-store.ts'
 
+const CONFLICT_TOMBSTONE_LIMIT = 256
+
 function owner(id: string): Session {
   return { id, header: { cwd: 'D:\\Harness\\p12-fixture' } } as unknown as Session
 }
@@ -80,6 +82,23 @@ function mismatch(id: string, overrides: Partial<VerificationRecordV1> = {}): Ve
     durationMs: 1,
     ...overrides,
   })
+}
+
+function verifierConflict(id: string): VerificationRecordV1 {
+  return mismatch(id, {
+    status: 'UNKNOWN',
+    semanticSuccess: 'unknown',
+    evidenceQuality: 'low',
+    reasonCodes: ['VERIFICATION_CONFLICT'],
+  })
+}
+
+function conflictState(runtime: LiveCorrectionRuntime): { conflicted: Set<string>; f2ConflictSaturated: boolean } {
+  return runtime as unknown as { conflicted: Set<string>; f2ConflictSaturated: boolean }
+}
+
+function addUniqueConflicts(runtime: LiveCorrectionRuntime, prefix: string, count: number): void {
+  for (let index = 0; index < count; index += 1) runtime.observeVerification(verifierConflict(`${prefix}-${index}`))
 }
 
 describe('Phase 12.1 live correction finding core', () => {
@@ -326,6 +345,108 @@ describe('Phase 12.1 live correction finding core', () => {
     nextGeneration.observeSettledResult(exec(session, 'r5-conflict'), 'r5-conflict', undefined)
     nextGeneration.observeVerification(mismatch('r5-conflict', { observedAt: 105 }))
     expect(nextGeneration.diagnostics.get(id)).toBeDefined()
+  })
+
+  it('S1 retains no more than 256 unique conflict tombstones', () => {
+    const runtime = new LiveCorrectionRuntime()
+    addUniqueConflicts(runtime, 's1', CONFLICT_TOMBSTONE_LIMIT)
+    const state = conflictState(runtime)
+    expect(state.conflicted.size).toBe(CONFLICT_TOMBSTONE_LIMIT)
+    expect(state.f2ConflictSaturated).toBe(false)
+  })
+
+  it('S2 the 257th unique conflict saturates F2 and blocks future Findings', () => {
+    const runtime = new LiveCorrectionRuntime()
+    addUniqueConflicts(runtime, 's2', CONFLICT_TOMBSTONE_LIMIT)
+    expect(conflictState(runtime).f2ConflictSaturated).toBe(false)
+    runtime.observeVerification(verifierConflict(`s2-${CONFLICT_TOMBSTONE_LIMIT}`))
+    expect(conflictState(runtime).f2ConflictSaturated).toBe(true)
+
+    const session = owner('s2-future')
+    runtime.observeSettledResult(exec(session, 's2-future'), 's2-future', undefined)
+    runtime.observeVerification(mismatch('s2-future'))
+    expect(runtime.diagnostics.forExecution('s2-future')).toHaveLength(0)
+  })
+
+  it('S3 saturation hides an already-visible F2 from every read and render surface', () => {
+    const runtime = new LiveCorrectionRuntime()
+    const session = owner('s3-visible')
+    runtime.observeSettledResult(exec(session, 's3-visible'), 's3-visible', undefined)
+    runtime.observeVerification(mismatch('s3-visible'))
+    const id = liveCorrectionFindingId('s3-visible', 'POSTCONDITION_NOT_SATISFIED')
+    expect(runtime.diagnostics.get(id)).toBeDefined()
+    expect(runtime.diagnostics.forExecution('s3-visible')).toHaveLength(1)
+    expect(runtime.diagnostics.forSession(session).findings).toHaveLength(1)
+    expect(runtime.diagnostics.render(id)).toBeDefined()
+
+    addUniqueConflicts(runtime, 's3-overflow', CONFLICT_TOMBSTONE_LIMIT + 1)
+    expect(runtime.diagnostics.get(id)).toBeUndefined()
+    expect(runtime.diagnostics.forExecution('s3-visible')).toHaveLength(0)
+    expect(runtime.diagnostics.forSession(session).findings).toHaveLength(0)
+    expect(runtime.diagnostics.render(id)).toBeUndefined()
+  })
+
+  it('S4 F1 continues to emit and remain readable while F2 is saturated', () => {
+    const runtime = new LiveCorrectionRuntime()
+    addUniqueConflicts(runtime, 's4', CONFLICT_TOMBSTONE_LIMIT + 1)
+    const session = owner('s4-f1')
+    runtime.observeSettledResult(exec(session, 's4-f1'), 's4-f1', summary('s4-f1'))
+    const id = liveCorrectionFindingId('s4-f1', 'REPEATED_FAILURE_WITHOUT_PROGRESS')
+    expect(conflictState(runtime).f2ConflictSaturated).toBe(true)
+    expect(runtime.diagnostics.get(id)).toMatchObject({ kind: 'REPEATED_FAILURE_WITHOUT_PROGRESS' })
+    expect(runtime.diagnostics.forExecution('s4-f1')).toHaveLength(1)
+    expect(runtime.diagnostics.forSession(session).findings).toHaveLength(1)
+    expect(runtime.diagnostics.render(id)).toContain('Stop repeating this exact retry path')
+  })
+
+  it('S5 TTL, capacity eviction, session disposal, and replay cannot clear saturation', () => {
+    let now = 0
+    const runtime = new LiveCorrectionRuntime({ clock: () => now, ttlMs: 10, maxPerSession: 1 })
+    const session = owner('s5')
+    runtime.observeSettledResult(exec(session, 's5-conflict-0'), 's5-conflict-0', undefined)
+    runtime.observeVerification(mismatch('s5-conflict-0'))
+    addUniqueConflicts(runtime, 's5-conflict', CONFLICT_TOMBSTONE_LIMIT + 1)
+    expect(conflictState(runtime).f2ConflictSaturated).toBe(true)
+
+    now = 10
+    expect(runtime.diagnostics.get(liveCorrectionFindingId('s5-conflict-0', 'POSTCONDITION_NOT_SATISFIED'))).toBeUndefined()
+    runtime.observeSettledResult(exec(session, 's5-evicted-1'), 's5-evicted-1', summary('s5-evicted-1'))
+    runtime.observeSettledResult(exec(session, 's5-evicted-2'), 's5-evicted-2', summary('s5-evicted-2'))
+    expect(runtime.diagnostics.get(liveCorrectionFindingId('s5-evicted-1', 'REPEATED_FAILURE_WITHOUT_PROGRESS'))).toBeUndefined()
+    runtime.disposeSession(session)
+    expect(conflictState(runtime).f2ConflictSaturated).toBe(true)
+
+    runtime.observeSettledResult(exec(session, 's5-replay'), 's5-conflict-0', undefined)
+    runtime.observeVerification(mismatch('s5-conflict-0', { observedAt: 105 }))
+    expect(runtime.diagnostics.forExecution('s5-conflict-0')).toHaveLength(0)
+    expect(conflictState(runtime).f2ConflictSaturated).toBe(true)
+  })
+
+  it('S6 dispose resets saturation only for the ending generation', () => {
+    const priorGeneration = new LiveCorrectionRuntime()
+    addUniqueConflicts(priorGeneration, 's6-old', CONFLICT_TOMBSTONE_LIMIT + 1)
+    expect(conflictState(priorGeneration).f2ConflictSaturated).toBe(true)
+    priorGeneration.dispose()
+    expect(conflictState(priorGeneration).f2ConflictSaturated).toBe(false)
+    expect(conflictState(priorGeneration).conflicted.size).toBe(0)
+
+    const nextGeneration = new LiveCorrectionRuntime()
+    const session = owner('s6-new')
+    nextGeneration.observeSettledResult(exec(session, 's6-identity'), 's6-identity', undefined)
+    nextGeneration.observeVerification(mismatch('s6-identity'))
+    expect(nextGeneration.diagnostics.get(liveCorrectionFindingId('s6-identity', 'POSTCONDITION_NOT_SATISFIED'))).toBeDefined()
+  })
+
+  it('S7 duplicate conflict identities do not consume capacity or cause premature saturation', () => {
+    const runtime = new LiveCorrectionRuntime()
+    addUniqueConflicts(runtime, 's7', CONFLICT_TOMBSTONE_LIMIT)
+    const duplicate = verifierConflict('s7-0')
+    for (let index = 0; index < 20; index += 1) runtime.observeVerification(duplicate)
+    const state = conflictState(runtime)
+    expect(state.conflicted.size).toBe(CONFLICT_TOMBSTONE_LIMIT)
+    expect(state.f2ConflictSaturated).toBe(false)
+    runtime.observeVerification(verifierConflict(`s7-${CONFLICT_TOMBSTONE_LIMIT}`))
+    expect(state.f2ConflictSaturated).toBe(true)
   })
 
   it('C10 product wiring associates direct synchronous verifier results before publication', async () => {

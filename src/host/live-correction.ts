@@ -9,6 +9,7 @@ export const LIVE_CORRECTION_TTL_MS = 5 * 60 * 1000
 export const MAX_CORRECTION_PER_SESSION = 64
 export const MAX_CORRECTION_GLOBAL = 256
 export const MAX_EXECUTION_ASSOCIATIONS = 512
+const MAX_CONFLICT_TOMBSTONES = 256
 
 export type LiveCorrectionFindingKind =
   | 'REPEATED_FAILURE_WITHOUT_PROGRESS'
@@ -143,7 +144,11 @@ export class LiveCorrectionRuntime {
   private readonly associations = new Map<ExecutionId, ExecutionAssociation>()
   private readonly executionFindings = new Map<ExecutionId, Set<string>>()
   private readonly sessions = new WeakMap<Session, SessionState>()
+  /** Generation-terminal F2 verifier/identity conflict tombstones. */
   private readonly conflicted = new Set<string>()
+  /** F1 identity conflicts live only as long as their bounded Finding payload. */
+  private readonly conflictedF1 = new Set<string>()
+  private f2ConflictSaturated = false
   private active = true
 
   readonly diagnostics: LiveCorrectionDiagnostics = Object.freeze({
@@ -208,7 +213,7 @@ export class LiveCorrectionRuntime {
     this.sweep(now)
     const findingId = liveCorrectionFindingId(record.executionId, 'POSTCONDITION_NOT_SATISFIED')
     if (record.status === 'UNKNOWN' && record.reasonCodes.includes('VERIFICATION_CONFLICT')) {
-      this.conflicted.add(findingId)
+      this.recordF2Conflict(findingId)
       this.dropAssociation(record.executionId)
       return
     }
@@ -250,6 +255,8 @@ export class LiveCorrectionRuntime {
     this.associations.clear()
     this.executionFindings.clear()
     this.conflicted.clear()
+    this.conflictedF1.clear()
+    this.f2ConflictSaturated = false
   }
 
   private sessionOf(exec: Readonly<ToolExecution>): Session | undefined {
@@ -294,12 +301,18 @@ export class LiveCorrectionRuntime {
 
   private insert(session: Session, finding: LiveCorrectionFindingV1, createdAt: number): void {
     assertFindingShape(finding)
-    if (this.conflicted.has(finding.findingId)) return
+    const isF2 = finding.kind === 'POSTCONDITION_NOT_SATISFIED'
+    if (isF2 && (this.f2ConflictSaturated || this.conflicted.has(finding.findingId))) return
+    if (!isF2 && this.conflictedF1.has(finding.findingId)) return
     const prior = this.findings.get(finding.findingId)
     if (prior !== undefined) {
       if (sameFinding(prior.finding, finding)) return
-      this.conflicted.add(finding.findingId)
-      if (finding.kind === 'POSTCONDITION_NOT_SATISFIED') this.dropAssociation(finding.executionId)
+      if (isF2) {
+        this.recordF2Conflict(finding.findingId)
+        this.dropAssociation(finding.executionId)
+      } else {
+        this.conflictedF1.add(finding.findingId)
+      }
       return
     }
     const state = this.stateFor(session)
@@ -330,10 +343,27 @@ export class LiveCorrectionRuntime {
     this.sessions.get(association.session)?.executionIds.delete(executionId)
   }
 
+  private recordF2Conflict(findingId: string): void {
+    if (this.f2ConflictSaturated || this.conflicted.has(findingId)) return
+    if (this.conflicted.size >= MAX_CONFLICT_TOMBSTONES) {
+      this.f2ConflictSaturated = true
+      this.conflicted.clear()
+      return
+    }
+    this.conflicted.add(findingId)
+  }
+
+  private isFindingSuppressed(findingId: string): boolean {
+    if (this.conflicted.has(findingId) || this.conflictedF1.has(findingId)) return true
+    return this.f2ConflictSaturated
+      && this.findings.get(findingId)?.finding.kind === 'POSTCONDITION_NOT_SATISFIED'
+  }
+
   private deleteFinding(findingId: string): void {
     const stored = this.findings.get(findingId)
     if (stored === undefined) return
     this.findings.delete(findingId)
+    if (stored.finding.kind === 'REPEATED_FAILURE_WITHOUT_PROGRESS') this.conflictedF1.delete(findingId)
     this.stateFor(stored.session).findingIds.delete(findingId)
     const ids = this.executionFindings.get(stored.finding.executionId)
     ids?.delete(findingId)
@@ -355,7 +385,7 @@ export class LiveCorrectionRuntime {
   private getFinding(findingId: string): LiveCorrectionFindingV1 | undefined {
     if (!this.active) return undefined
     this.sweep(this.clock())
-    if (this.conflicted.has(findingId)) return undefined
+    if (this.isFindingSuppressed(findingId)) return undefined
     return this.findings.get(findingId)?.finding
   }
 
@@ -365,7 +395,7 @@ export class LiveCorrectionRuntime {
     const ids = this.executionFindings.get(executionId)
     if (ids === undefined) return Object.freeze([])
     return Object.freeze([...ids]
-      .filter(id => !this.conflicted.has(id))
+      .filter(id => !this.isFindingSuppressed(id))
       .map(id => this.findings.get(id)?.finding)
       .filter((item): item is LiveCorrectionFindingV1 => item !== undefined))
   }
@@ -376,7 +406,7 @@ export class LiveCorrectionRuntime {
     const state = this.sessions.get(session)
     if (state === undefined) return Object.freeze({ findings: Object.freeze([]), truncated: false })
     const findings = [...state.findingIds]
-      .filter(id => !this.conflicted.has(id))
+      .filter(id => !this.isFindingSuppressed(id))
       .map(id => this.findings.get(id)?.finding)
       .filter((item): item is LiveCorrectionFindingV1 => item !== undefined)
     return Object.freeze({ findings: Object.freeze(findings), truncated: state.truncated })
