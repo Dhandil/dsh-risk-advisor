@@ -47,6 +47,9 @@ const harnessSourceAliases = {
   '@deepseek-ai/dsh-typert-protocol': resolve(harness, 'packages/typert/protocol/src/index.ts'),
   '@deepseek-ai/dsh-llm': resolve(harness, 'packages/llm/llm/lib/index.js'),
   '@deepseek-ai/dsh-session': resolve(harness, 'packages/core/session/lib/index.js'),
+  '@deepseek-ai/dsh-storage': resolve(harness, 'packages/storage/storage/src/index.ts'),
+  '@deepseek-ai/dsh-storage-domain': resolve(harness, 'packages/storage/storage-domain/src/index.ts'),
+  '@deepseek-ai/dsh-storage-json': resolve(harness, 'packages/storage/storage-json/src/index.ts'),
 }
 
 export default defineConfig({

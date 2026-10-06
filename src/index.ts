@@ -3,7 +3,7 @@ import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-user-approval'
 import { ActiveExecutionIndex, createCorrelationDiagnostics } from './host/correlation.ts'
-import type { CorrelationDiagnostics } from './host/correlation.ts'
+import type { CorrelationDiagnostics, ExecutionId } from './host/correlation.ts'
 import { installLedger } from './host/ledger.ts'
 import type { LedgerDiagnostics } from './host/ledger.ts'
 import { OperationFoundation } from './host/operation-foundation.ts'
@@ -24,6 +24,9 @@ import { PostconditionVerifier } from './host/postcondition-verifier.ts'
 import type { VerificationDiagnostics, VerificationRecordV1 } from './host/verification-store.ts'
 import { BoundedEvidenceRuntime } from './host/evidence-collector.ts'
 import type { EvidenceDiagnostics } from './host/evidence-types.ts'
+import { ExperienceRuntime } from './host/experience-store.ts'
+import type { ExperienceDiagnostics } from './host/experience-store.ts'
+import type { DomainFacility } from '@deepseek-ai/dsh-storage-domain'
 
 export const inject = ['tools']
 
@@ -37,27 +40,31 @@ interface Context {
   riskAdvisorRules: RuleDiagnostics
   riskAdvisorVerification: VerificationDiagnostics
   riskAdvisorEvidence: EvidenceDiagnostics
+  riskAdvisorExperience: ExperienceDiagnostics
 }
 }
 
 interface CorrelationHooks {
   readonly capture?: (exec: Parameters<ActiveExecutionIndex['observePreExecute']>[0], executionId: ReturnType<ActiveExecutionIndex['observePreExecute']>, parentExecutionId: string | undefined) => void
-  readonly retire?: (exec: Parameters<ActiveExecutionIndex['observeResult']>[0], result: ToolExecutionResult) => void
+  readonly retire?: (exec: Parameters<ActiveExecutionIndex['observeResult']>[0], result: ToolExecutionResult, index: ActiveExecutionIndex, executionId: ExecutionId | undefined) => void
   readonly sessionEvent?: (session: Session, event: SessionEvent, index: ActiveExecutionIndex) => void
   readonly sessionDisposed?: (session: Session) => void
 }
 
 function installCorrelationInternal(ctx: Context, hooks: CorrelationHooks = {}): CorrelationDiagnostics {
   const index = new ActiveExecutionIndex()
+  const executionIds = new WeakMap<object, ExecutionId>()
   const diagnostics = createCorrelationDiagnostics(index)
   ctx.provide('riskAdvisorCorrelation', diagnostics)
   ctx.on('tools/pre-execute', (exec, next) => {
     const executionId = index.observePreExecute(exec)
+    if (executionId !== undefined) executionIds.set(exec, executionId)
     try { hooks.capture?.(exec, executionId, index.parentExecutionIdOf(exec)) } catch { /* Foundation is observational. */ }
     return next()
   })
   ctx.on('tools/result', (exec, result) => {
-    try { hooks.retire?.(exec, result) } catch { /* Foundation is observational. */ }
+    try { hooks.retire?.(exec, result, index, executionIds.get(exec)) } catch { /* Foundation is observational. */ }
+    executionIds.delete(exec)
     index.observeResult(exec, result)
   })
   ctx.on('session/event', (session, event) => {
@@ -95,6 +102,7 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
     ...config.fastJudge === undefined ? {} : { fastJudge: config.fastJudge },
     ...config.deepJudge === undefined ? {} : { deepJudge: config.deepJudge },
   })
+  const experience = new ExperienceRuntime(rules.diagnostics, failureChain.diagnostics)
   installCorrelationInternal(ctx, {
     capture: (exec, executionId, parentExecutionId) => {
       foundation.capture(exec, executionId, parentExecutionId)
@@ -105,9 +113,10 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
       assessments.captureReviewerSeed(exec, executionId)
       assessments.captureDeepJudgeParent(exec, executionId)
     },
-    retire: (exec, result) => {
+    retire: (exec, result, index, executionId) => {
       failureChain.observeResult(exec, result)
       verifier.observeResult(exec, result)
+      experience.observeResult(exec, result, index, executionId)
       foundation.retire(exec)
     },
     sessionEvent: (session, event, index) => { assessments.observeSessionEvent(session, event, index) },
@@ -119,6 +128,12 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
   ctx.provide('riskAdvisorRules', rules.diagnostics)
   ctx.provide('riskAdvisorVerification', verifier.store.diagnostics)
   ctx.provide('riskAdvisorEvidence', evidence.diagnostics)
+  ctx.provide('riskAdvisorExperience', experience.diagnostics)
+  ctx.inject(['storageDomain'], async experienceCtx => {
+    const storageDomain = experienceCtx.get('storageDomain', false) as DomainFacility | undefined
+    experienceCtx.effect(() => async () => { await experience.detach() }, 'risk-advisor-experience-domain-capability')
+    if (storageDomain !== undefined) await experience.attach(storageDomain)
+  })
   ctx.inject(['connection', 'sessions'], bridgeCtx => {
     const connection = bridgeCtx.get('connection', false) as HostConnectionLike | undefined
     if (connection !== undefined) installRiskAdvisorBrowserBridge(bridgeCtx, connection, assessments)

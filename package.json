@@ -36,7 +36,7 @@
     "build": "tsc -p tsconfig.json && tsdown",
     "bundle": "tsdown",
     "watch": "tsdown --watch",
-    "test": "pnpm run test:r1 && pnpm run test:r2 && pnpm run test:r3 && pnpm run test:r4 && pnpm run test:r5 && pnpm run test:p1a && pnpm run test:p1b && pnpm run test:p1c && pnpm run test:p2 && pnpm run test:p3 && pnpm run test:p4 && pnpm run test:p5 && pnpm run test:p6 && pnpm run test:p7 && pnpm run test:p8 && pnpm run test:p9 && pnpm run test:p10",
+    "test": "pnpm run test:r1 && pnpm run test:r2 && pnpm run test:r3 && pnpm run test:r4 && pnpm run test:r5 && pnpm run test:p1a && pnpm run test:p1b && pnpm run test:p1c && pnpm run test:p2 && pnpm run test:p3 && pnpm run test:p4 && pnpm run test:p5 && pnpm run test:p6 && pnpm run test:p7 && pnpm run test:p8 && pnpm run test:p9 && pnpm run test:p10 && pnpm run test:p11.1",
     "test:r1": "vitest run tests/r1-fixture.unit.spec.tsx tests/r1-slot.integration.spec.tsx",
     "test:r2": "vitest run tests/r2-correlation.unit.spec.ts tests/r2-runtime.integration.spec.ts",
     "test:r3": "vitest run tests/r3-ptc-replay.unit.spec.ts tests/r3-runtime.integration.spec.ts",
@@ -62,6 +62,7 @@
     "test:p8": "vitest run tests/p8-evidence-target.unit.spec.ts tests/p8-evidence-collector.unit.spec.ts tests/p8-evidence-repair.unit.spec.ts tests/p8-evidence-bridge.spec.ts tests/p8-evidence-lifecycle.integration.spec.ts",
     "test:p9": "vitest run tests/p9-deep-judge-config.unit.spec.ts tests/p9-deep-judge-runtime.integration.spec.ts tests/p9-deep-judge-lifecycle.integration.spec.ts tests/p9-deep-judge-bridge.spec.ts tests/p9-deep-judge-coordinator.integration.spec.ts tests/p9-boundary.integration.spec.ts",
     "test:p10": "vitest run tests/p10-shell-hardening.unit.spec.ts tests/p10-prompt-privacy.integration.spec.ts tests/p10-retry-semantic.integration.spec.ts tests/p10-lifecycle-resource.integration.spec.ts tests/p10-coexistence.integration.spec.ts tests/p10-host-hmr.integration.spec.ts tests/p10-client-hmr.integration.spec.tsx tests/p10-native-close.integration.spec.ts tests/p10-toctou-presentation.spec.tsx tests/p10-proof-matrix.unit.spec.ts tests/p10-package-contract.spec.ts tests/p10-boundary.integration.spec.ts",
+    "test:p11.1": "vitest run tests/p11-1-experience-schema.spec.ts tests/p11-1-experience-runtime.spec.ts",
     "bench:r5:smoke": "pnpm run build && vitest run --config vitest.config.ts tests/r5-benchmark-smoke.spec.ts",
     "bench:r5": "pnpm run build && vitest run --config vitest.config.ts tests/r5-benchmark-full.spec.ts",
     "bench:r5:p5:smoke": "pnpm run build && vitest run --config vitest.config.ts tests/r5-phase5-benchmark-smoke.spec.ts",
@@ -86,6 +87,7 @@
     "@deepseek-ai/dsh-llm": ">=0.1.6-alpha.2",
     "@deepseek-ai/dsh-fs": ">=0.1.6-alpha.2",
     "@deepseek-ai/dsh-user-approval": ">=0.1.6-alpha.2",
+    "@deepseek-ai/dsh-storage-domain": ">=0.1.6-alpha.2",
     "@deepseek-ai/dsh-client-ui-approval": ">=0.1.6-alpha.2",
     "@deepseek-ai/dsh-client-ui-chat": ">=0.1.6-alpha.2",
     "@deepseek-ai/dsh-client-ui-slots": ">=0.1.6-alpha.2",
@@ -94,6 +96,9 @@
     "react": ">=18.2.0"
   },
   "devDependencies": {
+    "@deepseek-ai/dsh-storage": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-storage-domain": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-storage-json": "0.1.6-alpha.2",
     "@testing-library/react": "^16.3.2",
     "@types/node": "^24.10.1",
     "@types/react": "^18.3.31",
@@ -109,6 +114,9 @@
     "typescript": "^6.0.3",
     "use-sync-external-store": "^1.2.0",
     "vitest": "^4.1.8"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
   },
   "files": [
     "lib/index.js",
