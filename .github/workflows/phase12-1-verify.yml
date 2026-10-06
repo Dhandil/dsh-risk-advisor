@@ -1,0 +1,104 @@
+name: Phase 12.1 Exact Candidate Verification
+
+on:
+  push:
+    branches:
+      - phase12-1-verify
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CANDIDATE_SHA: 3648acc02cb599a74b411cb074e896b7ebe3697c
+      HARNESS_SHA: ddefc45fbc7f8e46dd73185e68295696d1297887
+    steps:
+      - name: Checkout pinned Harness
+        uses: actions/checkout@v4
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: ${{ env.HARNESS_SHA }}
+          path: deepseek-harness
+          fetch-depth: 1
+
+      - name: Checkout exact Risk Advisor candidate
+        uses: actions/checkout@v4
+        with:
+          repository: Dhandil/dsh-risk-advisor
+          ref: ${{ env.CANDIDATE_SHA }}
+          path: harness-plugin/dsh-risk-advisor
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Enable pnpm
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.7.0 --activate
+          node --version
+          pnpm --version
+
+      - name: Install pinned Harness
+        working-directory: deepseek-harness
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Harness libraries
+        working-directory: deepseek-harness
+        run: pnpm run build:lib
+
+      - name: Install Risk Advisor candidate
+        working-directory: harness-plugin/dsh-risk-advisor
+        run: pnpm install --frozen-lockfile
+
+      - name: Confirm exact SHAs
+        shell: bash
+        run: |
+          test "$(git -C deepseek-harness rev-parse HEAD)" = "$HARNESS_SHA"
+          test "$(git -C harness-plugin/dsh-risk-advisor rev-parse HEAD)" = "$CANDIDATE_SHA"
+
+      - name: Phase 12.1 focused C1-C20
+        working-directory: harness-plugin/dsh-risk-advisor
+        run: pnpm run test:p12.1
+
+      - name: Failure-chain regression
+        working-directory: harness-plugin/dsh-risk-advisor
+        run: pnpm run test:p3
+
+      - name: Postcondition verifier regression
+        working-directory: harness-plugin/dsh-risk-advisor
+        run: pnpm run test:p7
+
+      - name: Phase 11 regressions
+        working-directory: harness-plugin/dsh-risk-advisor
+        run: |
+          pnpm run test:p11.1
+          pnpm run test:p11.2
+          pnpm run test:p11.3
+          pnpm run test:p11.4
+
+      - name: Typecheck
+        working-directory: harness-plugin/dsh-risk-advisor
+        run: pnpm run typecheck
+
+      - name: Production build
+        working-directory: harness-plugin/dsh-risk-advisor
+        run: pnpm run build
+
+      - name: Package and dependency/static gates
+        working-directory: harness-plugin/dsh-risk-advisor
+        shell: bash
+        run: |
+          pnpm pack --dry-run
+          git diff --exit-code -- package.json pnpm-lock.yaml tsconfig.json vitest.config.ts tsdown.config.ts
+          test -z "$(git status --porcelain --untracked-files=no)"
+
+      - name: Exact candidate fresh complete Full
+        working-directory: harness-plugin/dsh-risk-advisor
+        run: pnpm test
