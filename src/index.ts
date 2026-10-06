@@ -109,7 +109,7 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
   const liveCorrection = new LiveCorrectionRuntime()
   const verifier = new PostconditionVerifier(expectedEffects, {
     onRecord: (record: VerificationRecordV1) => {
-      liveCorrection.observeVerification(record)
+      try { liveCorrection.observeVerification(record) } catch { /* Live correction is observational. */ }
       failureChain.observeVerification(record)
       outcomes.observeVerification(record)
     },
