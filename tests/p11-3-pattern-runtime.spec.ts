@@ -9,6 +9,7 @@ import type { ExperienceEpisodeId, ExperienceEpisodeV1 } from '../src/host/exper
 import { OutcomeRuntime } from '../src/host/outcome-store.ts'
 import { PatternRuntime } from '../src/host/pattern-store.ts'
 import {
+  MAX_PATTERN_DELTA_REFERENCES_PER_ARRAY,
   MAX_PATTERN_PENDING_OUTCOME_HANDOFFS,
   MAX_PATTERN_PROVENANCE_REFERENCES,
   MAX_PATTERN_REVISIONS,
@@ -679,6 +680,89 @@ describe('Phase 11.3 Verified Experience Pattern P1–P17', () => {
     expect(overflow.patterns.diagnostics.status()).toBe('UNAVAILABLE')
     expect(overflow.outcomes.diagnostics.status()).toBe('READY')
     await close(overflow)
+  }, 30_000)
+
+  it('P15 classifies frozen Pattern bounds before schema parsing and does not append an oversized delta', async () => {
+    const episodes = [1, 2, 3].map(index => makeEpisode(`p15-delta-${index}`, { observedAt: Date.UTC(2026, 0, index) }))
+    const set = await setup(episodes)
+    await seedSuccesses(set, episodes)
+    await set.patterns.attach(set.backing.facility, set.outcomes)
+    const patternId = qualifiedId(set)
+    const baseRevision = set.patterns.diagnostics.revisions(patternId)[0]!
+    await set.patterns.detach()
+
+    const syntheticRef = (index: number) => {
+      const digest = createHash('sha256').update(`p15-capacity-${index}`).digest('hex')
+      return {
+        episodeId: `ra-episode-v1_${digest}`,
+        outcomeRevisionId: `ra-outcome-v1_${digest}_00000001`,
+      }
+    }
+    const oversizedRefs = Array.from({ length: MAX_PATTERN_DELTA_REFERENCES_PER_ARRAY + 1 }, (_, index) => syntheticRef(index))
+    const malformedCapacityRows: readonly (readonly [string, unknown])[] = [
+      ...(['supportAdded', 'supportRemoved', 'contradictionsAdded', 'triggerRefs'] as const).map(field => [field, oversizedRefs] as const),
+      ...(['supportCount', 'supportUtcDateCount', 'contradictionEpisodeCount'] as const).map(field => [field, MAX_PATTERN_DELTA_REFERENCES_PER_ARRAY + 1] as const),
+      ['revisionNumber', MAX_PATTERN_REVISIONS + 1],
+    ]
+
+    for (const [field, value] of malformedCapacityRows) {
+      const candidate = { ...baseRevision, [field]: value }
+      let writes = 0
+      const candidateFacility = withPatternDomain(set.backing, domain => {
+        const table = domain.table('revisions')
+        const candidateTable = new Proxy(table, {
+          get(target, property) {
+            if (property === 'entries') return () => [[baseRevision.revisionId, candidate] as [string, unknown]][Symbol.iterator]()
+            if (property === 'put') return async (key: string, row: unknown) => {
+              writes += 1
+              await target.put(key, row as VerifiedExperiencePatternRevisionV1)
+            }
+            const result = Reflect.get(target, property, target) as unknown
+            return typeof result === 'function' ? result.bind(target) : result
+          },
+        })
+        return new Proxy(domain, {
+          get(target, property) {
+            if (property === 'table') return (name: string) => name === 'revisions' ? candidateTable : target.table(name)
+            const result = Reflect.get(target, property, target) as unknown
+            return typeof result === 'function' ? result.bind(target) : result
+          },
+        })
+      })
+      const reader = new PatternRuntime()
+      await reader.attach(candidateFacility, set.outcomes)
+      expect(reader.diagnostics.status(), field).toBe('CAPACITY_EXCEEDED')
+      expect(writes, `${field} must not be rewritten during failed open`).toBe(0)
+      await reader.detach()
+    }
+
+    const appendPatterns = new PatternRuntime()
+    const appendSet = { ...set, patterns: appendPatterns }
+    await appendPatterns.attach(set.backing.facility, set.outcomes)
+    const internals = appendPatterns as unknown as {
+      readonly projections: Map<string, { readonly support: Map<string, { episodeId: string; outcomeRevisionId: string }> }>
+    }
+    const projection = internals.projections.get(patternId)
+    if (projection === undefined) throw new Error('expected the Pattern projection to be restored')
+    for (let index = 0; index < MAX_PATTERN_DELTA_REFERENCES_PER_ARRAY; index += 1) {
+      const ref = syntheticRef(index)
+      projection.support.set(ref.episodeId, ref)
+    }
+
+    await recordOutcome(appendSet, episodes[0]!, { status: 'UNKNOWN', semanticSuccess: 'unknown' })
+    expect(appendPatterns.diagnostics.status()).toBe('CAPACITY_EXCEEDED')
+    expect(appendPatterns.diagnostics.reasonCodes()).toContain('pattern-supportRemoved-capacity-exceeded')
+    expect(appendPatterns.diagnostics.revisions(patternId)).toHaveLength(1)
+    expect(set.outcomes.diagnostics.status()).toBe('READY')
+    await appendPatterns.detach()
+
+    const durable = await set.backing.facility.open(patternDomainSpec)
+    const durableRows = [...durable.table('revisions').entries()]
+    expect(durableRows).toHaveLength(1)
+    expect(durableRows[0]).toEqual([baseRevision.revisionId, baseRevision])
+    await durable.close()
+    await set.outcomes.detach()
+    await set.backing.close()
   }, 30_000)
 
   it('P17 keeps Pattern internal to Host and leaves risk, approval, browser, and execution paths untouched', async () => {

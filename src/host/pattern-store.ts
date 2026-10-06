@@ -76,6 +76,31 @@ interface PatternTransition {
 class PatternConflictError extends Error {}
 class PatternCapacityError extends Error {}
 
+/**
+ * Classify frozen bounded-count violations before Zod can turn them into a
+ * generic validation failure. This is also used while recovering persisted
+ * rows, where the input has not yet passed the revision schema.
+ */
+function assertPatternRevisionCapacity(value: unknown): void {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return
+  const row = value as Record<string, unknown>
+  if (typeof row.revisionNumber === 'number' && row.revisionNumber > MAX_PATTERN_REVISIONS) {
+    throw new PatternCapacityError('pattern-revision-capacity-exceeded')
+  }
+  for (const field of ['supportCount', 'supportUtcDateCount', 'contradictionEpisodeCount'] as const) {
+    const count = row[field]
+    if (typeof count === 'number' && Number.isFinite(count) && count > MAX_PATTERN_DELTA_REFERENCES_PER_ARRAY) {
+      throw new PatternCapacityError(`pattern-${field}-capacity-exceeded`)
+    }
+  }
+  for (const field of ['supportAdded', 'supportRemoved', 'contradictionsAdded', 'triggerRefs'] as const) {
+    const refs = row[field]
+    if (Array.isArray(refs) && refs.length > MAX_PATTERN_DELTA_REFERENCES_PER_ARRAY) {
+      throw new PatternCapacityError(`pattern-${field}-capacity-exceeded`)
+    }
+  }
+}
+
 function freeze<T>(value: T): T {
   if (typeof value !== 'object' || value === null || Object.isFrozen(value)) return value
   Object.freeze(value)
@@ -684,6 +709,28 @@ export class PatternRuntime {
     const contradictionRefs = sortRefs(contradictions.values())
     const supportAdded = transition.supportAdded ?? (prior === undefined ? supportRefs : referenceDeltas(prior.support, support).added)
     const contradictionsAdded = transition.contradictionsAdded ?? (prior === undefined ? contradictionRefs : contradictionRefs.filter(ref => !prior.contradictions.has(ref.episodeId)))
+    const supportAddedRefs = sortRefs(supportAdded)
+    const supportRemovedRefs = sortRefs(supportRemoved)
+    const contradictionsAddedRefs = sortRefs(contradictionsAdded)
+    const triggerRefs = uniqueRefs(transition.triggerRefs)
+    const supportCount = support.size
+    const supportUtcDateCount = supportDateCount(support, this.sources)
+    const contradictionEpisodeCount = contradictions.size
+    const rowRefs = supportAddedRefs.length + supportRemovedRefs.length
+      + contradictionsAddedRefs.length + triggerRefs.length
+    assertPatternRevisionCapacity({
+      revisionNumber,
+      supportCount,
+      supportUtcDateCount,
+      contradictionEpisodeCount,
+      supportAdded: supportAddedRefs,
+      supportRemoved: supportRemovedRefs,
+      contradictionsAdded: contradictionsAddedRefs,
+      triggerRefs,
+    })
+    if (this.provenanceReferences + rowRefs > MAX_PATTERN_PROVENANCE_REFERENCES) {
+      throw new PatternCapacityError('pattern-provenance-capacity-exceeded')
+    }
     const revision = freeze(patternRevisionSchema.parse({
       schemaVersion: 1,
       patternId,
@@ -693,21 +740,15 @@ export class PatternRuntime {
       state: transition.state,
       revisionKind: transition.kind,
       minimumSupport: MIN_PATTERN_SUPPORT,
-      supportCount: support.size,
-      supportUtcDateCount: supportDateCount(support, this.sources),
-      contradictionEpisodeCount: contradictions.size,
-      supportAdded: sortRefs(supportAdded),
-      supportRemoved: sortRefs(supportRemoved),
-      contradictionsAdded: sortRefs(contradictionsAdded),
-      triggerRefs: uniqueRefs(transition.triggerRefs),
+      supportCount,
+      supportUtcDateCount,
+      contradictionEpisodeCount,
+      supportAdded: supportAddedRefs,
+      supportRemoved: supportRemovedRefs,
+      contradictionsAdded: contradictionsAddedRefs,
+      triggerRefs,
       provenanceDigest: patternProvenanceDigest(transition.state, supportRefs, contradictionRefs),
     }))
-    const rowRefs = countRowRefs(revision)
-    if ([revision.supportAdded, revision.supportRemoved, revision.contradictionsAdded, revision.triggerRefs]
-      .some(values => values.length > MAX_PATTERN_DELTA_REFERENCES_PER_ARRAY)
-      || this.provenanceReferences + rowRefs > MAX_PATTERN_PROVENANCE_REFERENCES) {
-      throw new PatternCapacityError('pattern-provenance-capacity-exceeded')
-    }
     const existing = table.get(revision.revisionId)
     if (existing !== undefined) {
       if (!sameJson(existing, revision)) throw new PatternConflictError('pattern-revision-key-conflict')
@@ -732,6 +773,7 @@ export class PatternRuntime {
     const grouped = new Map<string, VerifiedExperiencePatternRevisionV1[]>()
     this.provenanceReferences = 0
     for (const [key, raw] of table.entries()) {
+      assertPatternRevisionCapacity(raw)
       const revision = patternRevisionSchema.parse(raw)
       if (revision.revisionId !== key) throw new PatternConflictError('pattern-record-key-mismatch')
       const chain = grouped.get(revision.patternId) ?? []
