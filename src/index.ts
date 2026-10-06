@@ -32,6 +32,8 @@ import { PatternRuntime } from './host/pattern-store.ts'
 import type { PatternDiagnostics } from './host/pattern-store.ts'
 import { GuidanceRuntime } from './host/guidance-store.ts'
 import type { GuidanceDiagnostics } from './host/guidance-store.ts'
+import { LiveCorrectionRuntime } from './host/live-correction.ts'
+import type { LiveCorrectionDiagnostics } from './host/live-correction.ts'
 import type { DomainFacility } from '@deepseek-ai/dsh-storage-domain'
 
 export const inject = ['tools']
@@ -50,6 +52,7 @@ interface Context {
   riskAdvisorOutcomes: OutcomeDiagnostics
   riskAdvisorPatterns: PatternDiagnostics
   riskAdvisorGuidance: GuidanceDiagnostics
+  riskAdvisorLiveCorrection: LiveCorrectionDiagnostics
 }
 }
 
@@ -103,8 +106,10 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
   const outcomes = new OutcomeRuntime()
   const patterns = new PatternRuntime()
   const guidance = new GuidanceRuntime()
+  const liveCorrection = new LiveCorrectionRuntime()
   const verifier = new PostconditionVerifier(expectedEffects, {
     onRecord: (record: VerificationRecordV1) => {
+      liveCorrection.observeVerification(record)
       failureChain.observeVerification(record)
       outcomes.observeVerification(record)
     },
@@ -133,12 +138,15 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
     },
     retire: (exec, result, index, executionId) => {
       failureChain.observeResult(exec, result)
+      try {
+        liveCorrection.observeSettledResult(exec, executionId, executionId === undefined ? undefined : failureChain.diagnostics.get(executionId))
+      } catch { /* Live correction is observational. */ }
       verifier.observeResult(exec, result)
       experience.observeResult(exec, result, index, executionId)
       foundation.retire(exec)
     },
     sessionEvent: (session, event, index) => { assessments.observeSessionEvent(session, event, index) },
-    sessionDisposed: session => { assessments.observeSessionDisposed(session); evidence.disposeSession(session) },
+    sessionDisposed: session => { assessments.observeSessionDisposed(session); evidence.disposeSession(session); liveCorrection.disposeSession(session) },
   })
   ctx.provide('riskAdvisorFoundation', foundation.diagnostics)
   ctx.provide('riskAdvisorAssessments', assessments.diagnostics)
@@ -150,6 +158,7 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
   ctx.provide('riskAdvisorOutcomes', outcomes.diagnostics)
   ctx.provide('riskAdvisorPatterns', patterns.diagnostics)
   ctx.provide('riskAdvisorGuidance', guidance.diagnostics)
+  ctx.provide('riskAdvisorLiveCorrection', liveCorrection.diagnostics)
   ctx.inject(['storageDomain'], async experienceCtx => {
     const storageDomain = experienceCtx.get('storageDomain', false) as DomainFacility | undefined
     experienceCtx.effect(() => async () => {
@@ -213,6 +222,7 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
   ctx.effect(() => () => { rules.dispose() }, 'risk-advisor-rule-engine-generation')
   ctx.effect(() => () => verifier.dispose(), 'risk-advisor-postcondition-verification-generation')
   ctx.effect(() => () => evidence.dispose(), 'risk-advisor-evidence-collector-generation')
+  ctx.effect(() => () => liveCorrection.dispose(), 'risk-advisor-live-correction-generation')
 }
 
 export { ActiveExecutionIndex }
@@ -280,3 +290,5 @@ export type {
   ShellEvidence,
   TerminalStatus,
 } from './host/explicit-failure.ts'
+
+export type { LiveCorrectionDiagnostics, LiveCorrectionFindingV1, LiveCorrectionFindingKind, LiveCorrectionDiagnosisCode, LiveCorrectionAdvisoryCode, LiveCorrectionSessionView } from './host/live-correction.ts'
