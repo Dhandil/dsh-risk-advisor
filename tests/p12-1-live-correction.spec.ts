@@ -7,7 +7,7 @@ import type { Session } from '@deepseek-ai/dsh-session'
 import SessionStore from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineTool } from '@deepseek-ai/dsh-tools'
-import type { ToolExecution, ToolExecutionToken } from '@deepseek-ai/dsh-tools'
+import type { ToolExecution, ToolExecutionResult, ToolExecutionToken } from '@deepseek-ai/dsh-tools'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { apply } from '../src/index.ts'
 import {
@@ -15,6 +15,7 @@ import {
   liveCorrectionFindingId,
   LIVE_CORRECTION_TTL_MS,
 } from '../src/host/live-correction.ts'
+import { RetryEscalationAnalyzer } from '../src/host/retry-escalation.ts'
 import type { FailureChainSummary } from '../src/host/retry-escalation.ts'
 import type { VerificationRecordV1 } from '../src/host/verification-store.ts'
 
@@ -22,16 +23,28 @@ function owner(id: string): Session {
   return { id, header: { cwd: 'D:\\Harness\\p12-fixture' } } as unknown as Session
 }
 
-function exec(session: Session, id: string): ToolExecution {
+function exec(session: Session, id: string, command = 'pnpm test'): ToolExecution {
   return {
     callId: id,
     rootCallId: id,
     name: 'bash',
-    arguments: { command: 'pnpm test', description: 'run tests' },
+    arguments: { command, description: 'run tests' },
     agent: { session } as unknown as Agent,
     signal: new AbortController().signal,
     token: Symbol(id) as ToolExecutionToken,
   } as ToolExecution
+}
+
+function failedResult(code = 'TOOL_TIMEOUT'): ToolExecutionResult {
+  return {
+    isError: true,
+    content: [],
+    error: { message: 'private failure', info: { name: 'HarnessError', code } },
+  } as ToolExecutionResult
+}
+
+function successResult(): ToolExecutionResult {
+  return { isError: false, content: [], value: 'ok' } as ToolExecutionResult
 }
 
 function summary(id: string, overrides: Partial<FailureChainSummary> = {}): FailureChainSummary {
@@ -86,17 +99,38 @@ describe('Phase 12.1 live correction finding core', () => {
     })
   })
 
-  it('C2 changed-fingerprint/non-retry summary does not emit F1', () => {
+  it('C2 changed command/fingerprint does not enter the exact-operation retry relation', () => {
     const runtime = new LiveCorrectionRuntime()
+    const analyzer = new RetryEscalationAnalyzer()
     const session = owner('c2')
-    runtime.observeSettledResult(exec(session, 'changed'), 'changed', summary('changed', { retryOf: undefined, retryCount: 0, recentFailureCount: 1, sameRootCause: 'unknown' }))
+    const first = exec(session, 'first', 'pnpm test')
+    analyzer.observePreExecute(first, 'first')
+    analyzer.observeResult(first, failedResult())
+    const changed = exec(session, 'changed', 'pnpm test --force')
+    analyzer.observePreExecute(changed, 'changed')
+    analyzer.observeResult(changed, failedResult())
+    const relation = analyzer.diagnostics.get('changed')
+    expect(relation.retryOf).toBeUndefined()
+    runtime.observeSettledResult(changed, 'changed', relation)
     expect(runtime.diagnostics.forExecution('changed')).toEqual([])
   })
 
-  it('C3 a success-broken relation represented by no retry edge does not emit F1', () => {
+  it('C3 a settled success breaks the same-fingerprint retry chain', () => {
     const runtime = new LiveCorrectionRuntime()
+    const analyzer = new RetryEscalationAnalyzer()
     const session = owner('c3')
-    runtime.observeSettledResult(exec(session, 'after-success'), 'after-success', summary('after-success', { retryOf: undefined, retryCount: 0, recentFailureCount: 1 }))
+    const first = exec(session, 'first')
+    analyzer.observePreExecute(first, 'first')
+    analyzer.observeResult(first, failedResult())
+    const succeeded = exec(session, 'succeeded')
+    analyzer.observePreExecute(succeeded, 'succeeded')
+    analyzer.observeResult(succeeded, successResult())
+    const after = exec(session, 'after-success')
+    analyzer.observePreExecute(after, 'after-success')
+    analyzer.observeResult(after, failedResult())
+    const relation = analyzer.diagnostics.get('after-success')
+    expect(relation.retryOf).toBeUndefined()
+    runtime.observeSettledResult(after, 'after-success', relation)
     expect(runtime.diagnostics.forExecution('after-success')).toHaveLength(0)
   })
 
