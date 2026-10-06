@@ -149,6 +149,8 @@ export interface ExperienceEpisodeFacts {
 export interface ExperienceRuntimeOptions {
   readonly clock?: () => number
   readonly platform?: string
+  readonly onCommitted?: (episode: ExperienceEpisodeV1) => void
+  readonly onCommitFailed?: (executionId: ExecutionId) => void
 }
 
 /** Build only the frozen structural facts; raw Tool payloads never enter the returned object. */
@@ -207,10 +209,13 @@ export class ExperienceRuntime {
   private queuedWrites = 0
   private queueSaturated = false
   private detaching = false
+  private intakeStopped = false
   private currentStatus: ExperienceStatus = 'UNAVAILABLE'
   private currentReasons: readonly string[] = Object.freeze(['STORAGE_ABSENT'])
   private readonly clock: () => number
   private readonly platform: string | undefined
+  private readonly onCommitted: ((episode: ExperienceEpisodeV1) => void) | undefined
+  private readonly onCommitFailed: ((executionId: ExecutionId) => void) | undefined
 
   readonly diagnostics: ExperienceDiagnostics = Object.freeze({
     status: () => { this.readSize(); return this.currentStatus },
@@ -226,6 +231,8 @@ export class ExperienceRuntime {
   ) {
     this.clock = options.clock ?? Date.now
     this.platform = options.platform
+    this.onCommitted = options.onCommitted
+    this.onCommitFailed = options.onCommitFailed
   }
 
   /** Open once per capability generation; open failures are contained as optional degradation. */
@@ -234,6 +241,7 @@ export class ExperienceRuntime {
     if (!this.detaching && this.opening !== undefined) return this.opening
     const generation = ++this.generation
     this.accepting = false
+    this.intakeStopped = false
     this.queueSaturated = false
     this.currentStatus = 'UNAVAILABLE'
     this.currentReasons = Object.freeze(['STORAGE_OPENING'])
@@ -288,7 +296,7 @@ export class ExperienceRuntime {
     executionId: ExecutionId | undefined,
   ): void {
     const opening = this.opening
-    if (this.detaching || this.currentStatus === 'CAPACITY_EXCEEDED' || (!this.accepting && opening === undefined)) return
+    if (this.intakeStopped || this.detaching || this.currentStatus === 'CAPACITY_EXCEEDED' || (!this.accepting && opening === undefined)) return
     if (executionId === undefined) return
     let episode: ExperienceEpisodeV1
     try {
@@ -304,14 +312,19 @@ export class ExperienceRuntime {
       })
     } catch {
       this.fail('EPISODE_FACTS_INVALID')
+      this.notifyCommitFailed(executionId)
       return
     }
-    if (this.table === undefined && opening === undefined) return
+    if (this.table === undefined && opening === undefined) {
+      this.notifyCommitFailed(executionId)
+      return
+    }
     if (this.queuedWrites >= MAX_EXPERIENCE_EPISODES) {
       this.accepting = false
       this.queueSaturated = true
       this.currentStatus = 'CAPACITY_EXCEEDED'
       this.currentReasons = Object.freeze(['CAPACITY_EXCEEDED'])
+      this.notifyCommitFailed(executionId)
       return
     }
     this.queuedWrites += 1
@@ -323,32 +336,64 @@ export class ExperienceRuntime {
       if (opening !== undefined) {
         await opening
         // Do not carry a settlement across a retired storage capability.
-        if (generation !== this.generation) return
+        if (generation !== this.generation) { this.notifyCommitFailed(executionId); return }
       }
-      if (this.writeFaulted) return
+      if (this.writeFaulted) { this.notifyCommitFailed(executionId); return }
       const table = tableAtCapture ?? this.table
-      if (table === undefined) return
+      if (table === undefined) { this.notifyCommitFailed(executionId); return }
       const key = experienceEpisodeKey(executionId)
       const existing = table.get(key)
       if (existing !== undefined) {
-        if (JSON.stringify(existing) === JSON.stringify(episode)) return
+        if (JSON.stringify(existing) === JSON.stringify(episode)) { this.notifyCommitted(episode); return }
         this.fail('EPISODE_KEY_CONFLICT', 'CONFLICTED')
+        this.notifyCommitFailed(executionId)
         return
       }
       if (table.size >= MAX_EXPERIENCE_EPISODES) {
         this.fail('CAPACITY_EXCEEDED', 'CAPACITY_EXCEEDED')
+        this.notifyCommitFailed(executionId)
         return
       }
       try {
         await table.put(key, episode)
+        this.notifyCommitted(episode)
       } catch {
         this.fail('STORAGE_WRITE_FAILED')
+        this.notifyCommitFailed(executionId)
       }
     }).catch(() => {
       this.fail('STORAGE_WRITE_FAILED')
+      this.notifyCommitFailed(executionId)
     }).finally(() => { this.queuedWrites -= 1 })
     this.writeTail = write.then(() => undefined, () => undefined)
     void write.catch(() => undefined)
+  }
+
+  /** Snapshot durable Episodes for Outcome startup validation/recovery. */
+  snapshotEpisodes(): readonly ExperienceEpisodeV1[] {
+    const table = this.table
+    if (table === undefined) return Object.freeze([])
+    try { return Object.freeze([...table.entries()].map(([, episode]) => episode)) } catch {
+      this.fail('STORAGE_READ_FAILED')
+      return Object.freeze([])
+    }
+  }
+
+  /** Stop new settlement capture without closing the domain; queued commits still drain. */
+  stopAccepting(): void {
+    this.intakeStopped = true
+    this.accepting = false
+    if (this.currentStatus !== 'CONFLICTED' && this.currentStatus !== 'CAPACITY_EXCEEDED') {
+      this.currentStatus = 'UNAVAILABLE'
+      this.currentReasons = Object.freeze(['STORAGE_CLOSING'])
+    }
+  }
+
+  /** Drain an in-flight open and every captured Episode write/commit callback. */
+  async drain(): Promise<void> {
+    const opening = this.opening
+    if (opening !== undefined) await opening
+    await this.writeTail
   }
 
   /** Stop intake, drain owned writes, and release the Domain handle. */
@@ -359,7 +404,7 @@ export class ExperienceRuntime {
     }
     const generation = ++this.generation
     this.detaching = true
-    this.accepting = false
+    this.stopAccepting()
     if (this.currentStatus !== 'CONFLICTED' && this.currentStatus !== 'CAPACITY_EXCEEDED') {
       this.currentStatus = 'UNAVAILABLE'
       this.currentReasons = Object.freeze(['STORAGE_CLOSING'])
@@ -418,5 +463,13 @@ export class ExperienceRuntime {
     this.writeFaulted = true
     this.currentStatus = status
     this.currentReasons = Object.freeze([reason])
+  }
+
+  private notifyCommitted(episode: ExperienceEpisodeV1): void {
+    try { this.onCommitted?.(episode) } catch { /* Outcome persistence is observational. */ }
+  }
+
+  private notifyCommitFailed(executionId: ExecutionId): void {
+    try { this.onCommitFailed?.(executionId) } catch { /* Outcome persistence is observational. */ }
   }
 }

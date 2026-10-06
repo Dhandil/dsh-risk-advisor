@@ -26,6 +26,8 @@ import { BoundedEvidenceRuntime } from './host/evidence-collector.ts'
 import type { EvidenceDiagnostics } from './host/evidence-types.ts'
 import { ExperienceRuntime } from './host/experience-store.ts'
 import type { ExperienceDiagnostics } from './host/experience-store.ts'
+import { OutcomeRuntime } from './host/outcome-store.ts'
+import type { OutcomeDiagnostics } from './host/outcome-store.ts'
 import type { DomainFacility } from '@deepseek-ai/dsh-storage-domain'
 
 export const inject = ['tools']
@@ -41,6 +43,7 @@ interface Context {
   riskAdvisorVerification: VerificationDiagnostics
   riskAdvisorEvidence: EvidenceDiagnostics
   riskAdvisorExperience: ExperienceDiagnostics
+  riskAdvisorOutcomes: OutcomeDiagnostics
 }
 }
 
@@ -91,8 +94,12 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
   const rules = new RuleEngine()
   const expectedEffects = new ExpectedEffectRegistry()
   const evidence = new BoundedEvidenceRuntime()
+  const outcomes = new OutcomeRuntime()
   const verifier = new PostconditionVerifier(expectedEffects, {
-    onRecord: (record: VerificationRecordV1) => { failureChain.observeVerification(record) },
+    onRecord: (record: VerificationRecordV1) => {
+      failureChain.observeVerification(record)
+      outcomes.observeVerification(record)
+    },
   })
   const assessments = new ApprovalAssessmentCoordinator(foundation.diagnostics, {
     rules: rules.diagnostics,
@@ -102,7 +109,10 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
     ...config.fastJudge === undefined ? {} : { fastJudge: config.fastJudge },
     ...config.deepJudge === undefined ? {} : { deepJudge: config.deepJudge },
   })
-  const experience = new ExperienceRuntime(rules.diagnostics, failureChain.diagnostics)
+  const experience = new ExperienceRuntime(rules.diagnostics, failureChain.diagnostics, {
+    onCommitted: episode => outcomes.observeEpisodeCommitted(episode),
+    onCommitFailed: executionId => outcomes.observeEpisodeCommitFailed(executionId),
+  })
   installCorrelationInternal(ctx, {
     capture: (exec, executionId, parentExecutionId) => {
       foundation.capture(exec, executionId, parentExecutionId)
@@ -129,10 +139,24 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
   ctx.provide('riskAdvisorVerification', verifier.store.diagnostics)
   ctx.provide('riskAdvisorEvidence', evidence.diagnostics)
   ctx.provide('riskAdvisorExperience', experience.diagnostics)
+  ctx.provide('riskAdvisorOutcomes', outcomes.diagnostics)
   ctx.inject(['storageDomain'], async experienceCtx => {
     const storageDomain = experienceCtx.get('storageDomain', false) as DomainFacility | undefined
-    experienceCtx.effect(() => async () => { await experience.detach() }, 'risk-advisor-experience-domain-capability')
-    if (storageDomain !== undefined) await experience.attach(storageDomain)
+    experienceCtx.effect(() => async () => {
+      experience.stopAccepting()
+      await verifier.fenceAndDrain()
+      await experience.drain()
+      await outcomes.detach()
+      await experience.detach()
+    }, 'risk-advisor-experience-outcome-domain-capability')
+    if (storageDomain !== undefined) {
+      await experience.attach(storageDomain)
+      await experience.drain()
+      const experienceStatus = experience.diagnostics.status()
+      if (experienceStatus === 'READY' || experienceStatus === 'CAPACITY_EXCEEDED') {
+        await outcomes.attach(storageDomain, experience.snapshotEpisodes())
+      }
+    }
   })
   ctx.inject(['connection', 'sessions'], bridgeCtx => {
     const connection = bridgeCtx.get('connection', false) as HostConnectionLike | undefined
@@ -190,6 +214,8 @@ export type {
 export type { FoundationBoundaryDiagnostic, FoundationDiagnostic, FoundationDiagnostics, FoundationStatus, FoundationToolKind, FoundationUnknown } from './host/operation-foundation.ts'
 export type { VerificationDiagnostics, VerificationRecordV1, VerificationReasonCode, VerificationStatus, SemanticSuccess } from './host/verification-store.ts'
 export type { EvidenceDiagnostics, EvidenceSnapshotV1, EvidenceReasonCode, EvidenceCollectionStatus, EvidenceFacts, EvidenceCounts } from './host/evidence-types.ts'
+export type { OutcomeDiagnostics, OutcomeRuntimeStatus, Qualification } from './host/outcome-store.ts'
+export type { OutcomeRevisionV1, OutcomeStatus } from './host/outcome-schema.ts'
 export type { FailureChainDiagnostics, FailureChainEntry, FailureChainFailureKind, FailureChainSummary, RelationSummaryStatus, RetryEscalationOptions } from './host/retry-escalation.ts'
 export type { RuleDiagnostics, RuleEvaluationStatus, RuleParserConfidence, RuleOperationKind, RuleFindingCategory, RuleFinding, RuleFailureContext, RuleEvaluation } from './host/rule-engine.ts'
 export type { AssessmentAssociation, AssessmentBridgeSnapshot, AssessmentDiagnostic, AssessmentDiagnostics, AssessmentIssueSummary, AssessmentReasonCode, AssessmentStage, AssessmentStatus, ApprovalAssessmentShell, Phase5AssessmentStage, Phase5AssessmentStatus } from './host/assessment-envelope.ts'

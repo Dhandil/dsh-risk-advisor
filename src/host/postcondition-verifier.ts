@@ -271,12 +271,18 @@ export class PostconditionVerifier {
     this.generation = this.scheduler.currentGeneration
   }
 
+  /** Fence and drain current checks without retiring the shell/policy capability. */
+  async fenceAndDrain(): Promise<void> {
+    if (!this.active) return
+    await this.scheduler.fenceAndDrain()
+    if (this.active) this.generation = this.scheduler.currentGeneration
+  }
+
   async detach(): Promise<void> {
     if (!this.active) return
     this.shell = undefined
     this.sandboxPolicy = undefined
-    await this.scheduler.fenceAndDrain()
-    this.generation = this.scheduler.currentGeneration
+    await this.fenceAndDrain()
   }
 
   observeResult(exec: Readonly<ToolExecution>, result: Readonly<ToolExecutionResult>): void {
