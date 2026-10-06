@@ -8,10 +8,13 @@ Authority:
 
 - accepted V1 executable: `f4807e2186e43690ba6dc4c349107b55e407aa53`
 - objective Pilot report: `1fc93c1de41379729ff4ed81824ae251d0c76365`
-- UX preflight: `dafdb78a863dfcbb8d10fdcc9a2980ec4927a834`
+- Mac/cross-platform portability baseline: `e4a729531adcebc30495fea2d514cae21a2c59e0`
+- corrected UX preflight: `90100c6ff349fdd6718de240188e81ea77a1abc8`
 - pinned Harness: `ddefc45fbc7f8e46dd73185e68295696d1297887`
 
 This task changes presentation hierarchy only.
+
+The portability baseline is inherited and protected. It is test/benchmark portability work, not part of the UX executable scope.
 
 ## 1. Frozen default READY hierarchy
 
