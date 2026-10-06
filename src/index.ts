@@ -28,6 +28,8 @@ import { ExperienceRuntime } from './host/experience-store.ts'
 import type { ExperienceDiagnostics } from './host/experience-store.ts'
 import { OutcomeRuntime } from './host/outcome-store.ts'
 import type { OutcomeDiagnostics } from './host/outcome-store.ts'
+import { PatternRuntime } from './host/pattern-store.ts'
+import type { PatternDiagnostics } from './host/pattern-store.ts'
 import type { DomainFacility } from '@deepseek-ai/dsh-storage-domain'
 
 export const inject = ['tools']
@@ -44,6 +46,7 @@ interface Context {
   riskAdvisorEvidence: EvidenceDiagnostics
   riskAdvisorExperience: ExperienceDiagnostics
   riskAdvisorOutcomes: OutcomeDiagnostics
+  riskAdvisorPatterns: PatternDiagnostics
 }
 }
 
@@ -95,6 +98,7 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
   const expectedEffects = new ExpectedEffectRegistry()
   const evidence = new BoundedEvidenceRuntime()
   const outcomes = new OutcomeRuntime()
+  const patterns = new PatternRuntime()
   const verifier = new PostconditionVerifier(expectedEffects, {
     onRecord: (record: VerificationRecordV1) => {
       failureChain.observeVerification(record)
@@ -140,12 +144,15 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
   ctx.provide('riskAdvisorEvidence', evidence.diagnostics)
   ctx.provide('riskAdvisorExperience', experience.diagnostics)
   ctx.provide('riskAdvisorOutcomes', outcomes.diagnostics)
+  ctx.provide('riskAdvisorPatterns', patterns.diagnostics)
   ctx.inject(['storageDomain'], async experienceCtx => {
     const storageDomain = experienceCtx.get('storageDomain', false) as DomainFacility | undefined
     experienceCtx.effect(() => async () => {
       experience.stopAccepting()
       await verifier.fenceAndDrain()
       await experience.drain()
+      await outcomes.drain()
+      await patterns.detach()
       await outcomes.detach()
       await experience.detach()
     }, 'risk-advisor-experience-outcome-domain-capability')
@@ -155,6 +162,9 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
       const experienceStatus = experience.diagnostics.status()
       if (experienceStatus === 'READY' || experienceStatus === 'CAPACITY_EXCEEDED') {
         await outcomes.attach(storageDomain, experience.snapshotEpisodes())
+        if (experienceStatus === 'READY' && outcomes.diagnostics.status() === 'READY') {
+          await patterns.attach(storageDomain, outcomes, () => experience.diagnostics.status() === 'READY')
+        }
       }
     }
   })

@@ -25,6 +25,14 @@ export interface OutcomeDiagnostics {
   readonly reasonCodes: () => readonly string[]
 }
 
+/** Internal, read-only source seam for the downstream Pattern projection. */
+export interface OutcomePatternSnapshot {
+  readonly episode: ExperienceEpisodeV1
+  readonly revisions: readonly OutcomeRevisionV1[]
+}
+
+export type OutcomePatternListener = (snapshot: OutcomePatternSnapshot) => void
+
 type OutcomeDomain = Domain<typeof outcomeDomainSpec>
 type EvidenceSnapshot = NonNullable<OutcomeRevisionV1['postconditionEvidence']>
 type EmittedRevisionKind = 'INITIAL' | 'POSTCONDITION_UPDATE'
@@ -140,6 +148,7 @@ export class OutcomeRuntime {
   private episodes = new Map<OutcomeEpisodeId, ExperienceEpisodeV1>()
   private chains = new Map<OutcomeEpisodeId, OutcomeRevisionV1[]>()
   private initialScheduled = new Set<OutcomeEpisodeId>()
+  private readonly patternListeners = new Set<OutcomePatternListener>()
   private currentStatus: OutcomeRuntimeStatus = 'UNAVAILABLE'
   private currentReasons: readonly string[] = Object.freeze(['STORAGE_ABSENT'])
 
@@ -150,6 +159,26 @@ export class OutcomeRuntime {
     revisions: (id: string) => this.readRevisions(id),
     reasonCodes: () => this.currentReasons,
   })
+
+  /** Return a validated, durable read-only snapshot without opening another domain handle. */
+  patternSnapshot(): readonly OutcomePatternSnapshot[] {
+    if (this.currentStatus !== 'READY') throw new Error('outcome-pattern-source-unavailable')
+    const snapshots: OutcomePatternSnapshot[] = []
+    for (const [episodeId, episode] of this.episodes) {
+      const revisions = this.chains.get(episodeId)
+      if (revisions === undefined || revisions.length === 0) throw new Error('outcome-pattern-source-incomplete')
+      snapshots.push(Object.freeze({ episode, revisions: Object.freeze([...revisions]) }))
+    }
+    snapshots.sort((a, b) => a.episode.episodeId.localeCompare(b.episode.episodeId))
+    return Object.freeze(snapshots)
+  }
+
+  /** Subscribe to append acknowledgements only; callbacks never run before Outcome durability. */
+  subscribePattern(listener: OutcomePatternListener): () => void {
+    if (this.currentStatus !== 'READY') throw new Error('outcome-pattern-source-unavailable')
+    this.patternListeners.add(listener)
+    return () => { this.patternListeners.delete(listener) }
+  }
 
   /** Open the separate outcome domain and reconcile Episodes lacking revision 1. */
   attach(storageDomain: DomainFacility, episodeSnapshot: readonly ExperienceEpisodeV1[]): Promise<void> {
@@ -359,6 +388,7 @@ export class OutcomeRuntime {
       this.episodes.clear()
       this.chains.clear()
       this.initialScheduled.clear()
+      this.patternListeners.clear()
       if (handle !== undefined) await handle.close()
       if (generation === this.generation) this.setStatus('UNAVAILABLE', 'STORAGE_CLOSED')
     })
@@ -442,6 +472,10 @@ export class OutcomeRuntime {
       if (table.size >= MAX_OUTCOME_REVISIONS) {
         this.accepting = false
         this.setStatus('CAPACITY_EXCEEDED', 'OUTCOME_REVISION_CAPACITY_EXCEEDED')
+      }
+      const snapshot = Object.freeze({ episode, revisions: Object.freeze([...next]) })
+      for (const listener of this.patternListeners) {
+        try { listener(snapshot) } catch { /* Pattern is an optional downstream projection. */ }
       }
     } catch {
       this.writeFaulted = true
