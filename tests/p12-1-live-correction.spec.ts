@@ -225,6 +225,109 @@ describe('Phase 12.1 live correction finding core', () => {
     expect(runtime.diagnostics.forExecution('conflict')).toHaveLength(0)
   })
 
+  it('R1 conflict tombstone suppresses a later mismatch after association replay', () => {
+    const runtime = new LiveCorrectionRuntime()
+    const session = owner('r1')
+    const id = liveCorrectionFindingId('r1-conflict', 'POSTCONDITION_NOT_SATISFIED')
+    runtime.observeSettledResult(exec(session, 'r1-conflict'), 'r1-conflict', undefined)
+    runtime.observeVerification(mismatch('r1-conflict'))
+    expect(runtime.diagnostics.get(id)).toBeDefined()
+    runtime.observeVerification(mismatch('r1-conflict', {
+      status: 'UNKNOWN',
+      semanticSuccess: 'unknown',
+      evidenceQuality: 'low',
+      reasonCodes: ['VERIFICATION_CONFLICT'],
+    }))
+    expect(runtime.diagnostics.get(id)).toBeUndefined()
+    runtime.observeSettledResult(exec(session, 'r1-conflict-replay'), 'r1-conflict', undefined)
+    runtime.observeVerification(mismatch('r1-conflict', { observedAt: 101 }))
+    expect(runtime.diagnostics.get(id)).toBeUndefined()
+    expect(runtime.diagnostics.forExecution('r1-conflict')).toHaveLength(0)
+  })
+
+  it('R2 TTL expiry removes the conflicted payload but keeps its tombstone after association replay', () => {
+    let now = 0
+    const runtime = new LiveCorrectionRuntime({ clock: () => now, ttlMs: 10 })
+    const session = owner('r2')
+    const id = liveCorrectionFindingId('r2-conflict', 'POSTCONDITION_NOT_SATISFIED')
+    runtime.observeSettledResult(exec(session, 'r2-conflict'), 'r2-conflict', undefined)
+    runtime.observeVerification(mismatch('r2-conflict'))
+    now = 1
+    runtime.observeVerification(mismatch('r2-conflict', {
+      status: 'UNKNOWN',
+      semanticSuccess: 'unknown',
+      evidenceQuality: 'low',
+      reasonCodes: ['VERIFICATION_CONFLICT'],
+    }))
+    now = 10
+    expect(runtime.diagnostics.get(id)).toBeUndefined()
+    runtime.observeSettledResult(exec(session, 'r2-conflict-replay'), 'r2-conflict', undefined)
+    runtime.observeVerification(mismatch('r2-conflict', { observedAt: 102 }))
+    expect(runtime.diagnostics.get(id)).toBeUndefined()
+    expect(runtime.diagnostics.forExecution('r2-conflict')).toHaveLength(0)
+  })
+
+  it('R3 capacity eviction removes the conflicted payload but keeps its tombstone after association replay', () => {
+    const runtime = new LiveCorrectionRuntime({ maxPerSession: 1 })
+    const session = owner('r3')
+    const id = liveCorrectionFindingId('r3-conflict', 'POSTCONDITION_NOT_SATISFIED')
+    runtime.observeSettledResult(exec(session, 'r3-conflict'), 'r3-conflict', undefined)
+    runtime.observeVerification(mismatch('r3-conflict'))
+    runtime.observeVerification(mismatch('r3-conflict', {
+      status: 'UNKNOWN',
+      semanticSuccess: 'unknown',
+      evidenceQuality: 'low',
+      reasonCodes: ['VERIFICATION_CONFLICT'],
+    }))
+    runtime.observeSettledResult(exec(session, 'r3-evictor'), 'r3-evictor', summary('r3-evictor'))
+    expect(runtime.diagnostics.get(id)).toBeUndefined()
+    expect(runtime.diagnostics.forSession(session).findings).toEqual([
+      expect.objectContaining({ executionId: 'r3-evictor', kind: 'REPEATED_FAILURE_WITHOUT_PROGRESS' }),
+    ])
+    runtime.observeSettledResult(exec(session, 'r3-conflict-replay'), 'r3-conflict', undefined)
+    runtime.observeVerification(mismatch('r3-conflict', { observedAt: 103 }))
+    expect(runtime.diagnostics.get(id)).toBeUndefined()
+    expect(runtime.diagnostics.forExecution('r3-conflict')).toHaveLength(0)
+  })
+
+  it('R4 unrelated non-conflicted findings still expire and evict normally', () => {
+    const session = owner('r4')
+    const capacityRuntime = new LiveCorrectionRuntime({ maxPerSession: 1 })
+    capacityRuntime.observeSettledResult(exec(session, 'r4-evicted'), 'r4-evicted', summary('r4-evicted'))
+    capacityRuntime.observeSettledResult(exec(session, 'r4-retained'), 'r4-retained', summary('r4-retained'))
+    expect(capacityRuntime.diagnostics.get(liveCorrectionFindingId('r4-evicted', 'REPEATED_FAILURE_WITHOUT_PROGRESS'))).toBeUndefined()
+    expect(capacityRuntime.diagnostics.get(liveCorrectionFindingId('r4-retained', 'REPEATED_FAILURE_WITHOUT_PROGRESS'))).toBeDefined()
+
+    let now = 0
+    const ttlRuntime = new LiveCorrectionRuntime({ clock: () => now, ttlMs: 10 })
+    ttlRuntime.observeSettledResult(exec(session, 'r4-expiring'), 'r4-expiring', undefined)
+    ttlRuntime.observeVerification(mismatch('r4-expiring'))
+    const expiringId = liveCorrectionFindingId('r4-expiring', 'POSTCONDITION_NOT_SATISFIED')
+    now = 10
+    expect(ttlRuntime.diagnostics.get(expiringId)).toBeUndefined()
+  })
+
+  it('R5 only runtime generation replacement clears conflict suppression', () => {
+    const priorGeneration = new LiveCorrectionRuntime()
+    const session = owner('r5')
+    const id = liveCorrectionFindingId('r5-conflict', 'POSTCONDITION_NOT_SATISFIED')
+    priorGeneration.observeSettledResult(exec(session, 'r5-conflict'), 'r5-conflict', undefined)
+    priorGeneration.observeVerification(mismatch('r5-conflict'))
+    priorGeneration.observeVerification(mismatch('r5-conflict', {
+      status: 'UNKNOWN',
+      semanticSuccess: 'unknown',
+      evidenceQuality: 'low',
+      reasonCodes: ['VERIFICATION_CONFLICT'],
+    }))
+    priorGeneration.dispose()
+    expect(priorGeneration.diagnostics.get(id)).toBeUndefined()
+
+    const nextGeneration = new LiveCorrectionRuntime()
+    nextGeneration.observeSettledResult(exec(session, 'r5-conflict'), 'r5-conflict', undefined)
+    nextGeneration.observeVerification(mismatch('r5-conflict', { observedAt: 105 }))
+    expect(nextGeneration.diagnostics.get(id)).toBeDefined()
+  })
+
   it('C10 product wiring associates direct synchronous verifier results before publication', async () => {
     const ctx = new Context()
     await ctx.plugin(SessionStore)

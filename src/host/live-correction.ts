@@ -206,14 +206,14 @@ export class LiveCorrectionRuntime {
     if (!this.active) return
     const now = this.clock()
     this.sweep(now)
-    const association = this.associations.get(record.executionId)
-    if (association === undefined) return
     const findingId = liveCorrectionFindingId(record.executionId, 'POSTCONDITION_NOT_SATISFIED')
     if (record.status === 'UNKNOWN' && record.reasonCodes.includes('VERIFICATION_CONFLICT')) {
-      if (this.findings.has(findingId)) this.conflicted.add(findingId)
+      this.conflicted.add(findingId)
       this.dropAssociation(record.executionId)
       return
     }
+    const association = this.associations.get(record.executionId)
+    if (association === undefined) return
     if (record.status !== 'MISMATCHED'
       || record.semanticSuccess !== false
       || (record.evidenceQuality !== 'high' && record.evidenceQuality !== 'medium')
@@ -338,7 +338,6 @@ export class LiveCorrectionRuntime {
     const ids = this.executionFindings.get(stored.finding.executionId)
     ids?.delete(findingId)
     if (ids?.size === 0) this.executionFindings.delete(stored.finding.executionId)
-    this.conflicted.delete(findingId)
   }
 
   private sweep(now: number): void {
