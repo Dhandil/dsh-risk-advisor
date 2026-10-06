@@ -97,6 +97,36 @@ function sameFinding(a: LiveCorrectionFindingV1, b: LiveCorrectionFindingV1): bo
   return JSON.stringify(aSemantic) === JSON.stringify(bSemantic)
 }
 
+function assertFindingShape(finding: LiveCorrectionFindingV1): void {
+  if (!Number.isFinite(finding.observedAt) || finding.observedAt < 0
+    || finding.findingId !== liveCorrectionFindingId(finding.executionId, finding.kind)
+    || finding.disposition !== 'ADVISE') {
+    throw new Error('invalid-live-correction-finding')
+  }
+  if (finding.kind === 'REPEATED_FAILURE_WITHOUT_PROGRESS') {
+    if (finding.diagnosis !== 'REPEATED_SAME_SIGNATURE_FAILURE'
+      || finding.advisoryCode !== 'STOP_EXACT_RETRY_PATH_V1'
+      || !Number.isSafeInteger(finding.retryCount) || finding.retryCount! < 1
+      || !Number.isSafeInteger(finding.recentFailureCount) || finding.recentFailureCount! < 2
+      || finding.verifierSource !== undefined
+      || finding.verifierAdapterId !== undefined
+      || finding.evidenceQuality !== undefined) {
+      throw new Error('invalid-live-correction-f1')
+    }
+    return
+  }
+  if (finding.diagnosis !== 'VERIFIED_POSTCONDITION_MISMATCH'
+    || finding.advisoryCode !== 'INSPECT_UNSATISFIED_POSTCONDITION_V1'
+    || finding.retryCount !== undefined
+    || finding.recentFailureCount !== undefined
+    || finding.verifierSource === undefined
+    || finding.verifierAdapterId === undefined
+    || finding.evidenceQuality === undefined
+    || !SUPPORTED_F2.has(`${finding.verifierSource}:${finding.verifierAdapterId}`)) {
+    throw new Error('invalid-live-correction-f2')
+  }
+}
+
 export function liveCorrectionFindingId(executionId: string, kind: LiveCorrectionFindingKind): string {
   const tuple = JSON.stringify(['risk-advisor-live-correction-v1', executionId, kind])
   return `ra-correction-v1_${createHash('sha256').update(tuple, 'utf8').digest('hex')}`
@@ -180,7 +210,8 @@ export class LiveCorrectionRuntime {
     if (association === undefined) return
     const findingId = liveCorrectionFindingId(record.executionId, 'POSTCONDITION_NOT_SATISFIED')
     if (record.status === 'UNKNOWN' && record.reasonCodes.includes('VERIFICATION_CONFLICT')) {
-      this.conflicted.add(findingId)
+      if (this.findings.has(findingId)) this.conflicted.add(findingId)
+      this.dropAssociation(record.executionId)
       return
     }
     if (record.status !== 'MISMATCHED'
@@ -258,11 +289,13 @@ export class LiveCorrectionRuntime {
   }
 
   private insert(session: Session, finding: LiveCorrectionFindingV1, createdAt: number): void {
+    assertFindingShape(finding)
     if (this.conflicted.has(finding.findingId)) return
     const prior = this.findings.get(finding.findingId)
     if (prior !== undefined) {
       if (sameFinding(prior.finding, finding)) return
       this.conflicted.add(finding.findingId)
+      if (finding.kind === 'POSTCONDITION_NOT_SATISFIED') this.dropAssociation(finding.executionId)
       return
     }
     const state = this.stateFor(session)
@@ -286,6 +319,13 @@ export class LiveCorrectionRuntime {
     this.executionFindings.set(finding.executionId, ids)
   }
 
+  private dropAssociation(executionId: ExecutionId): void {
+    const association = this.associations.get(executionId)
+    if (association === undefined) return
+    this.associations.delete(executionId)
+    this.sessions.get(association.session)?.executionIds.delete(executionId)
+  }
+
   private deleteFinding(findingId: string): void {
     const stored = this.findings.get(findingId)
     if (stored === undefined) return
@@ -304,7 +344,7 @@ export class LiveCorrectionRuntime {
     for (const [executionId, association] of [...this.associations]) {
       if (now - association.createdAt >= this.ttlMs) {
         this.associations.delete(executionId)
-        this.stateFor(association.session).executionIds.delete(executionId)
+        this.sessions.get(association.session)?.executionIds.delete(executionId)
       }
     }
   }
