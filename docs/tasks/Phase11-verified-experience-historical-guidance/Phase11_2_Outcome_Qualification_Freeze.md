@@ -31,7 +31,9 @@ This phase does not implement Pattern, Guidance, Risk Assessment integration, Br
 - **Current qualification**: the status of the final revision in a validated, gap-free chain. Earlier revisions remain available as history, never overwritten.
 - **Primary outcome evidence**: a supported `VerificationRecordV1` from the Postcondition Verifier.
 
-The only authority that may create revisions is the deterministic Host runtime. No model-facing or Browser mutation API is added. A revision records what the system could qualify from the evidence; it does not grant execution or approval authority.
+The only authority that may create revisions is the deterministic Host runtime, and Phase 11.2 V1 permits only the three revision-producing cases in §8: initial Episode qualification, a verifier evidence update, and conservative recovery for an Episode that has no revision. No model-facing or Browser mutation API is added. A revision records what the system could qualify from the evidence; it does not grant execution or approval authority.
+
+Phase 11.2 V1 does not generate `INVALIDATED` and does not emit `INVALIDATION` or `REQUALIFICATION` revision kinds. It adds no invalidation mutation API or invalidation event listener. Browser, model, Native Approval, Risk Assessment, and Agent activity cannot trigger invalidation. These schema values are reserved for a future separately frozen authority; before any future runtime may emit them, that Freeze must define the authorized principal, triggering event, and deterministic predicate. Until then, no such authority or predicate exists.
 
 ## 4. Qualification vocabulary and exact precedence
 
@@ -52,7 +54,7 @@ Apply these rules in order:
 2. `VERIFIED_SUCCESS` only when a supported verifier record is internally consistent and reports `MATCHED`, `semanticSuccess: true`, and `evidenceQuality` of `high` or `medium`.
 3. `VERIFIED_FAILURE` only when a supported verifier record is internally consistent and reports `MISMATCHED`, `semanticSuccess: false`, and `evidenceQuality` of `high` or `medium`.
 4. Every other case is `UNKNOWN`, including no verifier record, process/tool error or success without conclusive verifier evidence, `UNAVAILABLE`, `UNKNOWN`, low-quality evidence, unsupported adapters, and verification conflict.
-5. `INVALIDATED` is written only as an explicit Host-generated invalidation revision when a prior qualification is known to be unsound. It supersedes the prior status as current; it does not erase the earlier revision. A later supported requalification is a new `REQUALIFICATION` revision.
+5. `INVALIDATED` is reserved and must not be emitted by the Phase 11.2 V1 runtime. Invalidation and requalification are outside this phase unless a future Freeze explicitly defines their authority, event, and deterministic predicate.
 
 Only the two exact verifier pairings above can produce `VERIFIED_SUCCESS` or `VERIFIED_FAILURE`. Tool success, exit code zero, absence of a thrown error, `approval.outcome = allowed-once`, retry-chain success, or Agent/user statements must never be substituted for the verifier.
 
@@ -119,6 +121,8 @@ interface OutcomeRevisionV1 {
 }
 ```
 
+`INVALIDATION`, `REQUALIFICATION`, `INVALIDATED`, and `outcome-v1-invalidation` remain reserved schema vocabulary only. The Phase 11.2 V1 runtime must never emit these values; their presence in the type/schema does not authorize a producer, API, or transition.
+
 The concrete runtime schema must be strict, bounded, and validate the deterministic key/ID relationship, positive safe revision number, nonnegative safe timestamps/duration, bounded reason-code arrays, and status/rule consistency. The embedded verifier evidence is a sanitized snapshot. It must omit `executionId`, Session/call/approval IDs, raw commands/arguments, paths, outputs, result values, and any user/model content.
 
 `episodeId` is the only cross-layer identity stored in an outcome revision. `executionId` may be used transiently in memory to join verifier callbacks to an Episode; it must not be duplicated into the Outcome domain.
@@ -133,14 +137,14 @@ The Storage Domain table API's `put` can overwrite, so the Risk Advisor runtime 
 4. An existing key with divergent content is a conflict: never overwrite; mark Outcome diagnostics `CONFLICTED` and fail closed for that Episode.
 5. Revision 1 has no `previousRevisionId`. Revision `n > 1` must name exactly revision `n - 1` for the same Episode.
 6. The Outcome runtime never deletes or updates revision records and exposes no mutable head record. Current state is derived from the last row in the validated contiguous chain.
-7. Duplicate verifier callbacks with the same sanitized evidence are no-ops. Distinct later evidence appends a new revision even if it leaves the status unchanged, when it materially changes the evidence snapshot or an explicit requalification/invalidation is requested.
-8. A verifier conflict is itself retained as a new `UNKNOWN` revision with `outcome-v1-conflict`; the earlier judgment remains in history.
+7. Duplicate verifier callbacks with the same sanitized evidence are no-ops. Distinct later verifier evidence appends a `POSTCONDITION_UPDATE` revision even if it leaves the status unchanged, when it materially changes the evidence snapshot. No explicit requalification/invalidation request is supported in V1.
+8. A verifier conflict is itself retained as a `POSTCONDITION_UPDATE` revision with status `UNKNOWN` and rule `outcome-v1-conflict`; the earlier judgment remains in history. It does not emit an invalidation revision or `INVALIDATED` status.
 
 At open, validate every record and every per-Episode chain. A gap, fork, duplicate ordinal, missing predecessor, orphaned Episode reference, mismatched key, or divergent same-key row makes the authoritative Outcome subsystem `UNAVAILABLE`/`CONFLICTED`; do not choose a convenient winner or repair history silently.
 
 ## 8. First revision, late verifier results, and recovery
 
-The only Episode commit trigger remains the 11.1 `tools/result` trigger. Outcome creation is downstream of the durable Episode write:
+The only Episode commit trigger remains the 11.1 `tools/result` trigger. Phase 11.2 revisions may be produced only by (a) initial qualification after an Episode durably commits, (b) a later verifier evidence update, or (c) conservative recovery of an Episode with no revision. No other event or caller may create a revision. Outcome creation is downstream of the durable Episode write:
 
 1. `ExperienceRuntime` snapshots the Episode and requests its asynchronous durable write without blocking or changing the Harness result path.
 2. After that write is durably acknowledged, it notifies the Outcome runtime.
@@ -149,7 +153,7 @@ The only Episode commit trigger remains the 11.1 `tools/result` trigger. Outcome
 
 The synchronous write/edit verifier callback currently precedes the Episode write request. The implementation must retain that sanitized callback in a bounded in-memory handoff until the corresponding Episode commit is acknowledged. The callback must not wait for verifier work, and the Tool result observer must not await either durable write.
 
-There is no cross-domain transaction. If the Episode commit succeeds and the first Outcome write fails, preserve the Episode and report Outcome degradation. On the next clean open, scan Episodes and append an initial conservative revision for any Episode with no revision. For that recovery-only initial row, use Episode facts alone: the explicit pre-dispatch code may yield `NOT_EXECUTED`; otherwise use `UNKNOWN`. Do not claim a verifier result that was not durably retained.
+There is no cross-domain transaction. If the Episode commit succeeds and the first Outcome write fails, preserve the Episode and report Outcome degradation. On the next clean open, scan Episodes and append an initial conservative revision for any Episode with no revision. For that recovery-only initial row, use Episode facts alone: the explicit pre-dispatch code may yield `NOT_EXECUTED`; otherwise use `UNKNOWN`. Do not claim a verifier result that was not durably retained. Recovery never emits `INVALIDATED`, `INVALIDATION`, or `REQUALIFICATION`.
 
 Existing revision chains are never replayed from current process-local verifier/failure-chain stores. A missing Outcome domain or write failure does not disable V1 or change existing approvals/assessments.
 
@@ -211,10 +215,10 @@ At minimum, Phase 11.2 tests must prove:
 - **O5 — approval distinction:** allowed is not correctness; rejected/cancelled/unavailable do not become semantic failure; only exact `ABORTED_BEFORE_DISPATCH` produces `NOT_EXECUTED`.
 - **O6 — immutable Episode:** verifier evidence and later revisions never alter serialized Episode bytes/semantics.
 - **O7 — synchronous handoff:** direct verifier result arrives before Episode persistence but is included in the first durable revision.
-- **O8 — asynchronous revision:** shell verifier result arriving after initial `UNKNOWN` appends a linked revision; prior row remains unchanged.
-- **O9 — conflict:** divergent verifier/same-key evidence appends a traceable `UNKNOWN` conflict revision or fails closed on storage-key divergence; no overwrite.
+- **O8 — asynchronous revision:** shell verifier result arriving after initial `UNKNOWN` appends a linked `POSTCONDITION_UPDATE`; prior row remains unchanged. The V1 runtime does not emit reserved invalidation/requalification values.
+- **O9 — conflict:** divergent verifier evidence appends a traceable `UNKNOWN` `POSTCONDITION_UPDATE`, or storage-key divergence fails closed; no overwrite. No invalidation API or conflict-triggered `INVALIDATED` transition exists in V1.
 - **O10 — lineage:** restart reconstructs the same ordered history; gaps/forks/orphans fail closed.
-- **O11 — crash recovery:** Episode with no Outcome revision receives a conservative initial revision on next open; existing revisions are not rewritten.
+- **O11 — crash recovery:** Episode with no Outcome revision receives a conservative initial revision on next open; existing revisions are not rewritten. Recovery does not emit `INVALIDATED`, `INVALIDATION`, or `REQUALIFICATION`.
 - **O12 — privacy:** execution/session/call IDs and all raw payload sentinels are absent from persisted Outcome JSON.
 - **O13 — capacity:** per-Episode/global caps retain every old revision and reject further appends with diagnostics.
 - **O14 — storage/lifecycle:** absent/open/read/write failure is optional degradation; verifier, Episode, and Outcome pending work drains in order; clean reopen succeeds.

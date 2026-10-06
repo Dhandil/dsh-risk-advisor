@@ -28,6 +28,8 @@ Before editing:
 
 Add the Host-only `OutcomeRevisionV1` runtime and schema backed by `ctx.storageDomain` using the exact domain, table, key, revision schema, qualification precedence, append rules, caps, privacy boundary, diagnostics, recovery, and lifecycle contract in the Freeze.
 
+The V1 runtime may create revisions only for initial Episode qualification, later verifier evidence updates, and conservative recovery of an Episode missing its initial revision. Do not emit `status: INVALIDATED`, `revisionKind: INVALIDATION`, `revisionKind: REQUALIFICATION`, or the reserved invalidation rule ID. Do not add an invalidation mutation API, event listener, or other invalidation trigger. Browser/model, Native Approval, Risk Assessment, and Agent activity are not invalidation authorities. These enum values are reserved for a future Freeze that must define the authority, triggering event, and deterministic predicate before any future producer is implemented.
+
 Keep `ExperienceEpisodeV1` bytes/semantics, domain name/version/layout/table, and commit trigger unchanged. Connect Outcome persistence only after the Episode durable write has resolved. Do not await either write from the Harness Tool result path.
 
 Route sanitized `PostconditionVerifier.onRecord` observations to the Outcome runtime after the existing failure-chain observer. Buffer a bounded synchronous verifier handoff until Episode durability is acknowledged. Route later verifier callbacks into append-only revisions. Keep verifier execution asynchronous and never wait for it to qualify or commit an Episode.
@@ -50,7 +52,7 @@ Do not implement Pattern, Guidance, Historical Risk Evidence, Online Correction,
 
 ## 4. Required tests
 
-Implement the full O1–O15 matrix in the Freeze. Include isolated durable restart and privacy serialization proof using a temporary storage root only. Cover direct synchronous and shell asynchronous verifier ordering, late revision lineage, conflict handling, partial Episode/Outcome commit recovery, malformed/forked history, caps, and drain/close ordering.
+Implement the full O1–O15 matrix in the Freeze. In particular, O8, O9, and O11 must assert that the V1 runtime emits no reserved invalidation/requalification values and exposes no invalidation mutation path. Include isolated durable restart and privacy serialization proof using a temporary storage root only. Cover direct synchronous and shell asynchronous verifier ordering, late revision lineage, conflict handling, partial Episode/Outcome commit recovery, malformed/forked history, caps, and drain/close ordering.
 
 Existing Phase 11.1 E1–E14 and V1 behavior must remain passing. Never use the user's real `$DSH_HOME/storages` for fixtures or destructive setup.
 
