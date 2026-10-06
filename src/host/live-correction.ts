@@ -92,7 +92,9 @@ function freezeFinding(value: LiveCorrectionFindingV1): LiveCorrectionFindingV1 
 }
 
 function sameFinding(a: LiveCorrectionFindingV1, b: LiveCorrectionFindingV1): boolean {
-  return JSON.stringify(a) === JSON.stringify(b)
+  const { observedAt: _aObservedAt, ...aSemantic } = a
+  const { observedAt: _bObservedAt, ...bSemantic } = b
+  return JSON.stringify(aSemantic) === JSON.stringify(bSemantic)
 }
 
 export function liveCorrectionFindingId(executionId: string, kind: LiveCorrectionFindingKind): string {
