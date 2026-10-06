@@ -7,10 +7,14 @@
 Baseline:
 
 - accepted V1 executable: `f4807e2186e43690ba6dc4c349107b55e407aa53`
-- current repository main before this UX maintenance: `1fc93c1de41379729ff4ed81824ae251d0c76365`
+- objective Pilot report: `1fc93c1de41379729ff4ed81824ae251d0c76365`
+- Mac/cross-platform portability baseline: `e4a729531adcebc30495fea2d514cae21a2c59e0`
+- UX maintenance repository baseline: `e4a729531adcebc30495fea2d514cae21a2c59e0`
 - pinned Harness: `ddefc45fbc7f8e46dd73185e68295696d1297887`
 
 This is a V1 UX maintenance task. It does not start Phase 11/V2.
+
+The portability baseline is part of the repository authority for this task. It changes cross-platform test/benchmark path fixtures only and does not advance the accepted product executable.
 
 ## User finding
 
