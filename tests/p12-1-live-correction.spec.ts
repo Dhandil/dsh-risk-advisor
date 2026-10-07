@@ -118,6 +118,51 @@ describe('Phase 12.1 live correction finding core', () => {
     })
   })
 
+  it('P16 emits exactly one Live Correction F1 for a contiguous adjacent exact retry', () => {
+    const runtime = new LiveCorrectionRuntime()
+    const analyzer = new RetryEscalationAnalyzer()
+    const session = owner('p16-adjacent-f1')
+    const first = exec(session, 'p16-first')
+    analyzer.observePreExecute(first, 'p16-first')
+    analyzer.observeResult(first, failedResult())
+
+    const second = exec(session, 'p16-second')
+    analyzer.observePreExecute(second, 'p16-second')
+    analyzer.observeResult(second, failedResult())
+    const relation = analyzer.diagnostics.get('p16-second')
+    expect(relation).toMatchObject({ status: 'READY', retryOf: 'p16-first', retryCount: 1, recentFailureCount: 2, sameRootCause: true })
+
+    runtime.observeSettledResult(second, 'p16-second', relation)
+    runtime.observeSettledResult(second, 'p16-second', relation)
+    expect(runtime.diagnostics.forExecution('p16-second')).toHaveLength(1)
+    expect(runtime.diagnostics.forExecution('p16-second')[0]).toMatchObject({ kind: 'REPEATED_FAILURE_WITHOUT_PROGRESS' })
+  })
+
+  it('P17 does not emit F1 for the third step of a non-adjacent A/B/A sequence', () => {
+    const runtime = new LiveCorrectionRuntime()
+    const analyzer = new RetryEscalationAnalyzer()
+    const session = owner('p17-non-adjacent-f1')
+
+    const firstA = exec(session, 'p17-a1', 'pnpm test')
+    analyzer.observePreExecute(firstA, 'p17-a1')
+    analyzer.observeResult(firstA, failedResult())
+
+    const interveningB = exec(session, 'p17-b', 'pnpm test --force')
+    analyzer.observePreExecute(interveningB, 'p17-b')
+    analyzer.observeResult(interveningB, failedResult())
+
+    const thirdA = exec(session, 'p17-a2', 'pnpm test')
+    analyzer.observePreExecute(thirdA, 'p17-a2')
+    analyzer.observeResult(thirdA, failedResult())
+    const relation = analyzer.diagnostics.get('p17-a2')
+    expect(relation.retryOf).toBeUndefined()
+    expect(relation.retryCount).toBe(0)
+    expect(relation.recentFailureCount).toBe(1)
+
+    runtime.observeSettledResult(thirdA, 'p17-a2', relation)
+    expect(runtime.diagnostics.forExecution('p17-a2')).toEqual([])
+  })
+
   it('C2 changed command/fingerprint does not enter the exact-operation retry relation', () => {
     const runtime = new LiveCorrectionRuntime()
     const analyzer = new RetryEscalationAnalyzer()

@@ -150,6 +150,75 @@ describe('Phase 3 retry/escalation analyzer', () => {
     expect(analyzer.diagnostics.get('blocked-by-pending').status).toBe('DEGRADED')
   })
 
+  it('P2-P4 starts a new path after changed read, write-content, and bash-command fingerprints', () => {
+    const owner = session('p3-changed-operation-barriers')
+    const cases = [
+      { name: 'read', first: { file_path: 'a' }, second: { file_path: 'b' } },
+      { name: 'write', first: { file_path: 'a', content: 'old' }, second: { file_path: 'a', content: 'new' } },
+      { name: 'bash', first: { command: 'pnpm test', description: 'test' }, second: { command: 'pnpm test --force', description: 'test' } },
+    ] as const
+
+    for (const [index, value] of cases.entries()) {
+      const analyzer = new RetryEscalationAnalyzer()
+      observe(analyzer, owner, `changed-${index}-first`, value.name, value.first, failure('TOOL_TIMEOUT'))
+      observe(analyzer, owner, `changed-${index}-second`, value.name, value.second, failure('TOOL_TIMEOUT'))
+      expect(analyzer.diagnostics.get(`changed-${index}-second`)).toMatchObject({
+        status: 'READY',
+        retryCount: 0,
+        recentFailureCount: 1,
+      })
+      expect(analyzer.diagnostics.get(`changed-${index}-second`).retryOf).toBeUndefined()
+      expect(analyzer.diagnostics.get(`changed-${index}-second`).recent.map(entry => entry.executionId)).toEqual([`changed-${index}-second`])
+    }
+  })
+
+  it('P5/P6 breaks exact retry paths across an intervening fingerprint and never reconnects A/B/A', () => {
+    const owner = session('p3-contiguous-path')
+    const analyzer = new RetryEscalationAnalyzer()
+    observe(analyzer, owner, 'path-a1', 'read', { file_path: 'a' }, failure('TOOL_TIMEOUT'))
+    observe(analyzer, owner, 'path-b', 'read', { file_path: 'b' }, failure('TOOL_TIMEOUT'))
+    observe(analyzer, owner, 'path-a2', 'read', { file_path: 'a' }, failure('TOOL_TIMEOUT'))
+
+    expect(analyzer.diagnostics.get('path-a2')).toMatchObject({
+      status: 'READY',
+      retryCount: 0,
+      recentFailureCount: 1,
+    })
+    expect(analyzer.diagnostics.get('path-a2').retryOf).toBeUndefined()
+    expect(analyzer.diagnostics.get('path-a2').recent.map(entry => entry.executionId)).toEqual(['path-a2'])
+  })
+
+  it('P7 does not jump over an unsupported operation to an older matching fingerprint', () => {
+    const owner = session('p3-unsupported-barrier')
+    const analyzer = new RetryEscalationAnalyzer()
+    observe(analyzer, owner, 'before-unsupported', 'read', { file_path: 'a' }, failure('TOOL_TIMEOUT'))
+    observe(analyzer, owner, 'unsupported-barrier', 'rm', { file_path: 'a' }, failure('TOOL_TIMEOUT'))
+    observe(analyzer, owner, 'after-unsupported', 'read', { file_path: 'a' }, failure('TOOL_TIMEOUT'))
+
+    expect(analyzer.diagnostics.get('unsupported-barrier').status).toBe('UNSUPPORTED')
+    expect(analyzer.diagnostics.get('after-unsupported')).toMatchObject({
+      status: 'READY',
+      retryCount: 0,
+      recentFailureCount: 1,
+    })
+    expect(analyzer.diagnostics.get('after-unsupported').retryOf).toBeUndefined()
+    expect(analyzer.diagnostics.get('after-unsupported').recent.map(entry => entry.executionId)).toEqual(['after-unsupported'])
+  })
+
+  it('P7 keeps a same-Session barrier when Tool metadata cannot be safely read', () => {
+    const owner = session('p3-unreadable-barrier')
+    const analyzer = new RetryEscalationAnalyzer()
+    observe(analyzer, owner, 'before-unreadable', 'read', { file_path: 'a' }, failure('TOOL_TIMEOUT'))
+    const unreadable = execution(owner, 'unreadable-barrier', 'read', { file_path: 'a' })
+    Object.defineProperty(unreadable, 'name', { get: () => { throw new Error('private tool metadata') } })
+    analyzer.observePreExecute(unreadable, 'unreadable-barrier')
+    observe(analyzer, owner, 'after-unreadable', 'read', { file_path: 'a' }, failure('TOOL_TIMEOUT'))
+
+    expect(analyzer.diagnostics.get('unreadable-barrier').status).toBe('UNSUPPORTED')
+    expect(analyzer.diagnostics.get('after-unreadable').retryOf).toBeUndefined()
+    expect(analyzer.diagnostics.get('after-unreadable').recent.map(entry => entry.executionId)).toEqual(['after-unreadable'])
+  })
+
   it('P3-08/P3-09 keeps overlapping calls and equal session-id text isolated', () => {
     const analyzer = new RetryEscalationAnalyzer()
     const firstSession = session('same-text')

@@ -92,8 +92,9 @@ interface RelationRecord {
   readonly createdAt: number
   readonly fingerprint?: string
   readonly requestedPermission?: ExplicitSandboxTarget
-  readonly nearestPriorOrdinal?: number
-  readonly nearestPriorExpired: boolean
+  readonly immediatePriorOrdinal?: number
+  readonly immediatePriorExpired: boolean
+  readonly immediatePriorMatchesFingerprint: boolean
   readonly reasonCodes: string[]
   evidenceState: EvidenceState
   baseOutcome: RelationOutcome | undefined
@@ -109,8 +110,16 @@ interface RelationRecord {
   settledBeforeCaptureOrdinal?: number
 }
 
+interface ImmediatePredecessor {
+  readonly ordinal: number
+  readonly createdAt: number
+  readonly fingerprint?: string
+}
+
 interface SessionState {
   readonly records: RelationRecord[]
+  /** Latest Tool execution, retained as a one-record barrier even after eviction. */
+  latestExecution?: ImmediatePredecessor
   truncated: boolean
 }
 
@@ -412,6 +421,7 @@ function permissionLevel(mode: SandboxMode): number {
 export class RetryEscalationAnalyzer {
   private states = new WeakMap<Session, SessionState>()
   private executions = new WeakMap<ToolExecution, RelationRecord>()
+  private readonly untrackedExecutions = new WeakSet<ToolExecution>()
   private readonly records = new Set<RelationRecord>()
   private readonly recordsById = new Map<ExecutionId, RelationRecord>()
   private readonly retired = new Map<ExecutionId, RetiredStatus>()
@@ -438,32 +448,53 @@ export class RetryEscalationAnalyzer {
   }
 
   observePreExecute(exec: ToolExecution, executionId: ExecutionId | undefined): void {
-    if (!this.active || executionId === undefined || this.executions.has(exec)) return
+    if (!this.active || this.executions.has(exec) || this.untrackedExecutions.has(exec)) return
     let session: Session | undefined
     let toolName: string | undefined
     let args: unknown
     try {
       session = exec.agent?.session
-      toolName = typeof exec.name === 'string' ? exec.name : undefined
-      args = exec.arguments
     } catch {
       session = undefined
     }
-    if (session === undefined || toolName === undefined) {
-      this.retired.set(executionId, { status: 'UNSUPPORTED', reasonCodes: Object.freeze(['EXACT_LIVE_SCOPE_UNAVAILABLE']) })
+    if (session === undefined) {
+      if (executionId !== undefined) this.retired.set(executionId, { status: 'UNSUPPORTED', reasonCodes: Object.freeze(['EXACT_LIVE_SCOPE_UNAVAILABLE']) })
+      this.untrackedExecutions.add(exec)
       return
     }
 
     const now = this.clock()
     const state = this.stateFor(session)
+    const immediatePrior = state.latestExecution
+    const immediatePriorExpired = immediatePrior !== undefined && now - immediatePrior.createdAt >= this.ttlMs
+    try {
+      toolName = typeof exec.name === 'string' ? exec.name : undefined
+      args = exec.arguments
+    } catch {
+      // The Session identity is still known: retain an unsupported barrier so a
+      // later execution cannot reconnect across this Tool attempt.
+      toolName = undefined
+    }
+    if (executionId === undefined || toolName === undefined) {
+      if (executionId !== undefined) this.retired.set(executionId, { status: 'UNSUPPORTED', reasonCodes: Object.freeze(['EXACT_LIVE_SCOPE_UNAVAILABLE']) })
+      this.sweep(now)
+      state.latestExecution = { ordinal: this.nextOrdinal++, createdAt: now }
+      this.untrackedExecutions.add(exec)
+      return
+    }
     const capture = captureFingerprint(toolName, args)
-    const nearest = capture.fingerprint === undefined
-      ? undefined
-      : [...state.records].reverse().find(record => record.fingerprint === capture.fingerprint)
-    const nearestPriorExpired = nearest !== undefined && now - nearest.createdAt >= this.ttlMs
+    const immediatePriorMatchesFingerprint = capture.fingerprint !== undefined
+      && immediatePrior?.fingerprint === capture.fingerprint
     this.sweep(now)
     if (!this.makeRoom(state)) {
       this.retired.set(executionId, { status: 'CAPACITY_EXCEEDED', reasonCodes: Object.freeze(['CAPACITY_EXCEEDED']) })
+      // The execution still occupies the immediate-predecessor position even when
+      // bounded storage cannot retain its full record. Never let a later call jump it.
+      state.latestExecution = {
+        ordinal: this.nextOrdinal++,
+        createdAt: now,
+        ...capture.fingerprint === undefined ? {} : { fingerprint: capture.fingerprint },
+      }
       return
     }
 
@@ -474,8 +505,9 @@ export class RetryEscalationAnalyzer {
       createdAt: now,
       ...capture.fingerprint === undefined ? {} : { fingerprint: capture.fingerprint },
       ...capture.requestedPermission === undefined ? {} : { requestedPermission: capture.requestedPermission },
-      ...nearest === undefined ? {} : { nearestPriorOrdinal: nearest.ordinal },
-      nearestPriorExpired,
+      ...immediatePrior === undefined ? {} : { immediatePriorOrdinal: immediatePrior.ordinal },
+      immediatePriorExpired,
+      immediatePriorMatchesFingerprint,
       reasonCodes: [...capture.reasonCodes],
       evidenceState: capture.fingerprint === undefined ? 'UNSUPPORTED' : 'PENDING',
       baseOutcome: undefined,
@@ -484,6 +516,11 @@ export class RetryEscalationAnalyzer {
     this.records.add(record)
     this.recordsById.set(executionId, record)
     state.records.push(record)
+    state.latestExecution = {
+      ordinal: record.ordinal,
+      createdAt: record.createdAt,
+      ...record.fingerprint === undefined ? {} : { fingerprint: record.fingerprint },
+    }
     this.executions.set(exec, record)
     const capturedPrior = this.directPrior(record, now)
     if (capturedPrior?.outcome !== undefined) {
@@ -632,11 +669,14 @@ export class RetryEscalationAnalyzer {
   }
 
   private directPrior(record: RelationRecord, now: number): RelationRecord | undefined {
-    if (record.fingerprint === undefined || record.nearestPriorOrdinal === undefined || record.nearestPriorExpired) return undefined
+    if (record.fingerprint === undefined
+      || record.immediatePriorOrdinal === undefined
+      || record.immediatePriorExpired
+      || !record.immediatePriorMatchesFingerprint) return undefined
     const session = record.session.deref()
     if (session === undefined) return undefined
     const state = this.states.get(session)
-    const prior = state === undefined ? undefined : this.findRecord(state, record.nearestPriorOrdinal)
+    const prior = state === undefined ? undefined : this.findRecord(state, record.immediatePriorOrdinal)
     if (prior === undefined || prior.fingerprint !== record.fingerprint) return undefined
     if (prior.ordinal >= record.ordinal) return undefined
     if (record.evidenceState === 'CONFLICTED') return undefined
@@ -677,9 +717,9 @@ export class RetryEscalationAnalyzer {
       reasons.push('RELATION_EVIDENCE_CONFLICT')
       return { status: 'DEGRADED', reasonCodes: [...new Set(reasons)] }
     }
-    if (record.nearestPriorOrdinal !== undefined) {
-      const prior = this.findRecord(state, record.nearestPriorOrdinal)
-      if (record.nearestPriorExpired || prior === undefined) reasons.push('NEAREST_MATCH_UNAVAILABLE')
+    if (record.immediatePriorMatchesFingerprint && record.immediatePriorOrdinal !== undefined) {
+      const prior = this.findRecord(state, record.immediatePriorOrdinal)
+      if (record.immediatePriorExpired || prior === undefined) reasons.push('NEAREST_MATCH_UNAVAILABLE')
       else if (record.capturedPrior !== undefined) {
         // The retry edge was frozen at capture and is not rewritten by later conflict.
       } else if (prior.evidenceState === 'SETTLED' && prior.outcome?.status === 'SUCCESS') {
