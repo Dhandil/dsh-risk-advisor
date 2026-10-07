@@ -12,6 +12,8 @@ import { ApprovalAssessmentCoordinator } from './host/assessment-envelope.ts'
 import type { AssessmentDiagnostics } from './host/assessment-envelope.ts'
 import { installRiskAdvisorBrowserBridge } from './host/browser-bridge.ts'
 import type { HostConnectionLike } from './host/browser-bridge.ts'
+import { installOnlineCorrectionBrowserBridge } from './host/online-correction-bridge.ts'
+import type { OnlineCorrectionHostConnectionLike } from './host/online-correction-bridge.ts'
 import { RetryEscalationAnalyzer } from './host/retry-escalation.ts'
 import type { FailureChainDiagnostics } from './host/retry-escalation.ts'
 import { RuleEngine } from './host/rule-engine.ts'
@@ -187,7 +189,10 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
   })
   ctx.inject(['connection', 'sessions'], bridgeCtx => {
     const connection = bridgeCtx.get('connection', false) as HostConnectionLike | undefined
-    if (connection !== undefined) installRiskAdvisorBrowserBridge(bridgeCtx, connection, assessments)
+    if (connection !== undefined) {
+      installRiskAdvisorBrowserBridge(bridgeCtx, connection, assessments)
+      installOnlineCorrectionBrowserBridge(bridgeCtx, connection as OnlineCorrectionHostConnectionLike, liveCorrection.diagnostics)
+    }
   })
   ctx.inject(['llm'], judgeCtx => {
     const llm = judgeCtx.get('llm')
@@ -251,6 +256,25 @@ export type { FastJudgeConfig, FastJudgeCandidate, FastJudgeDimension, FastJudge
 export type { DeepJudgeConfig, DeepJudgeCandidateV1, DeepJudgeDimension, DeepJudgeDimensionResult, DeepJudgeFailureCode, NormalizedDeepJudgeConfig } from './host/deep-judge.ts'
 export type { RiskAssessment, RiskContextSnapshot, RiskFeature, RiskFeatureSet, AssessmentFinding, AssessmentUncertainty, SaferAlternative } from './host/risk-engine.ts'
 export type { BrowserBridgeClientResult, BrowserSafeReasonCode, BrowserSafeReasonCodeV2, BrowserSafeReasonCodeV3, BrowserSafeReasonCodeV4, RiskAdvisorBridgeRead, RiskAdvisorBridgeViewV1, RiskAdvisorBridgeViewV2, RiskAdvisorBridgeViewV3, RiskAdvisorBridgeViewV4, BrowserEvidenceSummaryV1, OperationPresentationV1, BrowserRiskAssessmentV1, FailureContextPresentationV1, BrowserOperationKind, BrowserResourceKind, BrowserDimension, BrowserDimensionSource, BrowserEvidenceQuality, BrowserFindingDimension, BrowserFindingSeverity, BrowserFindingStrength, BrowserAlternativeSource, BrowserAlternativeVerification, BrowserUncertaintyImpact } from './bridge-contract.ts'
+export {
+  ONLINE_CORRECTION_RPC_CHANNEL,
+  ONLINE_CORRECTION_ENDPOINT,
+  ONLINE_CORRECTION_ROUTE,
+  ONLINE_CORRECTION_IDENTIFIER_LIMIT,
+  ONLINE_CORRECTION_MAX_FINDINGS,
+  parseOnlineCorrectionRead,
+  parseOnlineCorrectionRequest,
+} from './online-correction-contract.ts'
+export type {
+  BrowserOnlineCorrectionKind,
+  BrowserOnlineCorrectionDiagnosis,
+  BrowserOnlineCorrectionAdvisoryCode,
+  BrowserOnlineCorrectionReasonCode,
+  BrowserOnlineCorrectionFindingV1,
+  BrowserOnlineCorrectionViewV1,
+  OnlineCorrectionBridgeRead,
+  OnlineCorrectionClientResult,
+} from './online-correction-contract.ts'
 export type {
   DurableOccurrenceRef,
   EdgeResolution,
@@ -291,4 +315,4 @@ export type {
   TerminalStatus,
 } from './host/explicit-failure.ts'
 
-export type { LiveCorrectionDiagnostics, LiveCorrectionFindingV1, LiveCorrectionFindingKind, LiveCorrectionDiagnosisCode, LiveCorrectionAdvisoryCode, LiveCorrectionSessionView } from './host/live-correction.ts'
+export type { LiveCorrectionDiagnostics, LiveCorrectionFindingV1, LiveCorrectionFindingKind, LiveCorrectionDiagnosisCode, LiveCorrectionAdvisoryCode, LiveCorrectionSessionView, LiveCorrectionRuntimeStatus } from './host/live-correction.ts'

@@ -49,6 +49,11 @@ export interface LiveCorrectionDiagnostics {
   readonly forExecution: (executionId: ExecutionId) => readonly LiveCorrectionFindingV1[]
   readonly forSession: (session: Session) => LiveCorrectionSessionView
   readonly render: (findingId: string) => string | undefined
+  readonly status: () => LiveCorrectionRuntimeStatus
+}
+
+export interface LiveCorrectionRuntimeStatus {
+  readonly f2Availability: 'READY' | 'SATURATED'
 }
 
 interface SessionState {
@@ -156,6 +161,7 @@ export class LiveCorrectionRuntime {
     forExecution: (executionId: ExecutionId) => this.findingsForExecution(executionId),
     forSession: (session: Session) => this.findingsForSession(session),
     render: (findingId: string) => this.renderFinding(findingId),
+    status: () => Object.freeze({ f2Availability: this.f2ConflictSaturated ? 'SATURATED' as const : 'READY' as const }),
   })
 
   constructor(options: LiveCorrectionOptions = {}) {

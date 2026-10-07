@@ -1,0 +1,39 @@
+.dock {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 8px 16px;
+  color: var(--dsh-text-primary, inherit);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.panel {
+  display: grid;
+  gap: 5px;
+  border: 1px solid var(--dsh-border-subtle, rgba(127, 127, 127, 0.25));
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--dsh-surface-secondary, rgba(127, 127, 127, 0.06));
+}
+
+.title {
+  font-weight: 600;
+}
+
+.finding {
+  min-width: 0;
+}
+
+.kind {
+  margin-right: 6px;
+  color: var(--dsh-text-secondary, currentColor);
+  font-weight: 600;
+}
+
+.body {
+  overflow-wrap: anywhere;
+}
+
+.muted {
+  color: var(--dsh-text-secondary, currentColor);
+}

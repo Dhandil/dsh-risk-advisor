@@ -15,6 +15,7 @@ import {
   RISK_ADVISOR_RPC_CHANNEL,
   type BrowserBridgeClientResult,
 } from '../src/bridge-contract.ts'
+import { ONLINE_CORRECTION_ROUTE } from '../src/online-correction-contract.ts'
 import type { ConnectionRpcResultLike, HostConnectionLike } from '../src/host/browser-bridge.ts'
 
 class InMemoryAuthenticatedConnection {
@@ -178,8 +179,8 @@ describe('Phase 1C authenticated read-only browser bridge', () => {
     let disposed = false
     try {
       const approval = await openApproval(ctx, session, agent, 'p1c-live-probe', 'p1c-live-call')
-      expect(connection.registeredPaths()).toEqual([RISK_ADVISOR_ACTIVE_ROUTE, RISK_ADVISOR_ASSESSMENT_ROUTE].sort())
-      expect(connection.registrations).toBe(2)
+      expect(connection.registeredPaths()).toEqual([RISK_ADVISOR_ACTIVE_ROUTE, RISK_ADVISOR_ASSESSMENT_ROUTE, ONLINE_CORRECTION_ROUTE].sort())
+      expect(connection.registrations).toBe(3)
 
       const active = expectOk(await connection.dispatch('active', { sessionId: session.id, callId: 'p1c-live-call' })) as Record<string, unknown>
       expect(active).toMatchObject({ kind: 'VIEW' })
@@ -206,7 +207,7 @@ describe('Phase 1C authenticated read-only browser bridge', () => {
 
       await ctx.fiber.dispose()
       disposed = true
-      expect(connection.disposals).toBe(2)
+      expect(connection.disposals).toBe(3)
       expect(connection.isRegistered()).toBe(false)
     } finally {
       if (!disposed) await ctx.fiber.dispose()
@@ -231,28 +232,28 @@ describe('Phase 1C authenticated read-only browser bridge', () => {
   const first = new InMemoryAuthenticatedConnection(routeRegistry)
   const removeFirst = ctx.provide('connection', first.connection)
   await new Promise<void>(resolve => setTimeout(resolve, 0))
-  expect(first.registrations).toBe(2)
+  expect(first.registrations).toBe(3)
   expect(first.isRegistered()).toBe(true)
-  expect(routeRegistry).toEqual(new Set([RISK_ADVISOR_ACTIVE_ROUTE, RISK_ADVISOR_ASSESSMENT_ROUTE]))
+  expect(routeRegistry).toEqual(new Set([RISK_ADVISOR_ACTIVE_ROUTE, RISK_ADVISOR_ASSESSMENT_ROUTE, ONLINE_CORRECTION_ROUTE]))
 
   // Connection replacement first unloads the old dependency-owned bridge.
   await removeFirst()
   await new Promise<void>(resolve => setTimeout(resolve, 0))
-  expect(first.disposals).toBe(2)
+  expect(first.disposals).toBe(3)
   expect(first.isRegistered()).toBe(false)
   expect(routeRegistry).toEqual(new Set())
 
   const replacement = new InMemoryAuthenticatedConnection(routeRegistry)
   ctx.provide('connection', replacement.connection)
   await new Promise<void>(resolve => setTimeout(resolve, 0))
-  expect(replacement.registrations).toBe(2)
+  expect(replacement.registrations).toBe(3)
   expect(replacement.isRegistered()).toBe(true)
-  expect(routeRegistry).toEqual(new Set([RISK_ADVISOR_ACTIVE_ROUTE, RISK_ADVISOR_ASSESSMENT_ROUTE]))
-  expect(first.registrations + replacement.registrations).toBe(4)
+  expect(routeRegistry).toEqual(new Set([RISK_ADVISOR_ACTIVE_ROUTE, RISK_ADVISOR_ASSESSMENT_ROUTE, ONLINE_CORRECTION_ROUTE]))
+  expect(first.registrations + replacement.registrations).toBe(6)
 
   // Final tree disposal withdraws the replacement route as well.
   await ctx.fiber.dispose()
-  expect(replacement.disposals).toBe(2)
+  expect(replacement.disposals).toBe(3)
   expect(replacement.isRegistered()).toBe(false)
   expect(routeRegistry).toEqual(new Set())
   })
@@ -412,7 +413,7 @@ describe('Phase 1C authenticated read-only browser bridge', () => {
     try {
       const client = createRiskAdvisorBridgeClient({ call: (...args) => connection.dispatch(String(args[1]).replace('risk-advisor/', ''), args[2], args[3]) })
       expect(client).toBeDefined()
-      expect(connection.registeredPaths()).toEqual([RISK_ADVISOR_ACTIVE_ROUTE, RISK_ADVISOR_ASSESSMENT_ROUTE].sort())
+      expect(connection.registeredPaths()).toEqual([RISK_ADVISOR_ACTIVE_ROUTE, RISK_ADVISOR_ASSESSMENT_ROUTE, ONLINE_CORRECTION_ROUTE].sort())
     } finally {
       await ctx.fiber.dispose()
     }
