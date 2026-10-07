@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useSyncExternalStore } from 'react'
+import { useEffect, useSyncExternalStore } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { BrowserOnlineCorrectionAdvisoryCode, BrowserOnlineCorrectionFindingV1 } from '../online-correction-contract.ts'
 import { ONLINE_CORRECTION_NS } from './online-correction-locales.ts'
@@ -23,13 +23,13 @@ export function renderOnlineCorrectionAdvisory(code: BrowserOnlineCorrectionAdvi
 }
 
 export function OnlineCorrectionDock({ sessionId, onlineCorrectionClient, t }: OnlineCorrectionDockProps) {
-  const store = useMemo(() => onlineCorrectionClient.createStore(sessionId), [onlineCorrectionClient, sessionId])
+  const store = onlineCorrectionClient.getSource(sessionId)
   const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot)
 
   useEffect(() => {
-    store.start()
-    return () => { store.dispose() }
-  }, [store])
+    onlineCorrectionClient.retain(sessionId)
+    return () => { onlineCorrectionClient.release(sessionId) }
+  }, [onlineCorrectionClient, sessionId])
 
   if (snapshot.status !== 'VIEW') return null
   const view = snapshot.view

@@ -45,16 +45,11 @@ export class OnlineCorrectionStore {
   constructor(
     private readonly bridge: OnlineCorrectionBridgeClient,
     readonly sessionId: string,
-    connection?: OnlineCorrectionConnectionLike,
+    private readonly connection?: OnlineCorrectionConnectionLike,
     options: OnlineCorrectionStoreOptions = {},
-    private readonly onDispose?: (store: OnlineCorrectionStore) => void,
   ) {
     this.setTimer = options.setTimer ?? ((callback, delay) => setTimeout(callback, delay))
     this.clearTimer = options.clearTimer ?? (timer => clearTimeout(timer))
-    if (connection?.generation !== undefined) {
-      this.connectionGeneration = connection.generation.getSnapshot()
-      this.unsubscribeGeneration = connection.generation.subscribe(() => this.onConnectionReset(connection.generation!.getSnapshot()))
-    }
   }
 
   getSnapshot = (): OnlineCorrectionStoreSnapshot => this.snapshot
@@ -67,6 +62,7 @@ export class OnlineCorrectionStore {
   start(): void {
     if (this.started || this.disposed) return
     this.started = true
+    this.subscribeToConnectionGeneration()
     if (this.request !== undefined) {
       this.refreshPending = true
       return
@@ -75,10 +71,15 @@ export class OnlineCorrectionStore {
   }
 
   stop(): void {
-    if (!this.started) return
+    const wasStarted = this.started
     this.started = false
-    this.storeGeneration += 1
-    this.requestGeneration += 1
+    if (wasStarted) {
+      this.storeGeneration += 1
+      this.requestGeneration += 1
+    }
+    this.unsubscribeGeneration?.()
+    this.unsubscribeGeneration = undefined
+    this.connectionGeneration = undefined
     this.clearScheduled()
     this.request?.abort()
     this.refreshPending = false
@@ -87,12 +88,9 @@ export class OnlineCorrectionStore {
 
   dispose(): void {
     if (this.disposed) return
-    this.stop()
     this.disposed = true
-    this.unsubscribeGeneration?.()
-    this.unsubscribeGeneration = undefined
     this.listeners.clear()
-    this.onDispose?.(this)
+    this.stop()
   }
 
   private async readNow(): Promise<void> {
@@ -154,10 +152,17 @@ export class OnlineCorrectionStore {
     this.timer = undefined
   }
 
+  private subscribeToConnectionGeneration(): void {
+    const generation = this.connection?.generation
+    if (generation === undefined) return
+    this.connectionGeneration = generation.getSnapshot()
+    this.unsubscribeGeneration = generation.subscribe(() => this.onConnectionReset(generation.getSnapshot()))
+  }
+
   private onConnectionReset(nextGeneration: unknown): void {
+    if (this.disposed || !this.started) return
     if (Object.is(this.connectionGeneration, nextGeneration)) return
     this.connectionGeneration = nextGeneration
-    if (this.disposed || !this.started) return
     this.storeGeneration += 1
     this.requestGeneration += 1
     this.clearScheduled()

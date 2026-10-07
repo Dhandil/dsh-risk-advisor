@@ -2,29 +2,53 @@ import type { OnlineCorrectionConnectionLike } from './online-correction-store.t
 import { OnlineCorrectionStore } from './online-correction-store.ts'
 import { createOnlineCorrectionBridgeClient } from './online-correction-bridge.ts'
 
-/** Owns only ephemeral read stores for currently mounted Session docks. */
+interface Entry { readonly store: OnlineCorrectionStore; refs: number }
+
+/** Owns one ephemeral read source per Session with commit-phase refcounts. */
 export class OnlineCorrectionClient {
   private readonly bridge: ReturnType<typeof createOnlineCorrectionBridgeClient>
-  private readonly stores = new Set<OnlineCorrectionStore>()
+  private readonly stores = new Map<string, Entry>()
   private disposed = false
 
   constructor(private readonly connection: OnlineCorrectionConnectionLike) {
     this.bridge = createOnlineCorrectionBridgeClient(connection.rpc)
   }
 
-  createStore(sessionId: string): OnlineCorrectionStore {
-    const store = new OnlineCorrectionStore(this.bridge, sessionId, this.connection, {}, disposedStore => {
-      this.stores.delete(disposedStore)
-    })
-    this.stores.add(store)
-    if (this.disposed) store.dispose()
-    return store
+  /** Render-pure source lookup. It never starts polling or claims ownership. */
+  getSource(sessionId: string): OnlineCorrectionStore {
+    return this.entryFor(sessionId).store
+  }
+
+  /** Commit-phase ownership. Each retain must have a matching release. */
+  retain(sessionId: string): void {
+    const entry = this.entryFor(sessionId)
+    entry.refs += 1
+    if (entry.refs === 1) entry.store.start()
+  }
+
+  release(sessionId: string): void {
+    const entry = this.stores.get(sessionId)
+    if (entry === undefined || entry.refs === 0) return
+    entry.refs -= 1
+    if (entry.refs === 0) entry.store.stop()
   }
 
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
-    for (const store of [...this.stores]) store.dispose()
+    for (const entry of this.stores.values()) entry.store.dispose()
     this.stores.clear()
+  }
+
+  private entryFor(sessionId: string): Entry {
+    if (this.disposed) throw new Error('online correction client disposed')
+    const existing = this.stores.get(sessionId)
+    if (existing !== undefined) return existing
+    const entry = {
+      store: new OnlineCorrectionStore(this.bridge, sessionId, this.connection),
+      refs: 0,
+    }
+    this.stores.set(sessionId, entry)
+    return entry
   }
 }

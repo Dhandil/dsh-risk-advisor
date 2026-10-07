@@ -161,6 +161,26 @@ function makeManualTimers() {
   }
 }
 
+function makeGeneration(initial = 1) {
+  let snapshot = initial
+  const listeners = new Set<() => void>()
+  const unsubscribes = vi.fn((listener: () => void) => { listeners.delete(listener) })
+  const subscribe = vi.fn((listener: () => void) => {
+    listeners.add(listener)
+    return () => { unsubscribes(listener) }
+  })
+  return {
+    service: { getSnapshot: () => snapshot, subscribe },
+    set(next: number) {
+      snapshot = next
+      for (const listener of [...listeners]) listener()
+    },
+    active: () => listeners.size,
+    subscribe,
+    unsubscribes,
+  }
+}
+
 async function flushMicrotasks(): Promise<void> {
   await Promise.resolve()
   await Promise.resolve()
@@ -191,7 +211,10 @@ function renderDock(client: OnlineCorrectionClient, sessionId = 'session-1', loc
   />)
 }
 
-afterEach(() => cleanup())
+afterEach(() => {
+  cleanup()
+  vi.useRealTimers()
+})
 
 describe('Phase 12.2 User Advisory Surface U1-U22', () => {
   it('U1 parses and freezes valid F1 and F2 browser DTOs', () => {
@@ -537,5 +560,182 @@ describe('Phase 12.2 User Advisory Surface U1-U22', () => {
     expect(source).not.toMatch(/pattern-store|guidance-store|deep-judge|fast-judge|\bllm\b|\bmodel\b|subagent|agent context/i)
     expect(source).toContain('ONLINE_CORRECTION_ROUTE')
     expect(source).toContain('conversation')
+  })
+})
+
+describe('Phase 12.2 Repair1 Client lifecycle L1-L9', () => {
+  it('L1 returns one stable Store source per sessionId', () => {
+    const client = new OnlineCorrectionClient({ rpc: { call: async () => ({ ok: true, value: { kind: 'NOT_FOUND' } }) } })
+    expect(client.getSource('session-a')).toBe(client.getSource('session-a'))
+    expect(client.getSource('session-a')).not.toBe(client.getSource('session-b'))
+    client.dispose()
+  })
+
+  it('L2 getSource is render-pure and installs no poll or generation subscription', () => {
+    const call = vi.fn(async () => ({ ok: true, value: { kind: 'NOT_FOUND' } }))
+    const generation = makeGeneration()
+    const client = new OnlineCorrectionClient({ rpc: { call }, generation: generation.service })
+    const store = client.getSource('session-a')
+    expect(client.getSource('session-a')).toBe(store)
+    expect(call).not.toHaveBeenCalled()
+    expect(generation.subscribe).not.toHaveBeenCalled()
+    expect(generation.active()).toBe(0)
+    client.dispose()
+  })
+
+  it('L3 first retain starts once; final release aborts, stops, unsubscribes, and clears the view', async () => {
+    vi.useFakeTimers()
+    const generation = makeGeneration()
+    let calls = 0
+    let pendingSignal: AbortSignal | undefined
+    const call = vi.fn(async (_channel: string, _endpoint: string, _payload: unknown, signal?: AbortSignal) => {
+      calls += 1
+      if (calls === 1) return { ok: true, value: { kind: 'VIEW', view: browserView({ sessionId: 'session-a', findings: [browserFinding()] }) } }
+      pendingSignal = signal
+      return await new Promise(resolve => signal?.addEventListener('abort', () => resolve({ ok: true, value: { kind: 'NOT_FOUND' } }), { once: true }))
+    })
+    const client = new OnlineCorrectionClient({ rpc: { call }, generation: generation.service })
+    const store = client.getSource('session-a')
+    client.retain('session-a')
+    await flushMicrotasks()
+    expect(store.getSnapshot()).toMatchObject({ status: 'VIEW' })
+    expect(generation.subscribe).toHaveBeenCalledTimes(1)
+    expect(generation.active()).toBe(1)
+    expect(vi.getTimerCount()).toBe(1)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(call).toHaveBeenCalledTimes(2)
+    client.release('session-a')
+    expect(pendingSignal?.aborted).toBe(true)
+    expect(store.getSnapshot()).toEqual({ status: 'EMPTY' })
+    expect(generation.active()).toBe(0)
+    expect(generation.unsubscribes).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+    await flushMicrotasks()
+    client.dispose()
+  })
+
+  it('L4 duplicate retain calls share one poll/subscription and only final release stops them', async () => {
+    vi.useFakeTimers()
+    const generation = makeGeneration()
+    const call = vi.fn(async () => ({ ok: true, value: { kind: 'VIEW', view: browserView({ sessionId: 'session-a', findings: [browserFinding()] }) } }))
+    const client = new OnlineCorrectionClient({ rpc: { call }, generation: generation.service })
+    const store = client.getSource('session-a')
+    client.retain('session-a')
+    client.retain('session-a')
+    await flushMicrotasks()
+    expect(call).toHaveBeenCalledTimes(1)
+    expect(generation.subscribe).toHaveBeenCalledTimes(1)
+    expect(generation.active()).toBe(1)
+    client.release('session-a')
+    expect(store.getSnapshot()).toMatchObject({ status: 'VIEW' })
+    expect(generation.active()).toBe(1)
+    expect(vi.getTimerCount()).toBe(1)
+    client.release('session-a')
+    expect(store.getSnapshot()).toEqual({ status: 'EMPTY' })
+    expect(generation.active()).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
+    client.dispose()
+  })
+
+  it('L5 re-retain restarts the same Store with one fresh poll and generation subscription', async () => {
+    vi.useFakeTimers()
+    const generation = makeGeneration()
+    const call = vi.fn(async () => ({ ok: true, value: { kind: 'VIEW', view: browserView({ sessionId: 'session-a', findings: [browserFinding()] }) } }))
+    const client = new OnlineCorrectionClient({ rpc: { call }, generation: generation.service })
+    const firstSource = client.getSource('session-a')
+    client.retain('session-a')
+    await flushMicrotasks()
+    client.release('session-a')
+    expect(firstSource.getSnapshot()).toEqual({ status: 'EMPTY' })
+    expect(generation.active()).toBe(0)
+    generation.set(2)
+    client.retain('session-a')
+    await flushMicrotasks()
+    expect(client.getSource('session-a')).toBe(firstSource)
+    expect(call).toHaveBeenCalledTimes(2)
+    expect(generation.subscribe).toHaveBeenCalledTimes(2)
+    expect(generation.active()).toBe(1)
+    expect(firstSource.getSnapshot()).toMatchObject({ status: 'VIEW' })
+    client.release('session-a')
+    client.dispose()
+  })
+
+  it('L6 keeps Session A and B Stores, refcounts, polling, and subscriptions independent', async () => {
+    vi.useFakeTimers()
+    const generation = makeGeneration()
+    const call = vi.fn(async (_channel: string, _endpoint: string, payload: unknown) => ({
+      ok: true,
+      value: { kind: 'VIEW', view: browserView({ sessionId: (payload as { sessionId: string }).sessionId, findings: [browserFinding()] }) },
+    }))
+    const client = new OnlineCorrectionClient({ rpc: { call }, generation: generation.service })
+    const storeA = client.getSource('session-a')
+    const storeB = client.getSource('session-b')
+    client.retain('session-a')
+    await flushMicrotasks()
+    expect(call.mock.calls.map(args => (args[2] as { sessionId: string }).sessionId)).toEqual(['session-a'])
+    client.retain('session-b')
+    await flushMicrotasks()
+    expect(call.mock.calls.map(args => (args[2] as { sessionId: string }).sessionId)).toEqual(['session-a', 'session-b'])
+    expect(generation.active()).toBe(2)
+    client.release('session-a')
+    expect(storeA.getSnapshot()).toEqual({ status: 'EMPTY' })
+    expect(storeB.getSnapshot()).toMatchObject({ status: 'VIEW' })
+    expect(generation.active()).toBe(1)
+    expect(vi.getTimerCount()).toBe(1)
+    client.release('session-b')
+    client.dispose()
+  })
+
+  it('L7 Client disposal drains every active and inactive cached Store', async () => {
+    vi.useFakeTimers()
+    const generation = makeGeneration()
+    let pendingSignal: AbortSignal | undefined
+    let pendingCount = 0
+    const call = vi.fn(async (_channel: string, _endpoint: string, payload: unknown, signal?: AbortSignal) => {
+      if ((payload as { sessionId: string }).sessionId === 'inactive') return { ok: true, value: { kind: 'NOT_FOUND' } }
+      if ((payload as { sessionId: string }).sessionId === 'timer') return { ok: true, value: { kind: 'VIEW', view: browserView({ sessionId: 'timer', findings: [browserFinding()] }) } }
+      pendingSignal = signal
+      pendingCount += 1
+      return await new Promise(resolve => signal?.addEventListener('abort', () => {
+        pendingCount -= 1
+        resolve({ ok: true, value: { kind: 'NOT_FOUND' } })
+      }, { once: true }))
+    })
+    const client = new OnlineCorrectionClient({ rpc: { call }, generation: generation.service })
+    const inactive = client.getSource('inactive')
+    const timerStore = client.getSource('timer')
+    const pendingStore = client.getSource('pending')
+    client.retain('timer')
+    client.retain('pending')
+    await flushMicrotasks()
+    expect(timerStore.getSnapshot()).toMatchObject({ status: 'VIEW' })
+    expect(pendingCount).toBe(1)
+    expect(generation.active()).toBe(2)
+    expect(vi.getTimerCount()).toBe(1)
+    client.dispose()
+    await flushMicrotasks()
+    expect(inactive.getSnapshot()).toEqual({ status: 'EMPTY' })
+    expect(timerStore.getSnapshot()).toEqual({ status: 'EMPTY' })
+    expect(pendingStore.getSnapshot()).toEqual({ status: 'EMPTY' })
+    expect(pendingSignal?.aborted).toBe(true)
+    expect(pendingCount).toBe(0)
+    expect(generation.active()).toBe(0)
+    expect(generation.unsubscribes).toHaveBeenCalledTimes(2)
+    expect(vi.getTimerCount()).toBe(0)
+    expect(() => client.getSource('after-dispose')).toThrow('online correction client disposed')
+  })
+
+  it('L8 keeps Dock lookup render-pure and retains/releases only in an effect', async () => {
+    const source = await readFile(join(process.cwd(), 'src/client/OnlineCorrectionDock.tsx'), 'utf8')
+    expect(source).toContain('onlineCorrectionClient.getSource(sessionId)')
+    expect(source).toContain('onlineCorrectionClient.retain(sessionId)')
+    expect(source).toContain('onlineCorrectionClient.release(sessionId)')
+    expect(source).not.toContain('onlineCorrectionClient.createStore')
+    expect(source).not.toContain('useMemo')
+  })
+
+  it('L9 retains all U1-U22 focused regressions for the required verification run', async () => {
+    const source = await readFile(join(process.cwd(), 'tests/p12-2-online-correction.spec.tsx'), 'utf8')
+    expect(source.match(/it\('U\d{1,2}\b/g)).toHaveLength(22)
   })
 })
