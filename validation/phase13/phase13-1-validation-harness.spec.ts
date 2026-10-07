@@ -5,9 +5,9 @@ import { captureExecutionId, PHASE13_VERIFICATION_POLL_INTERVAL_MS, PHASE13_VERI
 import { canonicalJson, sha256Hex } from './canonical.ts'
 import { PHASE13_LEDGER_MAX_BYTES, PHASE13_LEDGER_MAX_RECORDS, TruthLedger, readVerifiedLedger, verifyLedgerText } from './ledger.ts'
 import { canonicalManifestJson, generateSmokeManifest, manifestSha256, REQUIRED_SMOKE_FAMILIES } from './manifest.ts'
-import { operationByRef, PHASE13_OPERATION_REFS } from './operations.ts'
+import { operationByRef, PHASE13_OPERATIONS, PHASE13_OPERATION_REFS, validateSettlementCapabilities } from './operations.ts'
 import { classifySignal, gradeStep } from './oracle.ts'
-import { blockedStatus, findingOwnerIssues, runPhase13Campaign, runSmokeCampaign, type SessionFindingHistory } from './runner.ts'
+import { blockedStatus, findingOwnerIssues, runPhase13Campaign, runSmokeCampaign, upstreamVerificationReproducerEvidence, type SessionFindingHistory } from './runner.ts'
 import { summarizeVerifiedLedger } from './summary.ts'
 import { Phase13Subject } from './subject.ts'
 import {
@@ -98,6 +98,28 @@ function syntheticCompletedLedger(runId: string, scenarioCount: number, stepsPer
 
 function findingHistory(): SessionFindingHistory {
   return { activeBySession: new Map(), retiredBySession: new Map() }
+}
+
+function capabilityManifest(
+  runId: string,
+  operationRef: string,
+  f2Settlement: 'NONE' | 'DIRECT' | 'ASYNC_SUPPORTED',
+  f2: 'EXPECTED' | 'NOT_EXPECTED' | 'NOT_APPLICABLE' = 'NOT_EXPECTED',
+) {
+  const base = generateSmokeManifest({ campaignRunId: `${runId}-template`, seed: 'maintenance-repair2' })
+  const source = base.scenarios[0]!
+  const operation = operationByRef(operationRef)!
+  return parsePhase13ManifestV1({
+    ...base,
+    campaignRunId: runId,
+    scenarios: [{
+      scenarioId: `${runId}-scenario`, family: 'settlement-capability-proof', sessionKey: `${runId}-session`,
+      steps: [{
+        ...source.steps[0]!, stepId: `${runId}-step`, operationRef, expectedProcess: operation.process,
+        expected: { f1: 'NOT_EXPECTED', f2 }, f2Settlement,
+      }],
+    }],
+  }, PHASE13_OPERATION_REFS)
 }
 
 async function workspace(runId: string): Promise<Phase13Workspace> {
@@ -490,6 +512,160 @@ describe('Phase 13.1 independent validation harness', () => {
     expect(result.status).toBe('COMPLETE')
     expect(result.scenarioCount).toBeLessThanOrEqual(30)
     expect(result.toolExecutionCount).toBeLessThanOrEqual(100)
+  })
+})
+
+describe('Phase 13.1 Maintenance Repair2 M1-M15', () => {
+  it('M1 assigns exactly one frozen verification capability to every operation', () => {
+    const capabilities = new Map(PHASE13_OPERATIONS.map(operation => [operation.operationRef, operation.verificationCapability]))
+    expect(capabilities).toEqual(new Map([
+      ['read-failure', 'NONE'], ['read-success', 'NONE'], ['read-different-failure', 'NONE'],
+      ['write-match', 'DIRECT'], ['write-mismatch-fault', 'DIRECT'],
+      ['bash-mkdir-match', 'ASYNC_SUPPORTED'], ['bash-mkdir-mismatch-fault', 'ASYNC_SUPPORTED'],
+      ['bash-unsupported', 'NONE'],
+    ]))
+    expect(PHASE13_OPERATIONS.every(operation => Object.isFrozen(operation))).toBe(true)
+  })
+
+  it('M2 rejects unsupported/NONE settlement declarations before campaign setup', () => {
+    const manifest = capabilityManifest('m2-none-async', 'bash-unsupported', 'ASYNC_SUPPORTED')
+    expect(validateSettlementCapabilities(manifest)).toMatchObject({ code: 'SETTLEMENT_CAPABILITY_MISMATCH', operationRef: 'bash-unsupported' })
+  })
+
+  it('M3 rejects DIRECT operations paired with NONE or ASYNC_SUPPORTED', () => {
+    expect(validateSettlementCapabilities(capabilityManifest('m3-direct-none', 'write-match', 'NONE'))?.code).toBe('SETTLEMENT_CAPABILITY_MISMATCH')
+    expect(validateSettlementCapabilities(capabilityManifest('m3-direct-async', 'write-match', 'ASYNC_SUPPORTED'))?.code).toBe('SETTLEMENT_CAPABILITY_MISMATCH')
+  })
+
+  it('M4 rejects ASYNC_SUPPORTED operations paired with DIRECT or NONE', () => {
+    expect(validateSettlementCapabilities(capabilityManifest('m4-async-direct', 'bash-mkdir-match', 'DIRECT'))?.code).toBe('SETTLEMENT_CAPABILITY_MISMATCH')
+    expect(validateSettlementCapabilities(capabilityManifest('m4-async-none', 'bash-mkdir-match', 'NONE'))?.code).toBe('SETTLEMENT_CAPABILITY_MISMATCH')
+  })
+
+  it('M5 prevents a NONE-capability operation from declaring F2 EXPECTED', () => {
+    const source = capabilityManifest('m5-none-expected', 'bash-unsupported', 'NONE')
+    const scenario = source.scenarios[0]!
+    const step = scenario.steps[0]!
+    const tampered = {
+      ...source,
+      scenarios: [{ ...scenario, steps: [{ ...step, expected: { ...step.expected, f2: 'EXPECTED' as const } }] }],
+    }
+    expect(validateSettlementCapabilities(tampered)).toMatchObject({ code: 'SETTLEMENT_CAPABILITY_MISMATCH' })
+    expect(() => parsePhase13ManifestV1({
+      ...source,
+      scenarios: [{ ...scenario, steps: [{ ...step, expected: { ...step.expected, f2: 'EXPECTED' } }] }],
+    }, PHASE13_OPERATION_REFS)).toThrow('expected-f2-without-settlement')
+  })
+
+  it('M6 accepts the valid bounded smoke manifest under the frozen capability registry', () => {
+    const manifest = generateSmokeManifest({ campaignRunId: 'm6-valid-smoke', seed: 'm6-seed' })
+    expect(validateSettlementCapabilities(manifest)).toBeUndefined()
+  })
+
+  it('M7 only classifies upstream-missing as BLOCKED_UPSTREAM after supported capability proof', async () => {
+    expect(blockedStatus(['UPSTREAM_VERIFICATION_MISSING'])).toBe('BLOCKED_VALIDATION')
+    expect(blockedStatus(['UPSTREAM_VERIFICATION_MISSING'], 'NONE')).toBe('BLOCKED_VALIDATION')
+    expect(blockedStatus(['UPSTREAM_VERIFICATION_MISSING'], 'DIRECT')).toBe('BLOCKED_UPSTREAM')
+    expect(blockedStatus(['UPSTREAM_VERIFICATION_MISSING'], 'ASYNC_SUPPORTED')).toBe('BLOCKED_UPSTREAM')
+
+    for (const status of ['BLOCKED_UPSTREAM', 'BLOCKED_VALIDATION'] as const) {
+      const runId = `m7-${status.toLowerCase()}`
+      const root = await workspace(runId)
+      const path = await root.resolveArtifactPath('truth-ledger.jsonl')
+      const ledger = await TruthLedger.create(path, runId, {
+        generatorVersion: 'phase13-generator-v1', seed: 'm7-seed', lane: 'A',
+        manifestSha256: 'a'.repeat(64), subjectBoundary: 'PINNED_HARNESS_PUBLIC_DIAGNOSTICS',
+      })
+      await ledger.append('SCENARIO_START', { scenarioId: 'm7-scenario', family: 'blocker-proof', sessionKey: 'm7-session' })
+      await ledger.append('STEP_RESULT', {
+        scenarioId: 'm7-scenario', stepId: 'm7-step', family: 'blocker-proof', sessionKey: 'm7-session',
+        operationRef: 'bash-mkdir-match', executionCapture: 'VALID', expected: { f1: 'NOT_EXPECTED', f2: 'EXPECTED' },
+        actualKinds: [], actualFindingIds: [], processObserved: 'SUCCESS',
+        classification: { f1: 'TN', f2: 'UNSCORABLE' }, issueCodes: ['UPSTREAM_VERIFICATION_MISSING'], opportunity: 'NONE',
+        findingLifetime: 'NO_ASSERTION', beforeSessionFindingIds: [], afterSessionFindingIds: [], afterSessionTruncated: false,
+      })
+      await ledger.append('SCENARIO_END', { scenarioId: 'm7-scenario', status })
+      await ledger.append('RUN_END', { status, scenarioCount: 1, toolExecutionCount: 1, blocker: 'UPSTREAM_VERIFICATION_MISSING' })
+      expect((await readVerifiedLedger(path, runId)).status).toBe('VALID')
+    }
+  })
+
+  it('M8 fails unknown issue codes closed as BLOCKED_VALIDATION, never Product P1', () => {
+    expect(blockedStatus(['NEW_UNCLASSIFIED_DIAGNOSTIC'])).toBe('BLOCKED_VALIDATION')
+  })
+
+  it('M9 keeps explicit frozen-contract correctness mismatches at Product P1', () => {
+    for (const issue of [
+      'FROZEN_CONTRACT_MISMATCH', 'DUPLICATE_FINDING', 'UNEXPECTED_SIGNAL_ON_NOT_APPLICABLE',
+      'RESURRECTED_FINDING', 'FINDING_LIFETIME_VIOLATION', 'PROCESS_CLASS_MISMATCH',
+    ]) expect(blockedStatus([issue])).toBe('BLOCKED_P1')
+  })
+
+  it('M10 preserves wrong-session findings as Product P0', () => {
+    expect(blockedStatus(['WRONG_SESSION_FINDING'])).toBe('BLOCKED_P0')
+  })
+
+  it('M11 emits bounded upstream evidence for a supported async operation missing its record', () => {
+    const evidence = upstreamVerificationReproducerEvidence({
+      scenarioId: 'm11-async', stepId: 'm11-step', operationRef: 'bash-mkdir-match', f2Settlement: 'ASYNC_SUPPORTED',
+      expectedF2: 'EXPECTED', executionIdPresent: true, verificationSettlement: 'MISSING', ledgerHeadHash: 'a'.repeat(64),
+    })
+    expect(evidence).toEqual({
+      scenarioId: 'm11-async', stepId: 'm11-step', operationRef: 'bash-mkdir-match', verificationCapability: 'ASYNC_SUPPORTED',
+      f2Settlement: 'ASYNC_SUPPORTED', expectedF2: 'EXPECTED', executionIdPresent: true,
+      verificationSettlement: 'MISSING', ledgerHeadHash: 'a'.repeat(64),
+    })
+    expect(Object.keys(evidence)).not.toContain('executionId')
+    expect(() => upstreamVerificationReproducerEvidence({
+      scenarioId: 'm11-unsupported', stepId: 'm11-step', operationRef: 'bash-unsupported', f2Settlement: 'ASYNC_SUPPORTED',
+      expectedF2: 'NOT_EXPECTED', executionIdPresent: false, verificationSettlement: 'MISSING', ledgerHeadHash: 'b'.repeat(64),
+    })).toThrow('invalid-upstream-verification-reproducer-evidence')
+  })
+
+  it('M12 records DIRECT missing immediately without waiting and emits bounded evidence', async () => {
+    let reads = 0
+    let waits = 0
+    const direct = await settleVerification({ get: () => { reads += 1; return undefined } }, 'opaque-test-only', 'DIRECT', {
+      now: () => 0,
+      wait: async () => { waits += 1 },
+    })
+    expect(direct).toEqual({ status: 'MISSING' })
+    expect(reads).toBe(1)
+    expect(waits).toBe(0)
+    expect(upstreamVerificationReproducerEvidence({
+      scenarioId: 'm12-direct', stepId: 'm12-step', operationRef: 'write-match', f2Settlement: 'DIRECT',
+      expectedF2: 'NOT_EXPECTED', executionIdPresent: true, verificationSettlement: 'MISSING', ledgerHeadHash: 'c'.repeat(64),
+    }).verificationCapability).toBe('DIRECT')
+  })
+
+  it('M13 rejects settlement mismatches with zero Tool executions and no workspace', async () => {
+    const runId = 'm13-preflight-zero-tools'
+    allocatedRunIds.add(runId)
+    const manifest = capabilityManifest(runId, 'bash-unsupported', 'ASYNC_SUPPORTED')
+    const result = await runPhase13Campaign({ campaignRunId: runId, seed: 'm13-seed', manifest, policy: PHASE13_1_SMOKE_POLICY })
+    expect(result.status).toBe('BLOCKED_VALIDATION')
+    expect(result.blocker).toBe('SETTLEMENT_CAPABILITY_MISMATCH')
+    expect(result.toolExecutionCount).toBe(0)
+    expect(result.scenarioCount).toBe(0)
+    expect(result.workspacePath).toBe('')
+    await expect(Phase13Workspace.openExisting(runId)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('M14 retains all K1-K12 and H1-H18 regression proofs', async () => {
+    const source = await readFile(join(projectRoot, 'validation/phase13/phase13-1-validation-harness.spec.ts'), 'utf8')
+    for (const prefix of ['H', 'K']) {
+      const max = prefix === 'H' ? 18 : 12
+      for (let index = 1; index <= max; index += 1) expect(source).toContain(`'${prefix}${index} `)
+    }
+  })
+
+  it('M15 runs only the bounded deterministic smoke through synthetic Tool execution', async () => {
+    const result = await runSmokeCampaign({ campaignRunId: 'm15-bounded-smoke', seed: 'm15-seed' })
+    allocatedRunIds.add('m15-bounded-smoke')
+    expect(result.status).toBe('COMPLETE')
+    expect(result.scenarioCount).toBeLessThanOrEqual(30)
+    expect(result.toolExecutionCount).toBeLessThanOrEqual(100)
+    expect(result.manifest.scenarios.every(scenario => scenario.steps.every(step => operationByRef(step.operationRef) !== undefined))).toBe(true)
   })
 })
 

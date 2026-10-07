@@ -1,6 +1,6 @@
 import { TruthLedger, readVerifiedLedger } from './ledger.ts'
 import { canonicalJson } from './canonical.ts'
-import { operationByRef } from './operations.ts'
+import { operationByRef, validateSettlementCapabilities, type SettlementCapabilityIssue, type ValidationVerificationCapability } from './operations.ts'
 import { generateSmokeManifest, manifestSha256 } from './manifest.ts'
 import { gradeStep, isDeterministicProductBlocker } from './oracle.ts'
 import { settleVerification } from './capture.ts'
@@ -17,7 +17,7 @@ import {
 } from './schema.ts'
 import { summarizeVerifiedLedger, type Phase13Summary } from './summary.ts'
 
-export type CampaignStatus = 'RUNNING' | 'COMPLETE' | 'BLOCKED_P0' | 'BLOCKED_P1' | 'BLOCKED_CAPTURE' | 'BLOCKED_LEDGER' | 'BLOCKED_ENVIRONMENT'
+export type CampaignStatus = 'RUNNING' | 'COMPLETE' | 'BLOCKED_P0' | 'BLOCKED_P1' | 'BLOCKED_CAPTURE' | 'BLOCKED_LEDGER' | 'BLOCKED_ENVIRONMENT' | 'BLOCKED_UPSTREAM' | 'BLOCKED_VALIDATION'
 
 export interface CampaignResult {
   readonly status: CampaignStatus
@@ -30,6 +30,7 @@ export interface CampaignResult {
   readonly workspacePath: string
   readonly summary?: Phase13Summary
   readonly blocker?: string
+  readonly validationIssue?: SettlementCapabilityIssue
 }
 
 function sessionIdentitySet(values: readonly string[]): Set<string> {
@@ -93,7 +94,15 @@ export function findingOwnerIssues(
   return [...new Set(issues)]
 }
 
-function firstManifestBlocker(manifest: Phase13ManifestV1, scenario: Phase13ScenarioV1, step: Phase13StepV1, issueCodes: readonly string[], actualKinds: readonly string[], ledgerHeadHash: string) {
+function firstManifestBlocker(
+  manifest: Phase13ManifestV1,
+  scenario: Phase13ScenarioV1,
+  step: Phase13StepV1,
+  issueCodes: readonly string[],
+  actualKinds: readonly string[],
+  ledgerHeadHash: string,
+  upstreamVerification?: ReturnType<typeof upstreamVerificationReproducerEvidence>,
+) {
   return {
     generatorVersion: manifest.generatorVersion,
     seed: manifest.seed,
@@ -110,17 +119,74 @@ function firstManifestBlocker(manifest: Phase13ManifestV1, scenario: Phase13Scen
     },
     expected: step.expected,
     actual: { kinds: actualKinds.slice(0, 16), issueCodes: issueCodes.slice(0, 16) },
+    ...(upstreamVerification === undefined ? {} : { upstreamVerification }),
     ledgerHeadHash,
   }
 }
 
-export function blockedStatus(issues: readonly string[]): CampaignStatus | undefined {
+const PRODUCT_P1_ISSUES = new Set([
+  'FROZEN_CONTRACT_MISMATCH', 'DUPLICATE_FINDING', 'UNEXPECTED_SIGNAL_ON_NOT_APPLICABLE',
+  'RESURRECTED_FINDING', 'FINDING_LIFETIME_VIOLATION', 'PROCESS_CLASS_MISMATCH',
+])
+const KNOWN_ISSUES = new Set([
+  ...PRODUCT_P1_ISSUES,
+  'WRONG_SESSION_FINDING', 'CAPTURE_INVALID', 'LEDGER_INTEGRITY_INVALID', 'ENVIRONMENT_FAILURE',
+  'UPSTREAM_VERIFICATION_MISSING', 'SETTLEMENT_CAPABILITY_MISMATCH', 'OPERATION_REF_UNRESOLVED',
+])
+
+export function blockedStatus(
+  issues: readonly string[],
+  verifiedOperationCapability?: ValidationVerificationCapability,
+): CampaignStatus | undefined {
+  if (issues.includes('WRONG_SESSION_FINDING')) return 'BLOCKED_P0'
   if (issues.includes('CAPTURE_INVALID')) return 'BLOCKED_CAPTURE'
   if (issues.includes('LEDGER_INTEGRITY_INVALID')) return 'BLOCKED_LEDGER'
   if (issues.includes('ENVIRONMENT_FAILURE')) return 'BLOCKED_ENVIRONMENT'
-  if (issues.includes('WRONG_SESSION_FINDING')) return 'BLOCKED_P0'
-  if (issues.length > 0) return 'BLOCKED_P1'
+  if (issues.includes('SETTLEMENT_CAPABILITY_MISMATCH') || issues.includes('OPERATION_REF_UNRESOLVED')) return 'BLOCKED_VALIDATION'
+  if (issues.includes('UPSTREAM_VERIFICATION_MISSING')) {
+    return verifiedOperationCapability === 'DIRECT' || verifiedOperationCapability === 'ASYNC_SUPPORTED'
+      ? 'BLOCKED_UPSTREAM'
+      : 'BLOCKED_VALIDATION'
+  }
+  if (issues.some(issue => !KNOWN_ISSUES.has(issue))) return 'BLOCKED_VALIDATION'
+  if (issues.some(issue => PRODUCT_P1_ISSUES.has(issue))) return 'BLOCKED_P1'
+  if (issues.length > 0) return 'BLOCKED_VALIDATION'
   return undefined
+}
+
+export interface UpstreamVerificationReproducerInput {
+  readonly scenarioId: string
+  readonly stepId: string
+  readonly operationRef: string
+  readonly f2Settlement: 'DIRECT' | 'ASYNC_SUPPORTED'
+  readonly expectedF2: 'EXPECTED' | 'NOT_EXPECTED' | 'NOT_APPLICABLE'
+  readonly executionIdPresent: boolean
+  readonly verificationSettlement: 'MISSING'
+  readonly ledgerHeadHash: string
+}
+
+/** Build bounded, public-evidence-only details after a supported operation was prevalidated. */
+export function upstreamVerificationReproducerEvidence(input: UpstreamVerificationReproducerInput) {
+  const operation = operationByRef(input.operationRef)
+  if (operation === undefined
+    || operation.verificationCapability === 'NONE'
+    || operation.verificationCapability !== input.f2Settlement
+    || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(input.scenarioId)
+    || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(input.stepId)
+    || !/^[a-f0-9]{64}$/.test(input.ledgerHeadHash)) {
+    throw new TypeError('invalid-upstream-verification-reproducer-evidence')
+  }
+  return Object.freeze({
+    scenarioId: input.scenarioId,
+    stepId: input.stepId,
+    operationRef: input.operationRef,
+    verificationCapability: operation.verificationCapability,
+    f2Settlement: input.f2Settlement,
+    expectedF2: input.expectedF2,
+    executionIdPresent: input.executionIdPresent,
+    verificationSettlement: input.verificationSettlement,
+    ledgerHeadHash: input.ledgerHeadHash,
+  })
 }
 
 export async function runPhase13Campaign(options: {
@@ -133,6 +199,13 @@ export async function runPhase13Campaign(options: {
   if (manifest.campaignRunId !== options.campaignRunId) throw new TypeError('manifest-run-id-mismatch')
   enforcePhase13RunPolicy(manifest, options.policy)
   const digest = manifestSha256(manifest)
+  const validationIssue = validateSettlementCapabilities(manifest)
+  if (validationIssue !== undefined) {
+    return Object.freeze({
+      status: 'BLOCKED_VALIDATION', manifest, manifestSha256: digest, scenarioCount: 0, toolExecutionCount: 0,
+      ledgerHeadHash: '', ledgerPath: '', workspacePath: '', blocker: validationIssue.code, validationIssue,
+    })
+  }
   const workspace = await Phase13Workspace.create(options.campaignRunId)
   const ledgerPath = await workspace.resolveArtifactPath('truth-ledger.jsonl')
   let subject: Phase13Subject | undefined
@@ -191,14 +264,15 @@ export async function runPhase13Campaign(options: {
 
         let verificationStatus = execution.verificationStatus
         let verificationScorable = true
+        let verificationSettlement: Awaited<ReturnType<typeof settleVerification>> | undefined
         if (execution.executionId !== undefined && step.f2Settlement !== 'NONE') {
-          const verification = await settleVerification(subject.verificationDiagnostics(), execution.executionId, step.f2Settlement)
-          if (verification.status === 'SETTLED') verificationStatus = verification.verificationStatus
-          else if (verification.status === 'MISSING' && step.f2Settlement === 'ASYNC_SUPPORTED') {
+          verificationSettlement = await settleVerification(subject.verificationDiagnostics(), execution.executionId, step.f2Settlement)
+          if (verificationSettlement.status === 'SETTLED') verificationStatus = verificationSettlement.verificationStatus
+          else if (verificationSettlement.status === 'MISSING' && step.f2Settlement === 'ASYNC_SUPPORTED') {
             verificationScorable = false; issueCodes.push('UPSTREAM_VERIFICATION_MISSING')
-          } else if (verification.status === 'CAPTURE_INVALID') {
+          } else if (verificationSettlement.status === 'CAPTURE_INVALID') {
             verificationScorable = false; issueCodes.push('CAPTURE_INVALID')
-          } else if (verification.status === 'MISSING') {
+          } else if (verificationSettlement.status === 'MISSING') {
             verificationScorable = false; issueCodes.push('UPSTREAM_VERIFICATION_MISSING')
           }
           const refreshed = subject.capturePublicState(scenario.sessionKey, execution.executionId)
@@ -234,11 +308,23 @@ export async function runPhase13Campaign(options: {
           beforeSessionFindingIds: execution.beforeSessionFindingIds, afterSessionFindingIds, afterSessionTruncated,
         })
         const deterministicBlocker = isDeterministicProductBlocker(blockerGrade)
-        const campaignBlocker = blockedStatus(stepIssues)
+        const campaignBlocker = blockedStatus(stepIssues, operation.verificationCapability)
         if (deterministicBlocker || campaignBlocker !== undefined) {
           status = campaignBlocker ?? 'BLOCKED_P1'
           blocker = stepIssues[0] ?? grade.issueCodes[0] ?? 'DETERMINISTIC_CONTRACT_MISMATCH'
-          await workspace.writeArtifact('minimal-reproducer.json', `${canonicalJson(firstManifestBlocker(manifest, scenario, step, stepIssues, actualKinds, ledger.headHash))}\n`)
+          const upstreamVerification = stepIssues.includes('UPSTREAM_VERIFICATION_MISSING') && verificationSettlement?.status === 'MISSING'
+            ? upstreamVerificationReproducerEvidence({
+              scenarioId: scenario.scenarioId,
+              stepId: step.stepId,
+              operationRef: step.operationRef,
+              f2Settlement: operation.verificationCapability as 'DIRECT' | 'ASYNC_SUPPORTED',
+              expectedF2: step.expected.f2,
+              executionIdPresent: execution.executionId !== undefined,
+              verificationSettlement: 'MISSING',
+              ledgerHeadHash: ledger.headHash,
+            })
+            : undefined
+          await workspace.writeArtifact('minimal-reproducer.json', `${canonicalJson(firstManifestBlocker(manifest, scenario, step, stepIssues, actualKinds, ledger.headHash, upstreamVerification))}\n`)
           break
         }
       }
