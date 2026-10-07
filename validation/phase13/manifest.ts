@@ -39,7 +39,7 @@ function step(
   f2Settlement: F2Settlement = 'NONE',
   expectedProcess: ExpectedProcess = operationRef === 'read-failure' || operationRef === 'read-different-failure' ? 'FAILURE' : 'SUCCESS',
 ): Phase13StepV1 {
-  return { stepId, operationRef, expectedProcess, expected: { f1, f2 }, f2Settlement, opportunity: 'NONE' }
+  return { stepId, operationRef, expectedProcess, expected: { f1, f2 }, f2Settlement, opportunity: 'NONE', findingLifetime: 'NO_ASSERTION' }
 }
 
 function scenario(scenarioId: string, family: string, sessionKey: string, steps: readonly Phase13StepV1[]): Phase13ScenarioV1 {

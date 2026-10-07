@@ -2,19 +2,103 @@ import { readFile, readdir, symlink, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { captureExecutionId, PHASE13_VERIFICATION_POLL_INTERVAL_MS, PHASE13_VERIFICATION_SETTLE_DEADLINE_MS, settleVerification } from './capture.ts'
-import { canonicalJson } from './canonical.ts'
-import { TruthLedger, readVerifiedLedger, verifyLedgerText } from './ledger.ts'
+import { canonicalJson, sha256Hex } from './canonical.ts'
+import { PHASE13_LEDGER_MAX_BYTES, PHASE13_LEDGER_MAX_RECORDS, TruthLedger, readVerifiedLedger, verifyLedgerText } from './ledger.ts'
 import { canonicalManifestJson, generateSmokeManifest, manifestSha256, REQUIRED_SMOKE_FAMILIES } from './manifest.ts'
 import { operationByRef, PHASE13_OPERATION_REFS } from './operations.ts'
 import { classifySignal, gradeStep } from './oracle.ts'
-import { runSmokeCampaign } from './runner.ts'
+import { blockedStatus, findingOwnerIssues, runPhase13Campaign, runSmokeCampaign, type SessionFindingHistory } from './runner.ts'
 import { summarizeVerifiedLedger } from './summary.ts'
 import { Phase13Subject } from './subject.ts'
-import { ManifestValidationError, parsePhase13ManifestV1 } from './schema.ts'
+import {
+  ManifestValidationError,
+  PHASE13_1_SMOKE_POLICY,
+  PHASE13_STRUCTURAL_MAX_SCENARIOS,
+  PHASE13_STRUCTURAL_MAX_TOOL_EXECUTIONS,
+  RunPolicyError,
+  enforcePhase13RunPolicy,
+  parsePhase13ManifestV1,
+} from './schema.ts'
 import { Phase13Workspace } from './workspace.ts'
 
 const projectRoot = process.cwd()
 const allocatedRunIds = new Set<string>()
+
+function scaleManifest(runId: string, scenarioCount: number, stepCount: number) {
+  const template = generateSmokeManifest({ campaignRunId: `${runId}-template`, seed: 'scale' }).scenarios[0]!.steps[0]!
+  const scenarios = Array.from({ length: scenarioCount }, (_, scenarioIndex) => {
+    const length = Math.floor(stepCount / scenarioCount) + (scenarioIndex < stepCount % scenarioCount ? 1 : 0)
+    return {
+      scenarioId: `scale-scenario-${String(scenarioIndex).padStart(3, '0')}`,
+      family: 'scale-proof',
+      sessionKey: `scale-session-${String(scenarioIndex).padStart(3, '0')}`,
+      steps: Array.from({ length }, (_, stepIndex) => ({
+        ...template,
+        stepId: `scale-step-${String(scenarioIndex).padStart(3, '0')}-${String(stepIndex).padStart(4, '0')}`,
+        findingLifetime: 'NO_ASSERTION' as const,
+      })),
+    }
+  })
+  return parsePhase13ManifestV1({
+    schemaVersion: 1,
+    generatorVersion: 'phase13-generator-v1',
+    campaignRunId: runId,
+    seed: 'scale-seed',
+    lane: 'A',
+    scenarios,
+  }, PHASE13_OPERATION_REFS)
+}
+
+function syntheticCompletedLedger(runId: string, scenarioCount: number, stepsPerScenario: number): string {
+  const lines: string[] = []
+  let previous = '0'.repeat(64)
+  let sequence = 0
+  const append = (type: string, payload: Record<string, unknown>) => {
+    const base = { schemaVersion: 1, sequence: ++sequence, campaignRunId: runId, type, payload, prevHash: previous }
+    const recordHash = sha256Hex(canonicalJson(base))
+    const record = { ...base, recordHash }
+    lines.push(canonicalJson(record))
+    previous = recordHash
+  }
+  append('RUN_START', {
+    generatorVersion: 'phase13-generator-v1', seed: 'scale-seed', lane: 'A',
+    manifestSha256: '0'.repeat(64), subjectBoundary: 'PINNED_HARNESS_PUBLIC_DIAGNOSTICS',
+  })
+  for (let scenarioIndex = 0; scenarioIndex < scenarioCount; scenarioIndex += 1) {
+    const scenarioId = `scale-scenario-${String(scenarioIndex).padStart(3, '0')}`
+    const family = 'scale-proof'
+    const sessionKey = `scale-session-${String(scenarioIndex).padStart(3, '0')}`
+    append('SCENARIO_START', { scenarioId, family, sessionKey })
+    for (let stepIndex = 0; stepIndex < stepsPerScenario; stepIndex += 1) {
+      append('STEP_RESULT', {
+        scenarioId,
+        stepId: `scale-step-${String(scenarioIndex).padStart(3, '0')}-${String(stepIndex).padStart(4, '0')}`,
+        family,
+        sessionKey,
+        operationRef: 'read-success',
+        executionCapture: 'VALID',
+        expected: { f1: 'NOT_EXPECTED', f2: 'NOT_APPLICABLE' },
+        actualKinds: [],
+        actualFindingIds: [],
+        processObserved: 'SUCCESS',
+        classification: { f1: 'TN', f2: 'NA' },
+        issueCodes: [],
+        opportunity: 'NONE',
+        findingLifetime: 'NO_ASSERTION',
+        beforeSessionFindingIds: [],
+        afterSessionFindingIds: [],
+        afterSessionTruncated: false,
+      })
+    }
+    append('SCENARIO_END', { scenarioId, status: 'COMPLETE' })
+  }
+  append('RUN_END', { status: 'COMPLETE', scenarioCount, toolExecutionCount: scenarioCount * stepsPerScenario })
+  return `${lines.join('\n')}\n`
+}
+
+function findingHistory(): SessionFindingHistory {
+  return { activeBySession: new Map(), retiredBySession: new Map() }
+}
 
 async function workspace(runId: string): Promise<Phase13Workspace> {
   const created = await Phase13Workspace.create(runId)
@@ -44,9 +128,9 @@ describe('Phase 13.1 independent validation harness', () => {
     expect(() => parsePhase13ManifestV1(duplicateStep, PHASE13_OPERATION_REFS)).toThrow('duplicate-step-id')
     const unresolved = { ...valid, scenarios: [{ ...first, steps: [{ ...first.steps[0]!, operationRef: 'missing-operation' }] }] }
     expect(() => parsePhase13ManifestV1(unresolved, PHASE13_OPERATION_REFS)).toThrow('unresolved-operation-ref')
-    const overStepCap = { ...valid, scenarios: [{ ...first, steps: Array.from({ length: 101 }, (_, index) => ({ ...first.steps[0]!, stepId: `h1-over-${index}` })) }] }
+    const overStepCap = { ...valid, scenarios: [{ ...first, steps: Array.from({ length: 4097 }, (_, index) => ({ ...first.steps[0]!, stepId: `h1-over-${index}` })) }] }
     expect(() => parsePhase13ManifestV1(overStepCap, PHASE13_OPERATION_REFS)).toThrow('step-count')
-    const overScenarioCap = { ...valid, scenarios: Array.from({ length: 31 }, (_, index) => ({ ...first, scenarioId: `h1-scenario-${index}`, sessionKey: `h1-session-${index}`, steps: [{ ...first.steps[0]!, stepId: `h1-cap-step-${index}` }] })) }
+    const overScenarioCap = { ...valid, scenarios: Array.from({ length: 513 }, (_, index) => ({ ...first, scenarioId: `h1-scenario-${index}`, sessionKey: `h1-session-${index}`, steps: [{ ...first.steps[0]!, stepId: `h1-cap-step-${index}` }] })) }
     expect(() => parsePhase13ManifestV1(overScenarioCap, PHASE13_OPERATION_REFS)).toThrow('scenario-count')
   })
 
@@ -292,6 +376,121 @@ describe('Phase 13.1 independent validation harness', () => {
     const changed = (await import('node:child_process')).execFileSync('git', ['diff', '--name-only', 'origin/main', '--', 'src', 'package.json', 'pnpm-lock.yaml', 'tsconfig.json', 'vitest.config.ts'], { cwd: projectRoot, encoding: 'utf8' })
     expect(changed.trim()).toBe('')
   })
+
+  it('K1 accepts the frozen 300-scenario and 1500-step representational scale', () => {
+    const manifest = scaleManifest('k1-scale', 300, 1500)
+    expect(manifest.scenarios).toHaveLength(300)
+    expect(manifest.scenarios.reduce((count, scenario) => count + scenario.steps.length, 0)).toBe(1500)
+  })
+
+  it('K2 rejects structural plans above 512 scenarios or 4096 Tool executions', () => {
+    const atStructuralMaximum = scaleManifest('k2-maximum', 512, 4096)
+    expect(atStructuralMaximum.scenarios).toHaveLength(512)
+    expect(atStructuralMaximum.scenarios.reduce((count, scenario) => count + scenario.steps.length, 0)).toBe(4096)
+    expect(() => scaleManifest('k2-over-scenarios', 513, 513)).toThrow('scenario-count')
+    expect(() => scaleManifest('k2-over-steps', 1, 4097)).toThrow('step-count')
+    expect(PHASE13_STRUCTURAL_MAX_SCENARIOS).toBe(512)
+    expect(PHASE13_STRUCTURAL_MAX_TOOL_EXECUTIONS).toBe(4096)
+  })
+
+  it('K3 applies the explicit 13.1 30/100 run policy after structural parsing', async () => {
+    const tooManyScenarios = scaleManifest('k3-scenarios', 31, 31)
+    const tooManyExecutions = scaleManifest('k3-executions', 1, 101)
+    expect(() => enforcePhase13RunPolicy(tooManyScenarios, PHASE13_1_SMOKE_POLICY)).toThrow(RunPolicyError)
+    expect(() => enforcePhase13RunPolicy(tooManyExecutions, PHASE13_1_SMOKE_POLICY)).toThrow(RunPolicyError)
+    await expect(runPhase13Campaign({
+      campaignRunId: 'k3-executions', seed: 'k3-seed', manifest: tooManyExecutions, policy: PHASE13_1_SMOKE_POLICY,
+    })).rejects.toThrow('tool-execution-cap-exceeded')
+  })
+
+  it('K4 verifies a completed 300-scenario, 1500-row synthetic hash-chain ledger', () => {
+    const ledgerText = syntheticCompletedLedger('k4-scale-ledger', 300, 5)
+    const verified = verifyLedgerText(ledgerText, 'k4-scale-ledger')
+    expect(verified.status).toBe('VALID')
+    if (verified.status === 'VALID') {
+      expect(verified.completed).toBe(true)
+      expect(verified.records).toHaveLength(2102)
+      expect(verified.records.filter(record => record.type === 'STEP_RESULT')).toHaveLength(1500)
+      expect(verified.records.filter(record => record.type === 'SCENARIO_END')).toHaveLength(300)
+      expect(verified.headHash).toMatch(/^[a-f0-9]{64}$/)
+    }
+  })
+
+  it('K5 enforces the 8192-record and 32 MiB structural ledger ceilings', () => {
+    expect(PHASE13_LEDGER_MAX_RECORDS).toBe(8192)
+    expect(PHASE13_LEDGER_MAX_BYTES).toBe(32 * 1024 * 1024)
+    expect(verifyLedgerText('x\n'.repeat(PHASE13_LEDGER_MAX_RECORDS))).toMatchObject({ status: 'LEDGER_INTEGRITY_INVALID', reason: 'json-0' })
+    expect(verifyLedgerText('x\n'.repeat(PHASE13_LEDGER_MAX_RECORDS + 1))).toMatchObject({ status: 'LEDGER_INTEGRITY_INVALID', reason: 'record-count-cap' })
+    const atByteMaximum = `${'x'.repeat(PHASE13_LEDGER_MAX_BYTES - 1)}\n`
+    expect(verifyLedgerText(atByteMaximum)).toMatchObject({ status: 'LEDGER_INTEGRITY_INVALID', reason: 'line-byte-cap' })
+    expect(verifyLedgerText(`${atByteMaximum}x`)).toMatchObject({ status: 'LEDGER_INTEGRITY_INVALID', reason: 'ledger-byte-cap' })
+  })
+
+  it('K6 accepts a 2000-step future soak manifest without executing its Tools', () => {
+    const manifest = scaleManifest('k6-soak-plan', 1, 2000)
+    expect(manifest.scenarios[0]!.steps).toHaveLength(2000)
+    expect(manifest.scenarios[0]!.steps.every(step => step.operationRef === 'read-success')).toBe(true)
+  })
+
+  it('K7 treats ordinary prior-Finding disappearance as retirement, not a defect', () => {
+    const history = findingHistory()
+    const owners = new Map<string, string>()
+    const id = `ra-correction-v1_${'a'.repeat(64)}`
+    const appeared = findingOwnerIssues('session-k7', undefined, new Map(), owners, [id], [], [id], 'NO_ASSERTION', history)
+    const disappeared = findingOwnerIssues('session-k7', undefined, new Map(), owners, [], [id], [], 'NO_ASSERTION', history)
+    expect(appeared).toEqual([])
+    expect(disappeared).toEqual([])
+    expect(history.retiredBySession.get('session-k7')?.has(id)).toBe(true)
+  })
+
+  it('K8 emits RESURRECTED_FINDING only when a retired ID becomes visible again', () => {
+    const history = findingHistory()
+    const owners = new Map<string, string>()
+    const id = `ra-correction-v1_${'b'.repeat(64)}`
+    findingOwnerIssues('session-k8', undefined, new Map(), owners, [id], [], [id], 'NO_ASSERTION', history)
+    expect(findingOwnerIssues('session-k8', undefined, new Map(), owners, [], [id], [], 'NO_ASSERTION', history)).toEqual([])
+    const reappeared = findingOwnerIssues('session-k8', undefined, new Map(), owners, [id], [], [id], 'NO_ASSERTION', history)
+    expect(reappeared).toContain('RESURRECTED_FINDING')
+    expect(reappeared).not.toContain('STALE_OR_RESURRECTED_FINDING')
+  })
+
+  it('K9 PRESERVE_PRIOR explicitly reports an unexpected disappearance', () => {
+    const id = `ra-correction-v1_${'c'.repeat(64)}`
+    const history = findingHistory()
+    history.activeBySession.set('session-k9', new Set([id]))
+    const issues = findingOwnerIssues('session-k9', undefined, new Map(), new Map([[id, 'session-k9']]), [], [id], [], 'PRESERVE_PRIOR', history)
+    expect(issues).toContain('FINDING_LIFETIME_VIOLATION')
+    expect(issues).not.toContain('RESURRECTED_FINDING')
+  })
+
+  it('K10 ALLOW_PRIOR_REMOVAL accepts TTL/capacity-like disappearance', () => {
+    const id = `ra-correction-v1_${'d'.repeat(64)}`
+    const history = findingHistory()
+    history.activeBySession.set('session-k10', new Set([id]))
+    const issues = findingOwnerIssues('session-k10', undefined, new Map(), new Map([[id, 'session-k10']]), [], [id], [], 'ALLOW_PRIOR_REMOVAL', history)
+    expect(issues).toEqual([])
+    expect(history.retiredBySession.get('session-k10')?.has(id)).toBe(true)
+  })
+
+  it('K11 keeps retired identity ownership strict across Sessions', () => {
+    const history = findingHistory()
+    const owners = new Map<string, string>()
+    const id = `ra-correction-v1_${'e'.repeat(64)}`
+    findingOwnerIssues('session-k11-a', undefined, new Map(), owners, [id], [], [id], 'NO_ASSERTION', history)
+    findingOwnerIssues('session-k11-a', undefined, new Map(), owners, [], [id], [], 'ALLOW_PRIOR_REMOVAL', history)
+    const migrated = findingOwnerIssues('session-k11-b', undefined, new Map(), owners, [id], [], [id], 'NO_ASSERTION', history)
+    expect(migrated).toContain('WRONG_SESSION_FINDING')
+    expect(blockedStatus(migrated)).toBe('BLOCKED_P0')
+  })
+
+  it('K12 keeps Phase 13.1 smoke bounded while the generic format supports larger campaigns', async () => {
+    const runId = 'k12-bounded-smoke'
+    const result = await runSmokeCampaign({ campaignRunId: runId, seed: 'k12-seed' })
+    allocatedRunIds.add(runId)
+    expect(result.status).toBe('COMPLETE')
+    expect(result.scenarioCount).toBeLessThanOrEqual(30)
+    expect(result.toolExecutionCount).toBeLessThanOrEqual(100)
+  })
 })
 
 async function completeLedger(runId: string, opportunity: 'NONE' | 'OUT_OF_SCOPE_USEFUL_WARNING_CANDIDATE', expected = { f1: 'NOT_EXPECTED', f2: 'NOT_APPLICABLE' }, classification = { f1: 'TN', f2: 'NA' }) {
@@ -302,7 +501,7 @@ async function completeLedger(runId: string, opportunity: 'NONE' | 'OUT_OF_SCOPE
   await ledger.append('STEP_RESULT', {
     scenarioId: 'scenario-001', stepId: 'step-001', family: 'test-family', sessionKey: 'session-001', operationRef: 'read-success',
     executionCapture: 'VALID', expected, actualKinds: [], actualFindingIds: [], processObserved: 'SUCCESS', classification,
-    issueCodes: [], opportunity, beforeSessionFindingIds: [], afterSessionFindingIds: [], afterSessionTruncated: false,
+    issueCodes: [], opportunity, findingLifetime: 'NO_ASSERTION', beforeSessionFindingIds: [], afterSessionFindingIds: [], afterSessionTruncated: false,
   })
   await ledger.append('SCENARIO_END', { scenarioId: 'scenario-001', status: 'COMPLETE' })
   await ledger.append('RUN_END', { status: 'COMPLETE', scenarioCount: 1, toolExecutionCount: 1 })

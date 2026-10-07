@@ -1,7 +1,23 @@
 export const PHASE13_GENERATOR_VERSION = 'phase13-generator-v1' as const
-export const PHASE13_MAX_SCENARIOS = 30
-export const PHASE13_MAX_TOOL_EXECUTIONS = 100
-export const PHASE13_MAX_STEPS = PHASE13_MAX_TOOL_EXECUTIONS
+export const PHASE13_STRUCTURAL_MAX_SCENARIOS = 512
+export const PHASE13_STRUCTURAL_MAX_TOOL_EXECUTIONS = 4096
+export const PHASE13_1_SMOKE_MAX_SCENARIOS = 30
+export const PHASE13_1_SMOKE_MAX_TOOL_EXECUTIONS = 100
+
+export interface Phase13RunPolicy {
+  readonly maxScenarios: number
+  readonly maxToolExecutions: number
+}
+
+export const PHASE13_1_SMOKE_POLICY: Phase13RunPolicy = Object.freeze({
+  maxScenarios: PHASE13_1_SMOKE_MAX_SCENARIOS,
+  maxToolExecutions: PHASE13_1_SMOKE_MAX_TOOL_EXECUTIONS,
+})
+
+export type FindingLifetimeExpectation = 'NO_ASSERTION' | 'PRESERVE_PRIOR' | 'ALLOW_PRIOR_REMOVAL'
+export const FINDING_LIFETIME_EXPECTATIONS = new Set<FindingLifetimeExpectation>([
+  'NO_ASSERTION', 'PRESERVE_PRIOR', 'ALLOW_PRIOR_REMOVAL',
+])
 
 export const F1_KIND = 'REPEATED_FAILURE_WITHOUT_PROGRESS' as const
 export const F2_KIND = 'POSTCONDITION_NOT_SATISFIED' as const
@@ -23,6 +39,7 @@ export interface Phase13StepV1 {
   readonly expected: Phase13ExpectedV1
   readonly f2Settlement: F2Settlement
   readonly opportunity: OpportunityLabel
+  readonly findingLifetime: FindingLifetimeExpectation
 }
 
 export interface Phase13ScenarioV1 {
@@ -45,6 +62,13 @@ export class ManifestValidationError extends Error {
   constructor(readonly reason: string) {
     super(`invalid-phase13-manifest:${reason}`)
     this.name = 'ManifestValidationError'
+  }
+}
+
+export class RunPolicyError extends Error {
+  constructor(readonly reason: string) {
+    super(`phase13-run-policy:${reason}`)
+    this.name = 'RunPolicyError'
   }
 }
 
@@ -89,7 +113,7 @@ export function parsePhase13ManifestV1(value: unknown, declaredOperationRefs: re
   const campaignRunId = boundedId(value.campaignRunId, 'campaign-run-id')
   const seed = boundedId(value.seed, 'seed')
   if (value.lane !== 'A' && value.lane !== 'B' && value.lane !== 'C') throw new ManifestValidationError('lane')
-  if (!Array.isArray(value.scenarios) || value.scenarios.length === 0 || value.scenarios.length > PHASE13_MAX_SCENARIOS) {
+  if (!Array.isArray(value.scenarios) || value.scenarios.length === 0 || value.scenarios.length > PHASE13_STRUCTURAL_MAX_SCENARIOS) {
     throw new ManifestValidationError('scenario-count')
   }
   const operationRefs = new Set<string>()
@@ -114,8 +138,10 @@ export function parsePhase13ManifestV1(value: unknown, declaredOperationRefs: re
     if (!Array.isArray(scenarioValue.steps) || scenarioValue.steps.length === 0) throw new ManifestValidationError('empty-scenario')
     const steps = scenarioValue.steps.map((stepValue, stepIndex): Phase13StepV1 => {
       stepCount += 1
-      if (stepCount > PHASE13_MAX_STEPS) throw new ManifestValidationError('step-count')
-      if (!isPlainRecord(stepValue) || !exactKeys(stepValue, ['stepId', 'operationRef', 'expectedProcess', 'expected', 'f2Settlement', 'opportunity'])) {
+      if (stepCount > PHASE13_STRUCTURAL_MAX_TOOL_EXECUTIONS) throw new ManifestValidationError('step-count')
+      if (!isPlainRecord(stepValue)
+        || !(exactKeys(stepValue, ['stepId', 'operationRef', 'expectedProcess', 'expected', 'f2Settlement', 'opportunity'])
+          || exactKeys(stepValue, ['stepId', 'operationRef', 'expectedProcess', 'expected', 'f2Settlement', 'opportunity', 'findingLifetime']))) {
         throw new ManifestValidationError(`step-${scenarioIndex}-${stepIndex}-shape`)
       }
       const stepId = boundedId(stepValue.stepId, 'step-id')
@@ -141,6 +167,10 @@ export function parsePhase13ManifestV1(value: unknown, declaredOperationRefs: re
       if (typeof stepValue.opportunity !== 'string' || !OPPORTUNITIES.has(stepValue.opportunity as OpportunityLabel)) {
         throw new ManifestValidationError('opportunity')
       }
+      const findingLifetime = stepValue.findingLifetime ?? 'NO_ASSERTION'
+      if (typeof findingLifetime !== 'string' || !FINDING_LIFETIME_EXPECTATIONS.has(findingLifetime as FindingLifetimeExpectation)) {
+        throw new ManifestValidationError('finding-lifetime')
+      }
       return {
         stepId,
         operationRef,
@@ -148,11 +178,25 @@ export function parsePhase13ManifestV1(value: unknown, declaredOperationRefs: re
         expected: { f1: f1 as ExpectedSignal, f2: f2 as ExpectedSignal },
         f2Settlement,
         opportunity: stepValue.opportunity as OpportunityLabel,
+        findingLifetime: findingLifetime as FindingLifetimeExpectation,
       }
     })
     return { scenarioId, family, sessionKey, steps }
   })
   return deepFreeze({ schemaVersion: 1, generatorVersion: PHASE13_GENERATOR_VERSION, campaignRunId, seed, lane: value.lane, scenarios })
+}
+
+/** Apply an explicit campaign policy after structural manifest parsing. */
+export function enforcePhase13RunPolicy(manifest: Phase13ManifestV1, policy: Phase13RunPolicy): void {
+  if (!Number.isSafeInteger(policy.maxScenarios) || policy.maxScenarios < 1
+    || policy.maxScenarios > PHASE13_STRUCTURAL_MAX_SCENARIOS
+    || !Number.isSafeInteger(policy.maxToolExecutions) || policy.maxToolExecutions < 1
+    || policy.maxToolExecutions > PHASE13_STRUCTURAL_MAX_TOOL_EXECUTIONS) {
+    throw new RunPolicyError('outside-structural-cap')
+  }
+  if (manifest.scenarios.length > policy.maxScenarios) throw new RunPolicyError('scenario-cap-exceeded')
+  const plannedSteps = manifest.scenarios.reduce((total, scenario) => total + scenario.steps.length, 0)
+  if (plannedSteps > policy.maxToolExecutions) throw new RunPolicyError('tool-execution-cap-exceeded')
 }
 
 export function isPhase13Label(value: unknown): value is string {

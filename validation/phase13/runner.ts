@@ -6,7 +6,15 @@ import { gradeStep, isDeterministicProductBlocker } from './oracle.ts'
 import { settleVerification } from './capture.ts'
 import { Phase13Subject } from './subject.ts'
 import { Phase13Workspace } from './workspace.ts'
-import { PHASE13_MAX_TOOL_EXECUTIONS, type Phase13ManifestV1, type Phase13ScenarioV1, type Phase13StepV1 } from './schema.ts'
+import {
+  enforcePhase13RunPolicy,
+  PHASE13_1_SMOKE_POLICY,
+  type FindingLifetimeExpectation,
+  type Phase13ManifestV1,
+  type Phase13RunPolicy,
+  type Phase13ScenarioV1,
+  type Phase13StepV1,
+} from './schema.ts'
 import { summarizeVerifiedLedger, type Phase13Summary } from './summary.ts'
 
 export type CampaignStatus = 'RUNNING' | 'COMPLETE' | 'BLOCKED_P0' | 'BLOCKED_P1' | 'BLOCKED_CAPTURE' | 'BLOCKED_LEDGER' | 'BLOCKED_ENVIRONMENT'
@@ -28,7 +36,12 @@ function sessionIdentitySet(values: readonly string[]): Set<string> {
   return new Set(values)
 }
 
-function findingOwnerIssues(
+export interface SessionFindingHistory {
+  readonly activeBySession: Map<string, Set<string>>
+  readonly retiredBySession: Map<string, Set<string>>
+}
+
+export function findingOwnerIssues(
   sessionKey: string,
   executionId: string | undefined,
   executionOwners: ReadonlyMap<string, string>,
@@ -36,6 +49,8 @@ function findingOwnerIssues(
   findingIds: readonly string[],
   beforeIds: readonly string[],
   sessionIds: readonly string[],
+  findingLifetime: FindingLifetimeExpectation,
+  history: SessionFindingHistory,
 ): string[] {
   const issues: string[] = []
   if (executionId !== undefined && executionOwners.get(executionId) !== sessionKey) issues.push('WRONG_SESSION_FINDING')
@@ -44,14 +59,36 @@ function findingOwnerIssues(
   if (findingIds.length !== actualSet.size || sessionIds.length !== sessionSet.size) issues.push('DUPLICATE_FINDING')
   if (findingIds.some(id => !sessionSet.has(id))) issues.push('WRONG_SESSION_FINDING')
   const beforeSet = sessionIdentitySet(beforeIds)
-  if (sessionIds.some(id => { const owner = knownFindingOwners.get(id); return owner !== undefined && owner !== sessionKey })) issues.push('WRONG_SESSION_FINDING')
   if (sessionIds.some(id => !beforeSet.has(id) && !actualSet.has(id))) issues.push('UNRELATED_SESSION_MUTATION')
-  if (beforeIds.some(id => !sessionSet.has(id))) issues.push('STALE_OR_RESURRECTED_FINDING')
-  for (const findingId of findingIds) {
+
+  const active = new Set(history.activeBySession.get(sessionKey) ?? [])
+  const retired = history.retiredBySession.get(sessionKey) ?? new Set<string>()
+  const previouslyRetired = new Set(retired)
+  for (const id of beforeIds) active.add(id)
+  const priorActive = [...active]
+  if (findingLifetime === 'PRESERVE_PRIOR' && priorActive.some(id => !sessionSet.has(id))) {
+    issues.push('FINDING_LIFETIME_VIOLATION')
+  }
+  for (const id of priorActive) {
+    if (!sessionSet.has(id)) {
+      active.delete(id)
+      retired.add(id)
+    }
+  }
+  for (const id of [...beforeIds, ...sessionIds]) {
+    if (previouslyRetired.has(id)) issues.push('RESURRECTED_FINDING')
+  }
+  for (const id of sessionIds) active.add(id)
+  history.activeBySession.set(sessionKey, active)
+  history.retiredBySession.set(sessionKey, retired)
+
+  for (const findingId of sessionIds) {
     const owner = knownFindingOwners.get(findingId)
     if (owner !== undefined && owner !== sessionKey) issues.push('WRONG_SESSION_FINDING')
+    else if (owner === undefined) knownFindingOwners.set(findingId, sessionKey)
+  }
+  for (const findingId of findingIds) {
     if (!sessionSet.has(findingId)) issues.push('WRONG_SESSION_FINDING')
-    knownFindingOwners.set(findingId, sessionKey)
   }
   return [...new Set(issues)]
 }
@@ -68,6 +105,7 @@ function firstManifestBlocker(manifest: Phase13ManifestV1, scenario: Phase13Scen
       steps: scenario.steps.slice(0, scenario.steps.findIndex(item => item.stepId === step.stepId) + 1).map(item => ({
         stepId: item.stepId, operationRef: item.operationRef, expectedProcess: item.expectedProcess,
         expected: item.expected, f2Settlement: item.f2Settlement, opportunity: item.opportunity,
+        findingLifetime: item.findingLifetime,
       })),
     },
     expected: step.expected,
@@ -76,7 +114,7 @@ function firstManifestBlocker(manifest: Phase13ManifestV1, scenario: Phase13Scen
   }
 }
 
-function blockedStatus(issues: readonly string[]): CampaignStatus | undefined {
+export function blockedStatus(issues: readonly string[]): CampaignStatus | undefined {
   if (issues.includes('CAPTURE_INVALID')) return 'BLOCKED_CAPTURE'
   if (issues.includes('LEDGER_INTEGRITY_INVALID')) return 'BLOCKED_LEDGER'
   if (issues.includes('ENVIRONMENT_FAILURE')) return 'BLOCKED_ENVIRONMENT'
@@ -85,13 +123,15 @@ function blockedStatus(issues: readonly string[]): CampaignStatus | undefined {
   return undefined
 }
 
-export async function runSmokeCampaign(options: {
+export async function runPhase13Campaign(options: {
   readonly campaignRunId: string
   readonly seed: string
   readonly manifest?: Phase13ManifestV1
+  readonly policy: Phase13RunPolicy
 }): Promise<CampaignResult> {
   const manifest = options.manifest ?? generateSmokeManifest({ campaignRunId: options.campaignRunId, seed: options.seed })
   if (manifest.campaignRunId !== options.campaignRunId) throw new TypeError('manifest-run-id-mismatch')
+  enforcePhase13RunPolicy(manifest, options.policy)
   const digest = manifestSha256(manifest)
   const workspace = await Phase13Workspace.create(options.campaignRunId)
   const ledgerPath = await workspace.resolveArtifactPath('truth-ledger.jsonl')
@@ -103,6 +143,7 @@ export async function runSmokeCampaign(options: {
   let toolExecutionCount = 0
   const executionOwners = new Map<string, string>()
   const findingOwners = new Map<string, string>()
+  const findingHistory: SessionFindingHistory = { activeBySession: new Map(), retiredBySession: new Map() }
   try {
     subject = await Phase13Subject.create()
     ledger = await TruthLedger.create(ledgerPath, manifest.campaignRunId, {
@@ -117,7 +158,7 @@ export async function runSmokeCampaign(options: {
       for (const step of scenario.steps) {
         try { await ledger.assertHealthy() }
         catch { status = 'BLOCKED_LEDGER'; blocker = 'LEDGER_INTEGRITY_INVALID'; break }
-        if (toolExecutionCount >= PHASE13_MAX_TOOL_EXECUTIONS) { status = 'BLOCKED_ENVIRONMENT'; blocker = 'TOOL_EXECUTION_CAP_EXCEEDED'; break }
+        if (toolExecutionCount >= options.policy.maxToolExecutions) { status = 'BLOCKED_ENVIRONMENT'; blocker = 'TOOL_EXECUTION_CAP_EXCEEDED'; break }
         const operation = operationByRef(step.operationRef)
         if (operation === undefined) { status = 'BLOCKED_ENVIRONMENT'; blocker = 'OPERATION_REF_UNRESOLVED'; break }
         toolExecutionCount += 1
@@ -135,7 +176,7 @@ export async function runSmokeCampaign(options: {
             operationRef: step.operationRef, executionCapture: 'CAPTURE_INVALID', expected: step.expected,
             actualKinds: [], actualFindingIds: [], processObserved: 'UNKNOWN',
             classification: { f1: 'UNSCORABLE', f2: 'UNSCORABLE' }, issueCodes, opportunity: step.opportunity,
-            beforeSessionFindingIds: [], afterSessionFindingIds: [], afterSessionTruncated: false,
+            beforeSessionFindingIds: [], afterSessionFindingIds: [], afterSessionTruncated: false, findingLifetime: step.findingLifetime,
           })
           break
         }
@@ -169,7 +210,11 @@ export async function runSmokeCampaign(options: {
             afterSessionTruncated = refreshed.sessionTruncated
           }
         }
-        const ownerIssues = findingOwnerIssues(scenario.sessionKey, execution.executionId, executionOwners, findingOwners, actualFindingIds, execution.beforeSessionFindingIds, afterSessionFindingIds)
+        const ownerIssues = findingOwnerIssues(
+          scenario.sessionKey, execution.executionId, executionOwners, findingOwners,
+          actualFindingIds, execution.beforeSessionFindingIds, afterSessionFindingIds,
+          step.findingLifetime, findingHistory,
+        )
         issueCodes.push(...ownerIssues)
         if (afterSessionTruncated) { evidenceScorable = false; issueCodes.push('CAPTURE_INVALID') }
         if (execution.actualProcess === 'UNKNOWN') { evidenceScorable = false; issueCodes.push('ENVIRONMENT_FAILURE') }
@@ -185,7 +230,7 @@ export async function runSmokeCampaign(options: {
           scenarioId: scenario.scenarioId, stepId: step.stepId, family: scenario.family, sessionKey: scenario.sessionKey,
           operationRef: step.operationRef, executionCapture: execution.executionCapture, expected: step.expected,
           actualKinds, actualFindingIds, ...(verificationStatus === undefined ? {} : { verificationStatus }),
-          processObserved, classification, issueCodes: stepIssues, opportunity: step.opportunity,
+          processObserved, classification, issueCodes: stepIssues, opportunity: step.opportunity, findingLifetime: step.findingLifetime,
           beforeSessionFindingIds: execution.beforeSessionFindingIds, afterSessionFindingIds, afterSessionTruncated,
         })
         const deterministicBlocker = isDeterministicProductBlocker(blockerGrade)
@@ -224,4 +269,13 @@ export async function runSmokeCampaign(options: {
   } finally {
     await subject?.dispose().catch(() => undefined)
   }
+}
+
+/** Phase 13.1 smoke wrapper keeps its run policy independent of structural format capacity. */
+export async function runSmokeCampaign(options: {
+  readonly campaignRunId: string
+  readonly seed: string
+  readonly manifest?: Phase13ManifestV1
+}): Promise<CampaignResult> {
+  return runPhase13Campaign({ ...options, policy: PHASE13_1_SMOKE_POLICY })
 }

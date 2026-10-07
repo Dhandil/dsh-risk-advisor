@@ -20,7 +20,8 @@ export interface Phase13Summary {
   readonly findingCount: number
   readonly duplicateCount: number
   readonly wrongSessionCount: number
-  readonly staleOrResurrectionCount: number
+  readonly resurrectedFindingCount: number
+  readonly findingLifetimeViolationCount: number
   readonly captureFailures: number
   readonly upstreamVerificationMissing: number
   readonly environmentFailures: number
@@ -75,7 +76,8 @@ export function summarizeVerifiedLedger(verification: LedgerVerification): Phase
     findingCount: findings,
     duplicateCount: countIssue('DUPLICATE_FINDING'),
     wrongSessionCount: countIssue('WRONG_SESSION_FINDING'),
-    staleOrResurrectionCount: countIssue('STALE_OR_RESURRECTED_FINDING'),
+    resurrectedFindingCount: countIssue('RESURRECTED_FINDING'),
+    findingLifetimeViolationCount: countIssue('FINDING_LIFETIME_VIOLATION'),
     captureFailures: countIssue('CAPTURE_INVALID'),
     upstreamVerificationMissing: countIssue('UPSTREAM_VERIFICATION_MISSING'),
     environmentFailures: countIssue('ENVIRONMENT_FAILURE'),

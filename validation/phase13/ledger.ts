@@ -1,8 +1,10 @@
 import { appendFile, readFile } from 'node:fs/promises'
 import { canonicalJson, sha256Hex } from './canonical.ts'
+import { PHASE13_STRUCTURAL_MAX_SCENARIOS, PHASE13_STRUCTURAL_MAX_TOOL_EXECUTIONS } from './schema.ts'
 
 export const PHASE13_LEDGER_GENESIS = '0'.repeat(64)
-export const PHASE13_LEDGER_MAX_BYTES = 2 * 1024 * 1024
+export const PHASE13_LEDGER_MAX_RECORDS = 8192
+export const PHASE13_LEDGER_MAX_BYTES = 32 * 1024 * 1024
 export const PHASE13_LEDGER_MAX_LINE_BYTES = 16 * 1024
 
 export type LedgerRecordType = 'RUN_START' | 'SCENARIO_START' | 'STEP_RESULT' | 'SCENARIO_END' | 'RUN_END'
@@ -27,7 +29,7 @@ const FORBIDDEN_KEY = /(?:command|argument|cwd|path|stdout|stderr|content|justif
 const PAYLOAD_KEYS: Record<LedgerRecordType, readonly string[]> = {
   RUN_START: ['generatorVersion', 'seed', 'lane', 'manifestSha256', 'subjectBoundary'],
   SCENARIO_START: ['scenarioId', 'family', 'sessionKey'],
-  STEP_RESULT: ['scenarioId', 'stepId', 'family', 'sessionKey', 'operationRef', 'executionCapture', 'expected', 'actualKinds', 'actualFindingIds', 'verificationStatus', 'processObserved', 'classification', 'issueCodes', 'opportunity', 'beforeSessionFindingIds', 'afterSessionFindingIds', 'afterSessionTruncated'],
+  STEP_RESULT: ['scenarioId', 'stepId', 'family', 'sessionKey', 'operationRef', 'executionCapture', 'expected', 'actualKinds', 'actualFindingIds', 'verificationStatus', 'processObserved', 'classification', 'issueCodes', 'opportunity', 'findingLifetime', 'beforeSessionFindingIds', 'afterSessionFindingIds', 'afterSessionTruncated'],
   SCENARIO_END: ['scenarioId', 'status'],
   RUN_END: ['status', 'scenarioCount', 'toolExecutionCount', 'blocker'],
 }
@@ -50,13 +52,14 @@ function validPayload(type: LedgerRecordType, payload: Record<string, unknown>):
     && boundedLabel(payload.scenarioId) && boundedLabel(payload.family) && boundedLabel(payload.sessionKey)
   if (type === 'SCENARIO_END') return has('scenarioId', 'status') && boundedLabel(payload.scenarioId) && (payload.status === 'COMPLETE' || String(payload.status).startsWith('BLOCKED_'))
   if (type === 'RUN_END') return has('status', 'scenarioCount', 'toolExecutionCount') && CAMPAIGN_STATUSES.has(String(payload.status))
-    && Number.isSafeInteger(payload.scenarioCount) && Number(payload.scenarioCount) >= 0 && Number(payload.scenarioCount) <= 30
-    && Number.isSafeInteger(payload.toolExecutionCount) && Number(payload.toolExecutionCount) >= 0 && Number(payload.toolExecutionCount) <= 100
-  if (!has('scenarioId', 'stepId', 'family', 'sessionKey', 'operationRef', 'executionCapture', 'expected', 'actualKinds', 'actualFindingIds', 'processObserved', 'classification', 'issueCodes', 'opportunity', 'beforeSessionFindingIds', 'afterSessionFindingIds', 'afterSessionTruncated')) return false
+    && Number.isSafeInteger(payload.scenarioCount) && Number(payload.scenarioCount) >= 0 && Number(payload.scenarioCount) <= PHASE13_STRUCTURAL_MAX_SCENARIOS
+    && Number.isSafeInteger(payload.toolExecutionCount) && Number(payload.toolExecutionCount) >= 0 && Number(payload.toolExecutionCount) <= PHASE13_STRUCTURAL_MAX_TOOL_EXECUTIONS
+  if (!has('scenarioId', 'stepId', 'family', 'sessionKey', 'operationRef', 'executionCapture', 'expected', 'actualKinds', 'actualFindingIds', 'processObserved', 'classification', 'issueCodes', 'opportunity', 'findingLifetime', 'beforeSessionFindingIds', 'afterSessionFindingIds', 'afterSessionTruncated')) return false
   if (![payload.scenarioId, payload.stepId, payload.family, payload.sessionKey, payload.operationRef].every(boundedLabel)) return false
   if (payload.executionCapture !== 'VALID' && payload.executionCapture !== 'CAPTURE_INVALID') return false
   if (payload.processObserved !== 'SUCCESS' && payload.processObserved !== 'FAILURE' && payload.processObserved !== 'UNKNOWN') return false
   if (payload.opportunity !== 'NONE' && payload.opportunity !== 'OUT_OF_SCOPE_USEFUL_WARNING_CANDIDATE') return false
+  if (!['NO_ASSERTION', 'PRESERVE_PRIOR', 'ALLOW_PRIOR_REMOVAL'].includes(String(payload.findingLifetime))) return false
   if (typeof payload.afterSessionTruncated !== 'boolean') return false
   if (payload.verificationStatus !== undefined && !['MATCHED', 'MISMATCHED', 'UNKNOWN', 'UNAVAILABLE'].includes(String(payload.verificationStatus))) return false
   if (!Array.isArray(payload.actualKinds) || payload.actualKinds.length > 64 || !payload.actualKinds.every(kind => FINDING_KINDS.has(String(kind)))) return false
@@ -117,7 +120,7 @@ export function verifyLedgerText(text: string, expectedRunId?: string): LedgerVe
   if (Buffer.byteLength(text, 'utf8') > PHASE13_LEDGER_MAX_BYTES) return { status: 'LEDGER_INTEGRITY_INVALID', reason: 'ledger-byte-cap', records: [] }
   if (text.length === 0 || !text.endsWith('\n')) return { status: 'LEDGER_INTEGRITY_INVALID', reason: 'truncated-terminal-line', records: [] }
   const lines = text.slice(0, -1).split('\n')
-  if (lines.length > 2048) return { status: 'LEDGER_INTEGRITY_INVALID', reason: 'record-count-cap', records: [] }
+  if (lines.length > PHASE13_LEDGER_MAX_RECORDS) return { status: 'LEDGER_INTEGRITY_INVALID', reason: 'record-count-cap', records: [] }
   const records: LedgerRecordV1[] = []
   let previous = PHASE13_LEDGER_GENESIS
   let runId: string | undefined
@@ -147,11 +150,11 @@ export function verifyLedgerText(text: string, expectedRunId?: string): LedgerVe
       const id = String(value.payload.scenarioId)
       if (openScenario !== undefined || scenarioIds.has(id)) return { status: 'LEDGER_INTEGRITY_INVALID', reason: 'scenario-transition-invalid', records: [] }
       openScenario = id; scenarioIds.add(id)
-      if (scenarioIds.size > 30) return { status: 'LEDGER_INTEGRITY_INVALID', reason: 'scenario-cap', records: [] }
+      if (scenarioIds.size > PHASE13_STRUCTURAL_MAX_SCENARIOS) return { status: 'LEDGER_INTEGRITY_INVALID', reason: 'scenario-cap', records: [] }
     } else if (value.type === 'STEP_RESULT') {
       const scenarioId = String(value.payload.scenarioId)
       const stepId = String(value.payload.stepId)
-      if (openScenario !== scenarioId || stepIds.has(stepId) || stepIds.size >= 100) return { status: 'LEDGER_INTEGRITY_INVALID', reason: 'step-transition-invalid', records: [] }
+      if (openScenario !== scenarioId || stepIds.has(stepId) || stepIds.size >= PHASE13_STRUCTURAL_MAX_TOOL_EXECUTIONS) return { status: 'LEDGER_INTEGRITY_INVALID', reason: 'step-transition-invalid', records: [] }
       stepIds.add(stepId)
     } else if (value.type === 'SCENARIO_END') {
       if (openScenario === undefined || value.payload.scenarioId !== openScenario) return { status: 'LEDGER_INTEGRITY_INVALID', reason: 'scenario-end-invalid', records: [] }
@@ -199,6 +202,7 @@ export class TruthLedger {
 
   async append(type: LedgerRecordType, payload: Readonly<Record<string, unknown>>): Promise<LedgerRecordV1> {
     if (this.ended || !RECORD_TYPES.has(type) || (this.sequence === 0 && type !== 'RUN_START') || (this.sequence > 0 && type === 'RUN_START')) throw new Error('ledger-state-invalid')
+    if (this.sequence >= PHASE13_LEDGER_MAX_RECORDS) throw new RangeError('ledger-record-cap')
     const prior = this.sequence > 0 ? await this.assertHealthy() : Object.freeze([])
     assertSafePayload(payload)
     if (!plain(payload) || !validPayload(type, payload)) throw new TypeError('ledger-payload-schema')
@@ -211,6 +215,9 @@ export class TruthLedger {
     const record = Object.freeze({ ...base, recordHash: hashable(base) })
     const line = `${canonicalJson(record)}\n`
     if (Buffer.byteLength(line, 'utf8') > PHASE13_LEDGER_MAX_LINE_BYTES) throw new RangeError('ledger-line-byte-cap')
+    const currentText = await readFile(this.path, 'utf8').catch(error => (error as NodeJS.ErrnoException).code === 'ENOENT' ? '' : Promise.reject(error))
+    const currentBytes = Buffer.byteLength(currentText, 'utf8')
+    if (currentBytes + Buffer.byteLength(line, 'utf8') > PHASE13_LEDGER_MAX_BYTES) throw new RangeError('ledger-byte-cap')
     await appendFile(this.path, line, { encoding: 'utf8', flag: 'a', mode: 0o600 })
     this.sequence += 1
     this.previous = record.recordHash
