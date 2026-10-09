@@ -22,7 +22,7 @@ This is a prospective cross-phase product boundary. Existing accepted implementa
 | Risk features, risk explanations, recommended next checks | Risk Advisor | Own advisory computation, never authoritative permission |
 | Verification and qualified historical intelligence | Risk Advisor Host-side deterministic services using Harness evidence and optional Storage Domain | Write only its own evidence-bound records; no Agent-controlled canonical writes |
 
-Risk Advisor MUST NOT return or manufacture authoritative Harness `PreToolDecision` (`allow` / `deny` / `ask`), `ApprovalOutcome` (`allowed-once` / `rejected` / `cancelled` / `unavailable`), a tool-result override, permission-preset mutation, cancellation, automatic approval/veto, or execution resumption.
+Risk Advisor MUST NOT **originate, substitute, override or convert** an authoritative Harness `PreToolDecision` (`allow` / `deny` / `ask`) or `ApprovalOutcome` (`allowed-once` / `rejected` / `cancelled` / `unavailable`). It MUST transparently pass through the unchanged downstream decision when listening to a decision waterfall. It MUST NOT rewrite Tool results, mutate permission presets, cancel or resume Harness Tool execution, or grant automatic approval/veto authority. This does not prohibit cancelling Risk Advisor's **own** asynchronous advisory work.
 
 Existing internal Risk Engine recommendation names such as `APPROVE`, `APPROVE_WITH_CAUTION` and `REJECT_RECOMMENDED` are **advisory labels only**, not Harness approval outcomes. UI wording SHOULD clearly distinguish “risk recommendation” from “approval decision”. Renaming frozen internal enums or changing serialization is **not** authorized here.
 
