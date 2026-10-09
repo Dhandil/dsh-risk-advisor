@@ -1,6 +1,6 @@
 # Risk Advisor Phase 14.1 — Implementation Instructions
 
-Implement only the contract in [`Phase14_1_Architecture_Freeze.md`](./Phase14_1_Architecture_Freeze.md), from Product baseline `4fb0a9133ba9df111db9c2023a946f023e3fa5a2` with Harness pinned to `ddefc45fbc7f8e46dd73185e68295696d1297887`.
+Implement only the contract in [`Phase14_1_Architecture_Freeze.md`](./Phase14_1_Architecture_Freeze.md). The Product code anchor is `4fb0a9133ba9df111db9c2023a946f023e3fa5a2`; the docs-only freeze commit is `15a5b7efef3c081285bffee343e0398680aa8eca`. Start the implementation branch from the latest `origin/main` containing that freeze commit, after confirming there is no executable/test/package/config/benchmark drift from the Product code anchor. Keep Harness pinned to `ddefc45fbc7f8e46dd73185e68295696d1297887`.
 
 ## Scope and slices
 
@@ -26,7 +26,7 @@ Add focused tests for these behaviors; use a real pinned Harness ToolRuntime int
 
 ## Gate order
 
-1. Verify Product `HEAD == origin/main == 4fb0a9133ba9df111db9c2023a946f023e3fa5a2`, pinned Harness SHA, and the working tree. Preserve all existing user files and untracked `lib/`, `node_modules/`, `.vitest-cache/`; do not clean/reset/stash them.
+1. Verify Product code anchor `4fb0a9133ba9df111db9c2023a946f023e3fa5a2` and freeze commit `15a5b7efef3c081285bffee343e0398680aa8eca` are ancestors of `origin/main`; require `HEAD == origin/main` before creating the implementation branch. Inspect the anchor-to-main diff and stop if it contains executable, test, package, config or benchmark changes. Verify pinned Harness SHA and the working tree. Preserve all existing user files and untracked `lib/`, `node_modules/`, `.vitest-cache/`; do not clean/reset/stash them.
 2. Run new Phase 14.1 focused host/runtime tests and the pinned Harness integration proof.
 3. Run the required frozen regressions listed above (Phase 11, Phase 12, Phase 13.2, P6/P10).
 4. Run typecheck, production build, package/declaration/export/dependency checks, static/boundary checks, and privacy/persistence checks. Confirm no Harness tree, lockfile, Web Profile, package contract, storage domain or Phase 11/13.2 contract changed.
