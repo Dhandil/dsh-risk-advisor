@@ -111,6 +111,11 @@ export class ReviewerSeedStore {
     return this.values.get(executionId)?.seed
   }
 
+  remove(executionId: ExecutionId): void {
+    if (!this.active) return
+    this.values.delete(executionId)
+  }
+
   dispose(): void {
     this.active = false
     this.values.clear()

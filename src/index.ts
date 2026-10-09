@@ -12,6 +12,7 @@ import { ApprovalAssessmentCoordinator } from './host/assessment-envelope.ts'
 import type { AssessmentDiagnostics } from './host/assessment-envelope.ts'
 import { installRiskAdvisorBrowserBridge } from './host/browser-bridge.ts'
 import type { HostConnectionLike } from './host/browser-bridge.ts'
+import { RuntimeRiskAwarenessRuntime } from './host/runtime-risk-awareness.ts'
 import { installOnlineCorrectionBrowserBridge } from './host/online-correction-bridge.ts'
 import type { OnlineCorrectionHostConnectionLike } from './host/online-correction-bridge.ts'
 import { RetryEscalationAnalyzer } from './host/retry-escalation.ts'
@@ -109,6 +110,7 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
   const patterns = new PatternRuntime()
   const guidance = new GuidanceRuntime()
   const liveCorrection = new LiveCorrectionRuntime()
+  const runtimeRisk = new RuntimeRiskAwarenessRuntime(foundation.diagnostics, rules.diagnostics, failureChain.diagnostics, ledger)
   const verifier = new PostconditionVerifier(expectedEffects, {
     onRecord: (record: VerificationRecordV1) => {
       try { liveCorrection.observeVerification(record) } catch { /* Live correction is observational. */ }
@@ -123,6 +125,7 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
     evidence,
     ...config.fastJudge === undefined ? {} : { fastJudge: config.fastJudge },
     ...config.deepJudge === undefined ? {} : { deepJudge: config.deepJudge },
+    runtimeRisk,
   })
   const experience = new ExperienceRuntime(rules.diagnostics, failureChain.diagnostics, {
     onCommitted: episode => outcomes.observeEpisodeCommitted(episode),
@@ -135,7 +138,7 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
       rules.observePreExecute(exec, executionId, executionId === undefined ? undefined : failureChain.diagnostics.get(executionId))
       expectedEffects.capture(exec, executionId)
       evidence.seeds.capture(exec, executionId)
-      assessments.captureReviewerSeed(exec, executionId)
+      runtimeRisk.capturePreExecute(exec, executionId)
       assessments.captureDeepJudgeParent(exec, executionId)
     },
     retire: (exec, result, index, executionId) => {
@@ -146,9 +149,10 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
       verifier.observeResult(exec, result)
       experience.observeResult(exec, result, index, executionId)
       foundation.retire(exec)
+      runtimeRisk.observeResult(exec, executionId)
     },
     sessionEvent: (session, event, index) => { assessments.observeSessionEvent(session, event, index) },
-    sessionDisposed: session => { assessments.observeSessionDisposed(session); evidence.disposeSession(session); liveCorrection.disposeSession(session) },
+    sessionDisposed: session => { assessments.observeSessionDisposed(session); runtimeRisk.disposeSession(session); evidence.disposeSession(session); liveCorrection.disposeSession(session) },
   })
   ctx.provide('riskAdvisorFoundation', foundation.diagnostics)
   ctx.provide('riskAdvisorAssessments', assessments.diagnostics)
@@ -190,7 +194,7 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
   ctx.inject(['connection', 'sessions'], bridgeCtx => {
     const connection = bridgeCtx.get('connection', false) as HostConnectionLike | undefined
     if (connection !== undefined) {
-      installRiskAdvisorBrowserBridge(bridgeCtx, connection, assessments)
+      installRiskAdvisorBrowserBridge(bridgeCtx, connection, assessments, runtimeRisk)
       installOnlineCorrectionBrowserBridge(bridgeCtx, connection as OnlineCorrectionHostConnectionLike, liveCorrection.diagnostics)
     }
   })
@@ -223,6 +227,7 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
   ctx.on('session/disposed', session => { verifier.cancelSession(session) })
   ctx.effect(() => () => { foundation.dispose() }, 'risk-advisor-operation-foundation-generation')
   ctx.effect(() => () => assessments.dispose(), 'risk-advisor-assessment-generation')
+  ctx.effect(() => () => runtimeRisk.dispose(), 'risk-advisor-runtime-risk-generation')
   ctx.effect(() => () => { failureChain.dispose() }, 'risk-advisor-failure-chain-generation')
   ctx.effect(() => () => { rules.dispose() }, 'risk-advisor-rule-engine-generation')
   ctx.effect(() => () => verifier.dispose(), 'risk-advisor-postcondition-verification-generation')
@@ -255,7 +260,7 @@ export type { AssessmentAssociation, AssessmentBridgeSnapshot, AssessmentDiagnos
 export type { FastJudgeConfig, FastJudgeCandidate, FastJudgeDimension, FastJudgeDimensionResult, JudgeFailureCode, NormalizedFastJudgeConfig, ReviewerRoute } from './host/fast-judge.ts'
 export type { DeepJudgeConfig, DeepJudgeCandidateV1, DeepJudgeDimension, DeepJudgeDimensionResult, DeepJudgeFailureCode, NormalizedDeepJudgeConfig } from './host/deep-judge.ts'
 export type { RiskAssessment, RiskContextSnapshot, RiskFeature, RiskFeatureSet, AssessmentFinding, AssessmentUncertainty, SaferAlternative } from './host/risk-engine.ts'
-export type { BrowserBridgeClientResult, BrowserSafeReasonCode, BrowserSafeReasonCodeV2, BrowserSafeReasonCodeV3, BrowserSafeReasonCodeV4, RiskAdvisorBridgeRead, RiskAdvisorBridgeViewV1, RiskAdvisorBridgeViewV2, RiskAdvisorBridgeViewV3, RiskAdvisorBridgeViewV4, BrowserEvidenceSummaryV1, OperationPresentationV1, BrowserRiskAssessmentV1, FailureContextPresentationV1, BrowserOperationKind, BrowserResourceKind, BrowserDimension, BrowserDimensionSource, BrowserEvidenceQuality, BrowserFindingDimension, BrowserFindingSeverity, BrowserFindingStrength, BrowserAlternativeSource, BrowserAlternativeVerification, BrowserUncertaintyImpact } from './bridge-contract.ts'
+export type { BrowserBridgeClientResult, BrowserSafeReasonCode, BrowserSafeReasonCodeV2, BrowserSafeReasonCodeV3, BrowserSafeReasonCodeV4, RiskAdvisorBridgeRead, RiskAdvisorBridgeViewV1, RiskAdvisorBridgeViewV2, RiskAdvisorBridgeViewV3, RiskAdvisorBridgeViewV4, BrowserEvidenceSummaryV1, OperationPresentationV1, BrowserRiskAssessmentV1, FailureContextPresentationV1, BrowserOperationKind, BrowserResourceKind, BrowserDimension, BrowserDimensionSource, BrowserEvidenceQuality, BrowserFindingDimension, BrowserFindingSeverity, BrowserFindingStrength, BrowserAlternativeSource, BrowserAlternativeVerification, BrowserUncertaintyImpact, RuntimeRiskAwarenessViewV1, RuntimeRiskAwarenessReadV1, RuntimeRiskAwarenessClientResult, RuntimeRiskReasonCodeV1 } from './bridge-contract.ts'
 export {
   ONLINE_CORRECTION_RPC_CHANNEL,
   ONLINE_CORRECTION_ENDPOINT,
@@ -316,3 +321,4 @@ export type {
 } from './host/explicit-failure.ts'
 
 export type { LiveCorrectionDiagnostics, LiveCorrectionFindingV1, LiveCorrectionFindingKind, LiveCorrectionDiagnosisCode, LiveCorrectionAdvisoryCode, LiveCorrectionSessionView, LiveCorrectionRuntimeStatus } from './host/live-correction.ts'
+export { RISK_ADVISOR_RUNTIME_RISK_ENDPOINT, RISK_ADVISOR_RUNTIME_RISK_ROUTE, RUNTIME_RISK_REASON_CODES_V1, parseRuntimeRiskAwarenessRead } from './bridge-contract.ts'

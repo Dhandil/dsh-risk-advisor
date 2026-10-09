@@ -36,7 +36,7 @@
     "build": "tsc -p tsconfig.json && tsdown",
     "bundle": "tsdown",
     "watch": "tsdown --watch",
-    "test": "pnpm run test:r1 && pnpm run test:r2 && pnpm run test:r3 && pnpm run test:r4 && pnpm run test:r5 && pnpm run test:p1a && pnpm run test:p1b && pnpm run test:p1c && pnpm run test:p2 && pnpm run test:p3 && pnpm run test:p4 && pnpm run test:p5 && pnpm run test:p6 && pnpm run test:p7 && pnpm run test:p8 && pnpm run test:p9 && pnpm run test:p10 && pnpm run test:p11.1 && pnpm run test:p11.2 && pnpm run test:p11.3 && pnpm run test:p11.4 && pnpm run test:p12.1 && pnpm run test:p12.2",
+    "test": "pnpm run test:r1 && pnpm run test:r2 && pnpm run test:r3 && pnpm run test:r4 && pnpm run test:r5 && pnpm run test:p1a && pnpm run test:p1b && pnpm run test:p1c && pnpm run test:p2 && pnpm run test:p3 && pnpm run test:p4 && pnpm run test:p5 && pnpm run test:p6 && pnpm run test:p7 && pnpm run test:p8 && pnpm run test:p9 && pnpm run test:p10 && pnpm run test:p11.1 && pnpm run test:p11.2 && pnpm run test:p11.3 && pnpm run test:p11.4 && pnpm run test:p12.1 && pnpm run test:p12.2 && pnpm run test:p14.1",
     "test:r1": "vitest run tests/r1-fixture.unit.spec.tsx tests/r1-slot.integration.spec.tsx",
     "test:r2": "vitest run tests/r2-correlation.unit.spec.ts tests/r2-runtime.integration.spec.ts",
     "test:r3": "vitest run tests/r3-ptc-replay.unit.spec.ts tests/r3-runtime.integration.spec.ts",
@@ -82,7 +82,8 @@
     "gate:v1:release": "pnpm run build && node benchmarks/v1-release-candidate.mjs && vitest run --config vitest.config.ts tests/v1-release-candidate.spec.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:p12.1": "vitest run tests/p12-1-live-correction.spec.ts",
-    "test:p12.2": "vitest run tests/p12-2-online-correction.spec.tsx"
+    "test:p12.2": "vitest run tests/p12-2-online-correction.spec.tsx",
+    "test:p14.1": "vitest run tests/p14-1-runtime-risk-awareness.spec.ts tests/p14-1-runtime-risk-client.spec.tsx tests/p14-1-runtime-risk-tool.integration.spec.ts"
   },
   "license": "MIT",
   "peerDependencies": {

@@ -296,7 +296,7 @@ describe('Phase 12.2 User Advisory Surface U1-U22', () => {
     expect(bridge).not.toContain('ApprovalAssessmentCoordinator')
     expect(bridge).not.toContain('RiskEngine')
     expect(bridge).toContain("path: ONLINE_CORRECTION_ROUTE")
-    expect(hostIndex).toContain('installRiskAdvisorBrowserBridge(bridgeCtx, connection, assessments)')
+    expect(hostIndex).toContain('installRiskAdvisorBrowserBridge(bridgeCtx, connection, assessments, runtimeRisk)')
     expect(hostIndex).toContain('installOnlineCorrectionBrowserBridge(bridgeCtx, connection as OnlineCorrectionHostConnectionLike, liveCorrection.diagnostics)')
   })
 
@@ -468,7 +468,7 @@ describe('Phase 12.2 User Advisory Surface U1-U22', () => {
     client.dispose()
   })
 
-  it('U18 registers only the dedicated input dock identity at order 10, never an approval-detail entry', async () => {
+  it('U18 keeps Online Correction at order 10 and registers Risk Awareness at order 20 outside approval detail', async () => {
     const ctx = new Context()
     await ctx.plugin(SlotRegistry).await()
     const locale = new LocaleRuntime(ctx)
@@ -487,6 +487,7 @@ describe('Phase 12.2 User Advisory Surface U1-U22', () => {
     await fiber.await()
     const dock = ctx.slots.entriesOfSlot('conversation.input.dock')
     expect(dock.some(entry => entry.options.id === 'risk-advisor-online-correction' && entry.options.order === 10)).toBe(true)
+    expect(dock.some(entry => entry.options.id === 'risk-advisor-runtime-risk-awareness' && entry.options.order === 20)).toBe(true)
     expect(dock.some(entry => entry.options.id === 'queue' && entry.options.order === 20)).toBe(true)
     expect(ctx.slots.entriesOfSlot('conversation.approval.detail').some(entry => entry.options.id === 'risk-advisor-online-correction')).toBe(false)
     await fiber.dispose()
@@ -540,7 +541,7 @@ describe('Phase 12.2 User Advisory Surface U1-U22', () => {
     const queueEntry = ctx.slots.register({ name: 'conversation.input.dock', id: 'queue', order: 20 }, () => null)
     const fiber = ctx.plugin({ inject: [...clientInject], apply: applyClient })
     await fiber.await()
-    expect(ctx.slots.entriesOfSlot('conversation.input.dock').map(entry => entry.options.id)).toEqual(['risk-advisor-online-correction', 'queue'])
+    expect(ctx.slots.entriesOfSlot('conversation.input.dock').map(entry => entry.options.id)).toEqual(['risk-advisor-online-correction', 'queue', 'risk-advisor-runtime-risk-awareness'])
     expect(ctx.slots.entriesOfSlot('conversation.approval.detail').some(entry => entry.component === RiskAdvisorDetail)).toBe(true)
     expect(ctx.slots.entriesOfSlot('conversation.approval.detail').some(entry => entry.component === OnlineCorrectionDock)).toBe(false)
     await fiber.dispose()

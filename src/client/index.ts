@@ -11,6 +11,9 @@ import type { ClientConnectionLike } from './presentation-store.ts'
 import { OnlineCorrectionClient } from './online-correction-client.ts'
 import { OnlineCorrectionDock } from './OnlineCorrectionDock.tsx'
 import { ONLINE_CORRECTION_NS, onlineCorrectionEn, onlineCorrectionZh } from './online-correction-locales.ts'
+import { RuntimeRiskClient } from './runtime-risk-client.ts'
+import { RuntimeRiskAwarenessDock } from './RuntimeRiskAwarenessDock.tsx'
+import { RUNTIME_RISK_NS, runtimeRiskEn, runtimeRiskZh } from './runtime-risk-locales.ts'
 
 export { createRiskAdvisorBridgeClient } from './assessment-bridge.ts'
 export type { RiskAdvisorBridgeClient } from './assessment-bridge.ts'
@@ -36,6 +39,20 @@ export {
   parseOnlineCorrectionRead,
   parseOnlineCorrectionRequest,
 } from '../online-correction-contract.ts'
+export { RuntimeRiskClient } from './runtime-risk-client.ts'
+export { RuntimeRiskStore, RUNTIME_RISK_POLL_INTERVAL_MS } from './runtime-risk-store.ts'
+export type { RuntimeRiskStoreSnapshot } from './runtime-risk-store.ts'
+export { createRuntimeRiskBridgeClient } from './runtime-risk-bridge.ts'
+export { RuntimeRiskAwarenessDock } from './RuntimeRiskAwarenessDock.tsx'
+export { RUNTIME_RISK_NS, runtimeRiskEn, runtimeRiskZh } from './runtime-risk-locales.ts'
+export type { RuntimeRiskLocaleKey } from './runtime-risk-locales.ts'
+export {
+  RISK_ADVISOR_RUNTIME_RISK_ENDPOINT,
+  RISK_ADVISOR_RUNTIME_RISK_ROUTE,
+  RUNTIME_RISK_REASON_CODES_V1,
+  parseRuntimeRiskAwarenessRead,
+} from '../bridge-contract.ts'
+export type { RuntimeRiskAwarenessViewV1, RuntimeRiskAwarenessReadV1, RuntimeRiskAwarenessClientResult, RuntimeRiskReasonCodeV1 } from '../bridge-contract.ts'
 export type {
   BrowserOnlineCorrectionKind,
   BrowserOnlineCorrectionDiagnosis,
@@ -53,6 +70,7 @@ export const inject = ['slots', 'locale']
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'risk-advisor-r1: dictionaries')
   ctx.effect(() => ctx.locale.register(ONLINE_CORRECTION_NS, { zh: onlineCorrectionZh, en: onlineCorrectionEn }), 'risk-advisor-online-correction: dictionaries')
+  ctx.effect(() => ctx.locale.register(RUNTIME_RISK_NS, { zh: runtimeRiskZh, en: runtimeRiskEn }), 'risk-advisor-runtime-risk: dictionaries')
 
   const installSlot = (presentationClient: PresentationClient): void => {
     ctx.slots.inject('conversation.approval.detail', () => ctx.slots.register({
@@ -71,14 +89,29 @@ export function apply(ctx: ClientContext): void {
       inject: () => ({ onlineCorrectionClient }),
     }, OnlineCorrectionDock))
   }
-  const connection = ctx.get('connection', false) as ClientConnectionLike | undefined
-  if (connection !== undefined) {
-    const presentationClient = new PresentationClient(connection)
+  const installRuntimeRiskSlot = (runtimeRiskClient: RuntimeRiskClient): void => {
+    ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
+      name: 'conversation.input.dock',
+      id: 'risk-advisor-runtime-risk-awareness',
+      order: 20,
+      locale: RUNTIME_RISK_NS,
+      inject: () => ({ runtimeRiskClient }),
+    }, RuntimeRiskAwarenessDock))
+  }
+  const installClients = (lateConnection: ClientConnectionLike): void => {
+    const presentationClient = new PresentationClient(lateConnection)
     ctx.effect(() => () => presentationClient.dispose(), 'risk-advisor-phase6: presentation client')
     installSlot(presentationClient)
-    const onlineCorrectionClient = new OnlineCorrectionClient(connection)
+    const onlineCorrectionClient = new OnlineCorrectionClient(lateConnection)
     ctx.effect(() => () => onlineCorrectionClient.dispose(), 'risk-advisor-phase12.2: online correction client')
     installOnlineCorrectionSlot(onlineCorrectionClient)
+    const runtimeRiskClient = new RuntimeRiskClient(lateConnection)
+    ctx.effect(() => () => runtimeRiskClient.dispose(), 'risk-advisor-phase14.1: runtime risk client')
+    installRuntimeRiskSlot(runtimeRiskClient)
+  }
+  const connection = ctx.get('connection', false) as ClientConnectionLike | undefined
+  if (connection !== undefined) {
+    installClients(connection)
     return
   }
   ctx.inject(['connection'], connectionCtx => {
@@ -90,5 +123,8 @@ export function apply(ctx: ClientContext): void {
     const onlineCorrectionClient = new OnlineCorrectionClient(lateConnection)
     connectionCtx.effect(() => () => onlineCorrectionClient.dispose(), 'risk-advisor-phase12.2: online correction client')
     installOnlineCorrectionSlot(onlineCorrectionClient)
+    const runtimeRiskClient = new RuntimeRiskClient(lateConnection)
+    connectionCtx.effect(() => () => runtimeRiskClient.dispose(), 'risk-advisor-phase14.1: runtime risk client')
+    installRuntimeRiskSlot(runtimeRiskClient)
   })
 }

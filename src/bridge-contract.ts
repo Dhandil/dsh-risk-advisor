@@ -1,9 +1,16 @@
 export const RISK_ADVISOR_RPC_CHANNEL = '/api' as const
 export const RISK_ADVISOR_ACTIVE_ENDPOINT = 'risk-advisor/active' as const
 export const RISK_ADVISOR_ASSESSMENT_ENDPOINT = 'risk-advisor/assessment' as const
+export const RISK_ADVISOR_RUNTIME_RISK_ENDPOINT = 'risk-advisor/runtime-risk' as const
 export const RISK_ADVISOR_ACTIVE_ROUTE = '/api/risk-advisor/active' as const
 export const RISK_ADVISOR_ASSESSMENT_ROUTE = '/api/risk-advisor/assessment' as const
+export const RISK_ADVISOR_RUNTIME_RISK_ROUTE = '/api/risk-advisor/runtime-risk' as const
 export const BRIDGE_IDENTIFIER_LIMIT = 256
+
+export const RUNTIME_RISK_REASON_CODES_V1 = [
+  'SNAPSHOT_UNAVAILABLE', 'ASSESSMENT_UNAVAILABLE', 'CAPACITY_EXCEEDED', 'CONTEXT_DEGRADED',
+] as const
+export type RuntimeRiskReasonCodeV1 = typeof RUNTIME_RISK_REASON_CODES_V1[number]
 
 export const BROWSER_SAFE_REASON_CODES = [
   'ASSESSOR_NOT_IMPLEMENTED', 'FOUNDATION_DEGRADED', 'FOUNDATION_UNAVAILABLE', 'MISSING_CALL_ID',
@@ -80,6 +87,29 @@ export interface BrowserRiskAssessmentV1 {
   readonly judgeAssisted: boolean
   readonly supersedesAssessmentId?: string
 }
+
+export interface RuntimeRiskAwarenessViewV1 {
+  readonly schemaVersion: 1
+  readonly sessionId: string
+  readonly executionId: string
+  readonly callId?: string
+  readonly assessmentId: string
+  readonly timing: 'PRE_EXECUTION_EVIDENCE'
+  readonly status: 'PENDING' | 'READY' | 'DEGRADED'
+  readonly stage: 'CAPTURED' | 'SCORING' | 'COMPLETE'
+  readonly capturedAt: number
+  readonly updatedAt: number
+  readonly reasonCodes: readonly RuntimeRiskReasonCodeV1[]
+  readonly assessment?: BrowserRiskAssessmentV1
+}
+
+export type RuntimeRiskAwarenessReadV1 =
+  | (RuntimeRiskAwarenessViewV1 & { readonly kind: 'VIEW' })
+  | { readonly schemaVersion: 1; readonly kind: 'NOT_FOUND'; readonly sessionId: string }
+  | { readonly schemaVersion: 1; readonly kind: 'UNAVAILABLE'; readonly sessionId: string; readonly reasonCodes: readonly RuntimeRiskReasonCodeV1[] }
+
+export type RuntimeRiskAwarenessClientResult = RuntimeRiskAwarenessReadV1
+  | { readonly kind: 'CLIENT_UNAVAILABLE'; readonly reason: 'TRANSPORT_UNAVAILABLE' | 'HOST_REJECTED' | 'PROTOCOL_INVALID' | 'CANCELLED' }
 
 export interface FailureContextPresentationV1 {
   readonly schemaVersion: 1
@@ -176,6 +206,75 @@ export function parseBridgeRead(value: unknown): RiskAdvisorBridgeRead | undefin
     const view = version === 1 ? parseV1View(rawView) : version === 2 ? parseV2View(rawView) : version === 3 ? parseV3View(rawView) : version === 4 ? parseV4View(rawView) : undefined
     return view === undefined ? undefined : Object.freeze({ kind: 'VIEW' as const, view })
   } catch { return undefined }
+}
+
+export function parseRuntimeRiskAwarenessRead(value: unknown): RuntimeRiskAwarenessReadV1 | undefined {
+  try {
+    if (!isPlainRecord(value) || typeof own(value, 'kind') !== 'string') return undefined
+    const kind = own(value, 'kind')
+    if (own(value, 'schemaVersion') !== 1 || !isBoundedIdentifier(own(value, 'sessionId'))) return undefined
+    if (kind === 'NOT_FOUND') return exactKeys(value, ['schemaVersion', 'kind', 'sessionId'])
+      ? Object.freeze({ schemaVersion: 1 as const, kind: 'NOT_FOUND' as const, sessionId: own(value, 'sessionId') as string })
+      : undefined
+    if (kind === 'UNAVAILABLE') {
+      const reasons = own(value, 'reasonCodes')
+      if (!exactKeys(value, ['schemaVersion', 'kind', 'sessionId', 'reasonCodes']) || !isRuntimeRiskReasons(reasons)) return undefined
+      return deepFreeze({ schemaVersion: 1 as const, kind: 'UNAVAILABLE' as const, sessionId: own(value, 'sessionId'), reasonCodes: [...reasons] }) as RuntimeRiskAwarenessReadV1
+    }
+    if (kind !== 'VIEW') return undefined
+    const view = parseRuntimeRiskAwarenessView(value)
+    return view === undefined ? undefined : deepFreeze({ ...view, kind: 'VIEW' as const }) as RuntimeRiskAwarenessReadV1
+  } catch { return undefined }
+}
+
+export function freezeRuntimeRiskAwarenessRead(value: RuntimeRiskAwarenessReadV1): RuntimeRiskAwarenessReadV1 {
+  if (value.kind === 'VIEW') return deepFreeze({ ...value, reasonCodes: [...value.reasonCodes] }) as RuntimeRiskAwarenessReadV1
+  if (value.kind === 'UNAVAILABLE') return deepFreeze({ ...value, reasonCodes: [...value.reasonCodes] }) as RuntimeRiskAwarenessReadV1
+  return Object.freeze({ ...value })
+}
+
+function parseRuntimeRiskAwarenessView(value: Record<string, unknown>): RuntimeRiskAwarenessViewV1 | undefined {
+  if (!exactKeys(value, ['schemaVersion', 'kind', 'sessionId', 'executionId', 'assessmentId', 'timing', 'status', 'stage', 'capturedAt', 'updatedAt', 'reasonCodes'], ['callId', 'assessment']) || own(value, 'kind') !== 'VIEW') return undefined
+  const sessionId = own(value, 'sessionId')
+  const executionId = own(value, 'executionId')
+  const callId = own(value, 'callId')
+  const assessmentId = own(value, 'assessmentId')
+  const timing = own(value, 'timing')
+  const status = own(value, 'status')
+  const stage = own(value, 'stage')
+  const reasons = own(value, 'reasonCodes')
+  const assessmentValue = own(value, 'assessment')
+  const assessment = assessmentValue === undefined ? undefined : parseAssessment(assessmentValue)
+  if (own(value, 'schemaVersion') !== 1 || !isBoundedIdentifier(sessionId) || !isBoundedIdentifier(executionId)
+    || !isBoundedIdentifier(assessmentId) || (callId !== undefined && !isBoundedIdentifier(callId))
+    || timing !== 'PRE_EXECUTION_EVIDENCE'
+    || !isEnum(status, ['PENDING', 'READY', 'DEGRADED'])
+    || !isEnum(stage, ['CAPTURED', 'SCORING', 'COMPLETE'])
+    || !finiteNonNegative(own(value, 'capturedAt')) || !finiteNonNegative(own(value, 'updatedAt'))
+    || !isRuntimeRiskReasons(reasons) || (assessmentValue !== undefined && assessment === undefined)) return undefined
+  if (status === 'PENDING' && (stage === 'COMPLETE' || assessment !== undefined)) return undefined
+  if (status === 'READY' && (stage !== 'COMPLETE' || assessment === undefined || assessment.status !== 'COMPLETE')) return undefined
+  if (assessment !== undefined && assessment.assessmentId !== assessmentId) return undefined
+  return deepFreeze({
+    schemaVersion: 1 as const,
+    sessionId,
+    executionId,
+    ...(callId === undefined ? {} : { callId }),
+    assessmentId,
+    timing: 'PRE_EXECUTION_EVIDENCE' as const,
+    status,
+    stage,
+    capturedAt: own(value, 'capturedAt'),
+    updatedAt: own(value, 'updatedAt'),
+    reasonCodes: [...reasons],
+    ...(assessment === undefined ? {} : { assessment }),
+  }) as RuntimeRiskAwarenessViewV1
+}
+
+function isRuntimeRiskReasons(value: unknown): value is readonly RuntimeRiskReasonCodeV1[] {
+  return Array.isArray(value) && value.length <= RUNTIME_RISK_REASON_CODES_V1.length
+    && value.every(item => (RUNTIME_RISK_REASON_CODES_V1 as readonly unknown[]).includes(item))
+    && new Set(value).size === value.length
 }
 
 export function freezeBridgeRead(value: RiskAdvisorBridgeRead): RiskAdvisorBridgeRead {

@@ -47,6 +47,7 @@ import { DeepJudgeScheduler } from './deep-judge-scheduler.ts'
 import type { DeepJudgeSubagentRuntimeLike } from './deep-judge-subagent.ts'
 import { phase6View, type Phase6PresentationSource } from './presentation/presentation-source.ts'
 import type { RiskAdvisorBridgeViewV2, RiskAdvisorBridgeViewV3, RiskAdvisorBridgeViewV4 } from '../bridge-contract.ts'
+import type { RuntimeRiskAwarenessRuntime, RuntimeRiskApprovalBase } from './runtime-risk-awareness.ts'
 
 export type AssessmentAssociation = 'BOUND' | 'UNBOUND' | 'AMBIGUOUS'
 export type AssessmentStatus = 'pending' | 'unavailable' | 'cancelled' | 'not-found'
@@ -199,6 +200,7 @@ export interface AssessmentCoordinatorOptions {
   readonly fastJudge?: FastJudgeConfig
   readonly deepJudge?: DeepJudgeConfig
   readonly evidence?: EvidenceCollector
+  readonly runtimeRisk?: RuntimeRiskAwarenessRuntime
 }
 
 interface AssessmentRecord {
@@ -301,7 +303,8 @@ export class ApprovalAssessmentCoordinator {
   private readonly fastJudgeConfigInvalid: boolean
   private readonly deepJudgeConfig: NormalizedDeepJudgeConfig
   private readonly seedStore: ReviewerSeedStore
-  private readonly userRing = new DirectUserRing()
+  private readonly userRing: DirectUserRing
+  private readonly runtimeRisk: RuntimeRiskAwarenessRuntime | undefined
   private judge: LlmRuntime | undefined
   private scheduler: JudgeScheduler | undefined
   private deepScheduler: DeepJudgeScheduler | undefined
@@ -332,7 +335,9 @@ export class ApprovalAssessmentCoordinator {
     this.failureChain = options.failureChain
     this.ledger = options.ledger
     this.evidence = options.evidence
-    this.seedStore = new ReviewerSeedStore(this.clock)
+    this.runtimeRisk = options.runtimeRisk
+    this.seedStore = options.runtimeRisk?.seedStore ?? new ReviewerSeedStore(this.clock)
+    this.userRing = options.runtimeRisk?.userRing ?? new DirectUserRing()
     try { this.fastJudgeConfig = normalizeFastJudgeConfig(options.fastJudge); this.fastJudgeConfigInvalid = false } catch { this.fastJudgeConfig = normalizeFastJudgeConfig(undefined); this.fastJudgeConfigInvalid = true }
     this.deepJudgeConfig = normalizeDeepJudgeConfig(options.deepJudge)
     if (!Number.isSafeInteger(this.maxRecords) || this.maxRecords < 1 || !Number.isSafeInteger(this.completedTtlMs) || this.completedTtlMs < 1) {
@@ -384,8 +389,10 @@ export class ApprovalAssessmentCoordinator {
     this.deepScheduler = undefined
     this.judge = undefined
     this.subagents = undefined
-    this.seedStore.dispose()
-    this.userRing.dispose()
+    if (this.runtimeRisk === undefined) {
+      this.seedStore.dispose()
+      this.userRing.dispose()
+    }
     this.parentBindings.dispose()
     for (const record of this.records) {
       const session = record.sessionRef.deref()
@@ -600,8 +607,14 @@ export class ApprovalAssessmentCoordinator {
       return 'DUPLICATE'
     }
 
+    const lookup = index.lookup(session, callId)
+    const bound = lookup.status === 'FOUND'
+    const executionId = bound ? lookup.executionId : undefined
     const now = this.readClock()
     this.sweep(now)
+    let runtimeBase: RuntimeRiskApprovalBase | undefined
+    if (bound && executionId !== undefined) runtimeBase = this.runtimeRisk?.claimForApproval(session, executionId)
+
     if (this.records.size >= this.maxRecords) {
       const oldestClosed = [...this.records].find(record => record.shell.closed)
       if (oldestClosed === undefined) {
@@ -611,16 +624,19 @@ export class ApprovalAssessmentCoordinator {
       this.remove(oldestClosed)
     }
 
-    const lookup = index.lookup(session, callId)
-    const bound = lookup.status === 'FOUND'
-    const executionId = bound ? lookup.executionId : undefined
+    const canReuseRuntimeBase = runtimeBase?.kind === 'READY'
+    const runtimeUnavailable = runtimeBase?.kind === 'UNAVAILABLE'
+    const legacyFallback = runtimeBase?.kind === 'ABSENT' || runtimeBase === undefined
     const phase5Bound = bound && executionId !== undefined && this.phase5Available()
+      && (canReuseRuntimeBase || (legacyFallback && runtimeBase?.kind !== 'UNAVAILABLE'))
     const foundationDiagnostic = executionId === undefined ? undefined : this.foundation.get(executionId)
     const reasons: AssessmentReasonCode[] = phase5Bound ? [] : ['ASSESSOR_NOT_IMPLEMENTED']
+    if (runtimeUnavailable) reasons.push('CONTEXT_DEGRADED')
     if (lookup.status !== 'FOUND') reasons.push(lookupReason(lookup))
     if (foundationDiagnostic !== undefined && foundationDiagnostic.status === 'DEGRADED') reasons.push('FOUNDATION_DEGRADED')
     if (foundationDiagnostic !== undefined && foundationDiagnostic.status !== 'CAPTURED' && foundationDiagnostic.status !== 'DEGRADED') reasons.push('FOUNDATION_UNAVAILABLE')
-    const assessmentId = bound ? `ra-assessment-${randomUUID()}` : undefined
+    const sharedAssessmentId = runtimeBase?.kind === 'READY' ? runtimeBase.assessmentId : undefined
+    const assessmentId = sharedAssessmentId ?? (phase5Bound ? `ra-assessment-${randomUUID()}` : undefined)
     const shell = Object.freeze({
       schemaVersion: 1 as const,
       ...assessmentId === undefined ? {} : { assessmentId },
@@ -647,7 +663,22 @@ export class ApprovalAssessmentCoordinator {
     next.set(approvalId, record)
     if (byId === undefined) this.recordsBySession.set(session, next)
     this.records.add(record)
-    if (phase5Bound && executionId !== undefined) {
+    if (canReuseRuntimeBase && executionId !== undefined && runtimeBase?.kind === 'READY') {
+      record.phase5 = {
+        context: runtimeBase.context,
+        a1: runtimeBase.assessment,
+        latest: runtimeBase.assessment,
+        generation: 1,
+        attempted: false,
+        deepAttempted: false,
+        closed: false,
+        stage: 'rules',
+      }
+      if (runtimeBase.context.reviewerFailure !== undefined) this.addReason(record, runtimeBase.context.reviewerFailure)
+      if (this.fastJudgeConfigInvalid) this.addReason(record, 'JUDGE_CONFIG_UNAVAILABLE')
+      else if (!this.fastJudgeConfig.enabled) this.addReason(record, 'JUDGE_DISABLED')
+      this.scheduleJudge(record)
+    } else if (phase5Bound && executionId !== undefined) {
       try {
         const built = this.buildPhase5Context(session, executionId)
         const assessment = createDeterministicAssessment(built.snapshot, assessmentId!, now)
@@ -680,6 +711,7 @@ export class ApprovalAssessmentCoordinator {
       this.deepScheduler?.cancel(record.approvalId, 'DEEP_JUDGE_NATIVE_DECISION')
       this.evidence?.cancel(record.phase5.context.snapshot.executionId)
     }
+    this.runtimeRisk?.releaseApproval(session, record.shell.executionId)
     this.replaceShell(record, {
       status: outcome === 'cancelled' ? 'cancelled' : 'unavailable',
       observedOutcome: outcome,
