@@ -2,7 +2,11 @@
 
 This directory is the cross-task canonical baseline for the frozen Risk Advisor v1.2-r1 design.
 
-Authority order:
+Cross-phase product direction (prospective only):
+
+- `risk-advisor-harness-native-risk-intelligence-boundary-v1.md` — Harness-native, advisory-only product positioning and non-duplication of Harness approval/permission/control. Existing accepted phase-specific contracts still govern exact implementation, data, scoring and acceptance; this boundary does not retroactively amend them.
+
+Authority order for the accepted v1.2-r1 implementation contracts:
 
 1. `risk-advisor-v1-architecture-v1.2.md` — technical architecture and Harness seams.
 2. `risk-advisor-v1-spec-v1.2-r1.md` — product scope and safety boundaries.
