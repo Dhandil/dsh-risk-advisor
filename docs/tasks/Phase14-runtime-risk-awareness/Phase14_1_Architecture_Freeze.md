@@ -1,6 +1,6 @@
 # Risk Advisor Phase 14.1 — Runtime Risk Awareness Architecture Freeze
 
-**Status:** `RISK_ADVISOR_PHASE14_1_ARCHITECTURE_FROZEN`
+**Status:** `RISK_ADVISOR_PHASE14_1_ARCHITECTURE_FROZEN` — **independently reviewed and amended by ChatGPT architecture authority** (see `Phase14_1_Architecture_Review.md`). The initial Codex-authored Freeze was a candidate, not a self-accepted architecture.
 
 **Baseline:** `4fb0a9133ba9df111db9c2023a946f023e3fa5a2`
 
@@ -38,13 +38,17 @@ Risk aggregation is scheduled on a later event-loop turn from the captured snaps
 
 ### 2. One deterministic assessment per execution
 
-For an exact `(Session identity, ExecutionId)`, there is one deterministic base assessment, one `assessmentId`, and one frozen pre-execution context. The new runtime owns scheduling and ordinary-Tool exposure. `ApprovalAssessmentCoordinator` remains approval-triggered: on a uniquely correlated `approval/asked`, it binds to the existing record and continues its current approval-only lifecycle. It must not rerun `createDeterministicAssessment()` when a pending or completed base record exists. If there is no usable base record, the existing approval path may produce its existing unavailable/degraded shell; it may compute a base only when no base computation was created, so no execution is assessed twice. If an approval-owned Judge needs the existing bounded reviewer payload, it is built from the shared frozen local context; RuleEvaluation, feature projection and deterministic aggregation are not rebuilt.
+For an exact `(Session identity, ExecutionId)`, there is one deterministic base assessment, one `assessmentId`, and one frozen pre-execution context. The new runtime owns scheduling and ordinary-Tool exposure. `ApprovalAssessmentCoordinator` remains approval-triggered and retains its existing public query/Judge/Evidence lifecycle. The shared registry is a **single-flight state machine**, keyed by exact (Session identity, ExecutionId): `CAPTURED → SCORING → BASE_READY` or `UNAVAILABLE`. It owns the *unique base assessment ID*, frozen pre-execution context, and one-scoring-attempt claim.
+
+**Approval-before-deferred-scoring race:** on a uniquely correlated `approval/asked` while `CAPTURED`, the approval path claims and completes that same deterministic base assessment **synchronously at the existing approval-observation boundary** (never inside `tools/pre-execute`), cancels/invalidates the deferred job, and attaches the result to the approval record. This preserves the current synchronous deterministic approval baseline without adding another awaited pre-execute assessment. If `BASE_READY`, approval reuses it; if `SCORING`, an event-loop-atomic claim prevents a second scorer; if evidence is conflicted, unavailable or capture never succeeded, do not borrow another record or fabricate a base. Only when **no registry computation or frozen capture ever existed** may the legacy approval-only fallback form one base, as it did before 14.1. In every case score at most once per execution and verify distinct Sessions never share a result.
+
+Existing approval-side Judge/Evidence overlays remain independent and can create later `assessmentId` revisions; **only the deterministic A1 base ID must match between the ordinary Tool view and the approval-associated A1**. Do not require a later approval `latest` assessment/revision ID to equal the base ID. Reviewer payload is built only after approval from the shared frozen local context and existing bounded reviewer inputs, with no second risk-feature projection or deterministic aggregation.
 
 Association uses the existing correlation index and exact execution identity, never a command hash or a guessed `callId` match. Missing Session/ExecutionId, ambiguous correlation, or conflicting identity cannot borrow another record. The shared base assessment remains advisory and is not revised by approval allowed/rejected/cancelled outcomes. Existing approval-specific Judge/Evidence revisions and status handling remain governed by their frozen contract.
 
 ### 3. Evidence and semantics
 
-The base assessment may use only evidence already captured before the current Tool result:
+The base assessment may use only evidence already captured before the current Tool result; `createdAt`, opaque IDs and scheduling may differ across runs, so **deterministic** here means equal eligible inputs produce equal risk dimensions, verdict and reason semantics, not byte-identical randomly generated IDs:
 
 - existing `FoundationDiagnostic`, current `RuleEvaluation`, current pre-execution `ReviewerOperationSeed`, and prior/current-known `FailureChainSummary`;
 - the existing bounded Direct User Ring and bounded ledger summary through the current local Phase 5 context builder;
@@ -60,17 +64,19 @@ F1/F2 predicates, identity, settlement triggers, verification and Online Correct
 
 Add a separate read-only endpoint `risk-advisor/runtime-risk` (POST through the existing Host Connection fetch API). Its request schema is exactly `{sessionId}`. The versioned `RuntimeRiskAwarenessReadV1` is one of:
 
-- `VIEW`: `{schemaVersion: 1, kind: "VIEW", sessionId, executionId, assessmentId, timing: "PRE_EXECUTION_EVIDENCE", status: "PENDING" | "READY" | "DEGRADED", stage: "CAPTURED" | "SCORING" | "COMPLETE", capturedAt, updatedAt, reasonCodes, assessment?}`;
+- `VIEW`: `{schemaVersion: 1, kind: "VIEW", sessionId, executionId, callId?, assessmentId, timing: "PRE_EXECUTION_EVIDENCE", status: "PENDING" | "READY" | "DEGRADED", stage: "CAPTURED" | "SCORING" | "COMPLETE", capturedAt, updatedAt, reasonCodes, assessment?}`;
 - `NOT_FOUND`: `{schemaVersion: 1, kind: "NOT_FOUND", sessionId}`;
 - `UNAVAILABLE`: `{schemaVersion: 1, kind: "UNAVAILABLE", sessionId, reasonCodes}`.
 
 `assessment` is only the existing sanitized `BrowserRiskAssessmentV1` projection. Runtime reason codes are a fixed allowlist: `SNAPSHOT_UNAVAILABLE`, `ASSESSMENT_UNAVAILABLE`, `CAPACITY_EXCEEDED`, and `CONTEXT_DEGRADED`. A runtime item owned by Native Approval returns `NOT_FOUND` to this dock. The Host resolves the Session and returns at most one current/latest eligible assessment. Enforce exact keys, identifier limits, Session scoping, abort handling, and response-size bounds.
 
-The response exposes only assessment ID, execution ID, stage/status, timestamps, severity/recommendation, existing deterministic reason/dimension presentation, bounded safe reason codes, and explicit degradation. It must not expose seed, prompt, raw args, operation text, path/resource hints, file content, result body, approval data, internal context snapshot, or arbitrary diagnostics.
+The response exposes only assessment ID, execution ID, **an optional already-Harness-visible bounded opaque `callId` for UI suppression**, stage/status, timestamps, severity/recommendation, existing deterministic reason/dimension presentation, bounded safe reason codes, and explicit degradation. Never expose internal raw command or resource hints. If a reliable bounded callId is unavailable, omit it and make the Client suppression conservative. It must not expose seed, prompt, raw args, operation text, path/resource hints, file content, result body, approval data, internal context snapshot, or arbitrary diagnostics.
 
 Register one `conversation.input.dock` entry with id `risk-advisor-runtime-risk-awareness`, order 20. It displays one compact informational row for the active Session: risk level, advisory recommendation, one primary reason and a visible degraded/unknown caveat. An inline disclosure may show the remaining sanitized assessment; it has no approval button, permission action, confirmation flow or second modal. The copy must say this is advice and identify that its evidence was captured before execution.
 
-When a uniquely correlated Native Approval claims the same execution, the Host marks the runtime row `OWNED_BY_NATIVE_APPROVAL`; the runtime endpoint stops returning it as an ordinary dock item. The existing `conversation.approval.detail` renders the same `assessmentId` and deterministic base. No second base evaluation, duplicate approval prompt, extra approval surface, or second approval window is permitted. Online Correction remains independently addressable at order 10 and retains its current meaning.
+When a uniquely correlated Native Approval claims the same execution, the Host marks the runtime row `OWNED_BY_NATIVE_APPROVAL`; the runtime endpoint immediately suppresses it. The existing `conversation.approval.detail` reuses the same **deterministic A1 base assessment ID**; later approved Judge/Evidence revisions retain their own IDs and frozen provenance.
+
+**Client suppression must not rely on one-second polling alone**: the pinned Harness `@deepseek-ai/dsh-client-ui-session` already exposes read-only `useSessionStatus`; its `pendingInteraction` can be a native `PendingApproval` (`kind: 'approval'`, optional `callId`). The dock must use that *existing* reactive status and hide its cached item **during a matching pending approval**, even before its next RPC result arrives. Match by exact Session + bounded `callId` when both exist; when either callId is missing, suppress conservatively while that Session has a pending approval. Never register a second approval subscriber, answerer or state machine, and never change pendingInteraction. On native approval settlement, recompute eligibility from fresh Host state rather than resurrecting a stale cached item. Tests must verify this client-stale-response race. No duplicate approval prompt, second approval window or independent authorization control is permitted. Online Correction remains independent at order 10.
 
 ### 5. Bounds, privacy and lifecycle
 
@@ -78,7 +84,7 @@ When a uniquely correlated Native Approval claims the same execution, the Host m
 - At most 256 assessment records across the runtime generation; at most 64 queued deterministic assessments. Queue overflow degrades/drops only the advisory. It never back-pressures the Tool. Every record has a 10-minute hard TTL; a non-approval row has the earlier 30-second-after-result/next-assessment expiry described below.
 - At record capacity, evict the oldest expired/settled non-approval record only. Never evict a pending scorer or approval-owned record to make room; if none is eligible, report `CAPACITY_EXCEEDED` for the new advisory and continue the native path unchanged.
 - Reuse existing bounded seed/user/history limits and cap the newly retained serialized snapshot at 24,000 characters. If optional context must be omitted to meet the cap, set the existing degraded/omission semantics. Never retain raw Tool arguments beyond the existing capture path.
-- A non-approval assessment row expires 30 seconds after its `tools/result` or on the next assessment for that Session, whichever comes first. Approval-owned context follows the existing ApprovalAssessmentCoordinator 10-minute bound and closes on native decision/session disposal. In all cases generation disposal cancels pending work and clears snapshots, records, timers and Session associations.
+- A non-approval assessment row expires 30 seconds after its `tools/result` or on the next assessment for that Session, whichever comes first. An exact approval ownership transfer keeps the same base record protected from the non-approval eviction path; it follows the existing ApprovalAssessmentCoordinator 10-minute bound and closes on native decision/session disposal. In all cases generation disposal cancels pending work and clears snapshots, records, timers and Session associations.
 - Do not hold a strong Session or ToolExecution reference beyond capture; no raw prompt or seed is returned to the browser. The deterministic `RiskAssessment` is the only retained content after a non-approval snapshot is scored.
 - Client lifecycle follows the accepted Phase 12.2 contract: one stable store per Session, render only reads, retain/release in effects, one-second polling only while retained, abort/unsubscribe on stop, restart support, and full client disposal cleanup. No polling of inactive Sessions.
 
@@ -87,7 +93,7 @@ When a uniquely correlated Native Approval claims the same execution, the Host m
 - Added synchronous pre-execute work: bounded snapshot/record insertion only; p95 ≤ 1 ms and p99 ≤ 2 ms in the focused integration fixture. No synchronous six-dimension scoring in the awaited hook.
 - Deferred deterministic scoring: p95 ≤ 5 ms for the frozen maximum input (32 findings); the Tool pipeline never awaits it. Queue saturation, exception or teardown yields an unavailable advisory.
 - Client bridge: at most one request per retained Session per second; no request after final release. Payload ≤ 24,000 characters.
-- Verify no model/provider/Judge/subagent/network/storage calls in the Phase 14.1 runtime path. Do not use a real Phase 13 campaign for acceptance.
+- Verify no model/provider/Judge/subagent/network/storage calls in the **new ordinary-Tool deterministic assessment path**. Existing approval-associated optional Judge/Evidence and existing Phase 11 storage are unaffected; their already-authorized behavior is not disabled by this rule. Do not use a real Phase 13 campaign for acceptance.
 
 ## Explicit non-goals
 
