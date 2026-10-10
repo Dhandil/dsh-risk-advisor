@@ -191,6 +191,39 @@ describe('Phase 14.1 shared runtime-risk base', () => {
     fixture.runtime.dispose()
   })
 
+  it('retains the shared diagnostic ID when the exact runtime base is unavailable', async () => {
+    const fixture = setupRuntime({ maxQueued: 0 })
+    const owner = session('runtime-risk-unavailable-approval')
+    const executionId = 'ra-execution-unavailable-approval'
+    const callId = `call-${executionId}`
+    fixture.addEvaluation(executionId)
+    fixture.runtime.capturePreExecute(execution(owner, executionId, callId), executionId)
+    const captured = fixture.runtime.query(owner)
+    expect(captured.kind).toBe('VIEW')
+    if (captured.kind !== 'VIEW') throw new Error('expected a degraded shared runtime row')
+    const unavailable = fixture.runtime.claimForApproval(owner, executionId)
+    expect(unavailable.kind).toBe('UNAVAILABLE')
+    if (unavailable.kind !== 'UNAVAILABLE' || unavailable.assessmentId === undefined) {
+      throw new Error('expected the unavailable base to retain its diagnostic identity')
+    }
+
+    const coordinator = new ApprovalAssessmentCoordinator(fixture.foundation, {
+      rules: fixture.rules,
+      failureChain: fixture.failureChain,
+      ledger: fixture.ledger,
+      runtimeRisk: fixture.runtime,
+    })
+    const index = { lookup: () => ({ status: 'FOUND', executionId }) } as never
+    expect(coordinator.observeSessionEvent(owner, {
+      type: 'approval/asked', data: { id: 'runtime-risk-unavailable-approval-id', toolName: 'write', callId },
+    } as never, index)).toBe('RECORDED')
+    expect(coordinator.diagnostics.getForApproval(owner, 'runtime-risk-unavailable-approval-id'))
+      .toMatchObject({ association: 'BOUND', status: 'unavailable', assessmentId: unavailable.assessmentId })
+    expect(coordinator.diagnostics.getForApproval(owner, 'runtime-risk-unavailable-approval-id').assessment).toBeUndefined()
+    await coordinator.dispose()
+    fixture.runtime.dispose()
+  })
+
   it('reuses an already deferred-scored A1 and keeps tools/result from changing its verdict', async () => {
     const fixture = setupRuntime()
     const owner = session('runtime-risk-already-scored')

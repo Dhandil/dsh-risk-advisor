@@ -635,8 +635,10 @@ export class ApprovalAssessmentCoordinator {
     if (lookup.status !== 'FOUND') reasons.push(lookupReason(lookup))
     if (foundationDiagnostic !== undefined && foundationDiagnostic.status === 'DEGRADED') reasons.push('FOUNDATION_DEGRADED')
     if (foundationDiagnostic !== undefined && foundationDiagnostic.status !== 'CAPTURED' && foundationDiagnostic.status !== 'DEGRADED') reasons.push('FOUNDATION_UNAVAILABLE')
-    const sharedAssessmentId = runtimeBase?.kind === 'READY' ? runtimeBase.assessmentId : undefined
-    const assessmentId = sharedAssessmentId ?? (phase5Bound ? `ra-assessment-${randomUUID()}` : undefined)
+    const sharedAssessmentId = runtimeBase?.kind === 'READY' || runtimeBase?.kind === 'UNAVAILABLE'
+      ? runtimeBase.assessmentId
+      : undefined
+    const assessmentId = sharedAssessmentId ?? (bound ? `ra-assessment-${randomUUID()}` : undefined)
     const shell = Object.freeze({
       schemaVersion: 1 as const,
       ...assessmentId === undefined ? {} : { assessmentId },
