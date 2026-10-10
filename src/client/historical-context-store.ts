@@ -1,4 +1,3 @@
-import { performance } from 'node:perf_hooks'
 import type { HistoricalContextReadV1 } from '../historical-context-contract.ts'
 import type { HistoricalContextBridgeClient, HistoricalContextRequest } from './historical-context-bridge.ts'
 import type { RuntimeRiskConnectionGenerationLike, RuntimeRiskConnectionLike } from './runtime-risk-store.ts'
@@ -49,7 +48,7 @@ export class HistoricalContextStore {
   ) {
     this.setTimer = options.setTimer ?? ((callback, delay) => setTimeout(callback, delay))
     this.clearTimer = options.clearTimer ?? (timer => clearTimeout(timer))
-    this.clock = options.clock ?? (() => performance.now())
+    this.clock = options.clock ?? (() => globalThis.performance.now())
     this.wallClock = options.wallClock ?? (() => Date.now())
   }
 
@@ -132,24 +131,25 @@ export class HistoricalContextStore {
       && result.executionId === target.executionId && result.assessmentId === target.assessmentId) {
       const receivedAt = this.clock()
       const hostAge = this.wallClock() - result.observedAt
-      if (hostAge >= 0 && hostAge <= HISTORICAL_CONTEXT_MAX_FRESHNESS_MS) {
+      if (hostAge >= 0 && hostAge < HISTORICAL_CONTEXT_MAX_FRESHNESS_MS) {
         this.publish(Object.freeze({ status: 'VIEW', view: result, receivedAt }))
-        this.scheduleExpiry(receivedAt)
+        this.scheduleExpiry(receivedAt, HISTORICAL_CONTEXT_MAX_FRESHNESS_MS - hostAge)
       } else this.publish(EMPTY_SNAPSHOT)
     } else this.publish(EMPTY_SNAPSHOT)
     this.scheduleRead()
   }
 
-  private scheduleExpiry(receivedAt: number): void {
+  private scheduleExpiry(receivedAt: number, remainingFreshnessMs: number): void {
     if (this.freshnessTimer !== undefined) this.clearTimer(this.freshnessTimer)
+    const expiresAt = this.clock() + remainingFreshnessMs
     const expire = (): void => {
       this.freshnessTimer = undefined
       if (this.snapshot.status !== 'VIEW' || this.snapshot.receivedAt !== receivedAt) return
-      const remaining = HISTORICAL_CONTEXT_MAX_FRESHNESS_MS - (this.clock() - receivedAt)
+      const remaining = expiresAt - this.clock()
       if (remaining <= 0) this.publish(EMPTY_SNAPSHOT)
       else this.freshnessTimer = this.setTimer(expire, remaining)
     }
-    this.freshnessTimer = this.setTimer(expire, HISTORICAL_CONTEXT_MAX_FRESHNESS_MS)
+    this.freshnessTimer = this.setTimer(expire, remainingFreshnessMs)
   }
 
   private subscribeToConnectionGeneration(): void {

@@ -186,6 +186,49 @@ describe('Phase 14.2 historical Client H5/H6/H7/H10', () => {
     store.dispose()
   })
 
+  it('H10 expires a delayed Host snapshot from observedAt, not response receipt', async () => {
+    const clock = new Clockwork()
+    const response = Promise.withResolvers<HistoricalContextReadV1>()
+    const bridge: HistoricalContextBridgeClient = { read: () => response.promise }
+    const store = new HistoricalContextStore(bridge, 'p14-2-near-expiry-session', undefined, {
+      clock: () => clock.now, wallClock: clock.wallClock, setTimer: clock.setTimer, clearTimer: clock.clearTimer,
+    })
+    const target = { sessionId: 'p14-2-near-expiry-session', executionId: 'ra-execution-near-expiry', assessmentId: 'ra-assessment-near-expiry' }
+    const observedAt = clock.wallClock()
+    store.setTarget(target)
+    store.start()
+    await clock.advance(0)
+    await clock.advance(HISTORICAL_CONTEXT_MAX_FRESHNESS_MS - 1)
+
+    response.resolve(historicalRead(target.sessionId, target.executionId, target.assessmentId, observedAt))
+    await flush()
+    expect(store.getSnapshot()).toMatchObject({ status: 'VIEW', view: { executionId: target.executionId } })
+
+    await clock.advance(1)
+    expect(store.getSnapshot()).toEqual({ status: 'EMPTY' })
+    store.dispose()
+  })
+
+  it('H10 rejects a Host snapshot at the exact 1.5s age boundary', async () => {
+    const clock = new Clockwork()
+    const response = Promise.withResolvers<HistoricalContextReadV1>()
+    const bridge: HistoricalContextBridgeClient = { read: () => response.promise }
+    const store = new HistoricalContextStore(bridge, 'p14-2-boundary-session', undefined, {
+      clock: () => clock.now, wallClock: clock.wallClock, setTimer: clock.setTimer, clearTimer: clock.clearTimer,
+    })
+    const target = { sessionId: 'p14-2-boundary-session', executionId: 'ra-execution-boundary', assessmentId: 'ra-assessment-boundary' }
+    const observedAt = clock.wallClock()
+    store.setTarget(target)
+    store.start()
+    await clock.advance(0)
+    await clock.advance(HISTORICAL_CONTEXT_MAX_FRESHNESS_MS)
+
+    response.resolve(historicalRead(target.sessionId, target.executionId, target.assessmentId, observedAt))
+    await flush()
+    expect(store.getSnapshot()).toEqual({ status: 'EMPTY' })
+    store.dispose()
+  })
+
   it('H6 renders unchanged Guidance beneath the single ordinary risk card and suppresses late approval responses', async () => {
     const pendingHistory = Promise.withResolvers<unknown>()
     const historySignals: AbortSignal[] = []
