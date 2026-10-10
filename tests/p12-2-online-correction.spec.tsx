@@ -296,7 +296,7 @@ describe('Phase 12.2 User Advisory Surface U1-U22', () => {
     expect(bridge).not.toContain('ApprovalAssessmentCoordinator')
     expect(bridge).not.toContain('RiskEngine')
     expect(bridge).toContain("path: ONLINE_CORRECTION_ROUTE")
-    expect(hostIndex).toContain('installRiskAdvisorBrowserBridge(bridgeCtx, connection, assessments, runtimeRisk)')
+    expect(hostIndex).toContain('installRiskAdvisorBrowserBridge(bridgeCtx, connection, assessments, runtimeRisk, guidance.diagnostics)')
     expect(hostIndex).toContain('installOnlineCorrectionBrowserBridge(bridgeCtx, connection as OnlineCorrectionHostConnectionLike, liveCorrection.diagnostics)')
   })
 
