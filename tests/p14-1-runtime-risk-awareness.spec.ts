@@ -185,7 +185,8 @@ describe('Phase 14.1 shared runtime-risk base', () => {
     const viewB = fixture.runtime.query(owner)
     expect(viewB.kind).toBe('VIEW')
     if (viewB.kind !== 'VIEW') throw new Error('expected the latest execution row after scoring')
-    expect(viewB.view).toMatchObject({ executionId: executionIdB, status: 'READY' })
+    expect(viewB.view).toMatchObject({ executionId: executionIdB, stage: 'COMPLETE', status: 'DEGRADED' })
+    expect(viewB.assessment).toBeDefined()
     expect(viewB.view.assessmentId).not.toBe(baseA.assessmentId)
 
     const repeatedBaseA = fixture.runtime.claimForApproval(owner, executionIdA)
@@ -242,7 +243,8 @@ describe('Phase 14.1 shared runtime-risk base', () => {
     const viewBAfterScoring = fixture.runtime.query(owner)
     expect(viewBAfterScoring.kind).toBe('VIEW')
     if (viewBAfterScoring.kind !== 'VIEW') throw new Error('expected execution B to remain the display row')
-    expect(viewBAfterScoring.view).toMatchObject({ executionId: executionIdB, status: 'READY' })
+    expect(viewBAfterScoring.view).toMatchObject({ executionId: executionIdB, stage: 'COMPLETE', status: 'DEGRADED' })
+    expect(viewBAfterScoring.assessment).toBeDefined()
     expect(fixture.queued()).toBe(0)
     expect(coordinator.diagnostics.getForApproval(owner, 'runtime-risk-concurrent-approval-a').assessment)
       .toBe(approvalA.assessment)
@@ -293,7 +295,8 @@ describe('Phase 14.1 shared runtime-risk base', () => {
     const settled = fixture.runtime.query(owner)
     expect(settled.kind).toBe('VIEW')
     if (settled.kind !== 'VIEW') throw new Error('capacity rejection left the base hidden')
-    expect(settled.view).toMatchObject({ assessmentId: captured.view.assessmentId, status: 'READY' })
+    expect(settled.view).toMatchObject({ assessmentId: captured.view.assessmentId, stage: 'COMPLETE', status: 'DEGRADED' })
+    expect(settled.assessment).toBeDefined()
     expect(fixture.queued()).toBe(0)
 
     expect(coordinator.observeSessionEvent(blocker, {
