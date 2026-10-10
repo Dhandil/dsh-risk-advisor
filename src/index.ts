@@ -37,6 +37,8 @@ import { GuidanceRuntime } from './host/guidance-store.ts'
 import type { GuidanceDiagnostics } from './host/guidance-store.ts'
 import { LiveCorrectionRuntime } from './host/live-correction.ts'
 import type { LiveCorrectionDiagnostics } from './host/live-correction.ts'
+import { CorrectionHistoricalIdentityRegistry } from './host/correction-historical-identity.ts'
+import { installCorrectionHistoricalContextBrowserBridge } from './host/correction-historical-context-bridge.ts'
 import type { DomainFacility } from '@deepseek-ai/dsh-storage-domain'
 
 export const inject = ['tools']
@@ -111,6 +113,8 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
   const guidance = new GuidanceRuntime()
   const liveCorrection = new LiveCorrectionRuntime()
   const runtimeRisk = new RuntimeRiskAwarenessRuntime(foundation.diagnostics, rules.diagnostics, failureChain.diagnostics, ledger, { expectedEffects })
+  const correctionHistoricalIdentity = new CorrectionHistoricalIdentityRegistry()
+  ctx.effect(() => () => correctionHistoricalIdentity.dispose(), 'risk-advisor-phase14.4-correction-historical-identity-generation')
   const verifier = new PostconditionVerifier(expectedEffects, {
     onRecord: (record: VerificationRecordV1) => {
       try { liveCorrection.observeVerification(record) } catch { /* Live correction is observational. */ }
@@ -139,10 +143,17 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
       expectedEffects.capture(exec, executionId)
       evidence.seeds.capture(exec, executionId)
       runtimeRisk.capturePreExecute(exec, executionId)
+      try {
+        const session = exec.agent?.session
+        if (session !== undefined && executionId !== undefined) {
+          correctionHistoricalIdentity.capture(session, executionId, runtimeRisk.capturedPreExecuteHistoricalPatternId(session, executionId))
+        }
+      } catch { /* optional Phase 14.4 association cannot affect Tool execution */ }
       assessments.captureDeepJudgeParent(exec, executionId)
     },
     retire: (exec, result, index, executionId) => {
       failureChain.observeResult(exec, result)
+      try { correctionHistoricalIdentity.settle(exec.agent?.session, executionId) } catch { /* optional read identity only */ }
       try {
         liveCorrection.observeSettledResult(exec, executionId, executionId === undefined ? undefined : failureChain.diagnostics.get(executionId))
       } catch { /* Live correction is observational. */ }
@@ -152,7 +163,13 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
       runtimeRisk.observeResult(exec, executionId)
     },
     sessionEvent: (session, event, index) => { assessments.observeSessionEvent(session, event, index) },
-    sessionDisposed: session => { assessments.observeSessionDisposed(session); runtimeRisk.disposeSession(session); evidence.disposeSession(session); liveCorrection.disposeSession(session) },
+    sessionDisposed: session => {
+      assessments.observeSessionDisposed(session)
+      runtimeRisk.disposeSession(session)
+      evidence.disposeSession(session)
+      liveCorrection.disposeSession(session)
+      correctionHistoricalIdentity.disposeSession(session)
+    },
   })
   ctx.provide('riskAdvisorFoundation', foundation.diagnostics)
   ctx.provide('riskAdvisorAssessments', assessments.diagnostics)
@@ -196,6 +213,8 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
     if (connection !== undefined) {
       installRiskAdvisorBrowserBridge(bridgeCtx, connection, assessments, runtimeRisk, guidance.diagnostics)
       installOnlineCorrectionBrowserBridge(bridgeCtx, connection as OnlineCorrectionHostConnectionLike, liveCorrection.diagnostics)
+      installCorrectionHistoricalContextBrowserBridge(bridgeCtx, connection as OnlineCorrectionHostConnectionLike,
+        liveCorrection.diagnostics, correctionHistoricalIdentity, guidance.diagnostics)
     }
   })
   ctx.inject(['llm'], judgeCtx => {
@@ -322,3 +341,17 @@ export type {
 
 export type { LiveCorrectionDiagnostics, LiveCorrectionFindingV1, LiveCorrectionFindingKind, LiveCorrectionDiagnosisCode, LiveCorrectionAdvisoryCode, LiveCorrectionSessionView, LiveCorrectionRuntimeStatus } from './host/live-correction.ts'
 export { RISK_ADVISOR_RUNTIME_RISK_ENDPOINT, RISK_ADVISOR_RUNTIME_RISK_ROUTE, RUNTIME_RISK_REASON_CODES_V1, parseRuntimeRiskAwarenessRead } from './bridge-contract.ts'
+export {
+  CORRECTION_HISTORICAL_CONTEXT_RPC_CHANNEL,
+  CORRECTION_HISTORICAL_CONTEXT_ENDPOINT,
+  CORRECTION_HISTORICAL_CONTEXT_ROUTE,
+  CORRECTION_HISTORICAL_CONTEXT_REASON_CODES_V1,
+  parseCorrectionHistoricalContextRequest,
+  parseCorrectionHistoricalContextRead,
+} from './correction-historical-context-contract.ts'
+export type {
+  CorrectionHistoricalContextRequestV1,
+  CorrectionHistoricalContextReadV1,
+  CorrectionHistoricalContextClientResult,
+  CorrectionHistoricalContextReasonCodeV1,
+} from './correction-historical-context-contract.ts'

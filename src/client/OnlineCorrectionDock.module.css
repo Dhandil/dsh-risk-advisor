@@ -37,3 +37,37 @@
 .muted {
   color: var(--dsh-text-secondary, currentColor);
 }
+
+.history {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-left: 2px solid var(--dsh-border-subtle, rgba(127, 127, 127, 0.35));
+  color: var(--dsh-text-secondary, currentColor);
+  font-size: 12px;
+}
+
+.history summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.historyWarning {
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+}
+
+.historyFields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 3px 8px;
+  margin: 6px 0 0;
+}
+
+.historyFields dt {
+  font-weight: 600;
+}
+
+.historyFields dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}

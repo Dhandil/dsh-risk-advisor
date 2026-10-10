@@ -335,6 +335,16 @@ export class RuntimeRiskAwarenessRuntime {
     return record.historicalPatternId
   }
 
+  /** Host-private exact capture handoff for Phase 14.4; it never queries history or changes either existing accessor. */
+  capturedPreExecuteHistoricalPatternId(session: Session, executionId: ExecutionId): string | undefined {
+    if (!this.active) return undefined
+    const record = this.recordsBySession.get(session)?.get(executionId)
+    if (record === undefined || record.sessionRef.deref() !== session || record.executionId !== executionId
+      || record.sessionId !== safeIdentifier(readSessionId(session))) return undefined
+    const patternId = record.historicalPatternId
+    return typeof patternId === 'string' && /^ra-pattern-v1_[a-f0-9]{64}$/.test(patternId) ? patternId : undefined
+  }
+
   /** Approval-only projection of the pre-execute Pattern identity; ordinary history semantics stay unchanged. */
   currentApprovalHistoricalPatternId(session: Session, executionId: ExecutionId, baseAssessmentId: string): string | undefined {
     if (!this.active) return undefined
