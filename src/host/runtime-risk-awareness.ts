@@ -123,8 +123,8 @@ export class RuntimeRiskAwarenessRuntime {
     const existing = this.recordsBySession.get(session)?.get(executionId)
     if (existing !== undefined) return
 
-    const previous = this.latestBySession.get(session)
-    if (previous !== undefined && !previous.approvalOwned) this.remove(previous)
+    // This map selects the one ordinary UI row; older per-execution records
+    // remain indexed until settlement, TTL, disposal, or permitted eviction.
     if (!this.makeRoom(now)) {
       this.latestBySession.delete(session)
       this.markUnavailable(session, executionId, now, 'CAPACITY_EXCEEDED')

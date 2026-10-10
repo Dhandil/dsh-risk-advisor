@@ -612,9 +612,6 @@ export class ApprovalAssessmentCoordinator {
     const executionId = bound ? lookup.executionId : undefined
     const now = this.readClock()
     this.sweep(now)
-    let runtimeBase: RuntimeRiskApprovalBase | undefined
-    if (bound && executionId !== undefined) runtimeBase = this.runtimeRisk?.claimForApproval(session, executionId)
-
     if (this.records.size >= this.maxRecords) {
       const oldestClosed = [...this.records].find(record => record.shell.closed)
       if (oldestClosed === undefined) {
@@ -623,6 +620,11 @@ export class ApprovalAssessmentCoordinator {
       }
       this.remove(oldestClosed)
     }
+
+    // Admit the coordinator record before claiming Runtime Risk ownership so
+    // capacity rejection cannot hide or pin a base without an approval owner.
+    let runtimeBase: RuntimeRiskApprovalBase | undefined
+    if (bound && executionId !== undefined) runtimeBase = this.runtimeRisk?.claimForApproval(session, executionId)
 
     const canReuseRuntimeBase = runtimeBase?.kind === 'READY'
     const runtimeUnavailable = runtimeBase?.kind === 'UNAVAILABLE'

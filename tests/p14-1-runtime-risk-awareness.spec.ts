@@ -156,6 +156,161 @@ describe('Phase 14.1 shared runtime-risk base', () => {
     fixture.runtime.dispose()
   })
 
+  it.each([
+    ['same callId', 'runtime-risk-concurrent-shared-call', 'runtime-risk-concurrent-shared-call'],
+    ['different callIds', 'runtime-risk-concurrent-call-a', 'runtime-risk-concurrent-call-b'],
+  ])('retains an older pending execution when a newer one becomes the display row (%s)', (_label, callIdA, callIdB) => {
+    const fixture = setupRuntime()
+    const owner = session(`runtime-risk-concurrent-${_label}`)
+    const executionIdA = 'ra-execution-concurrent-a'
+    const executionIdB = 'ra-execution-concurrent-b'
+    fixture.addEvaluation(executionIdA)
+    fixture.addEvaluation(executionIdB)
+    fixture.runtime.capturePreExecute(execution(owner, executionIdA, callIdA), executionIdA)
+    const viewA = fixture.runtime.query(owner)
+    expect(viewA.kind).toBe('VIEW')
+    if (viewA.kind !== 'VIEW') throw new Error('expected the first pending execution row')
+
+    fixture.runtime.capturePreExecute(execution(owner, executionIdB, callIdB), executionIdB)
+    expect(fixture.queued()).toBe(2)
+    expect(fixture.runtime.query(owner)).toMatchObject({ kind: 'VIEW', view: { executionId: executionIdB, status: 'PENDING' } })
+
+    const baseA = fixture.runtime.claimForApproval(owner, executionIdA)
+    expect(baseA.kind).toBe('READY')
+    if (baseA.kind !== 'READY') throw new Error('older pending execution was evicted before approval')
+    expect(baseA.assessmentId).toBe(viewA.view.assessmentId)
+    expect(fixture.queued()).toBe(1)
+
+    fixture.scheduled[1]!()
+    const viewB = fixture.runtime.query(owner)
+    expect(viewB.kind).toBe('VIEW')
+    if (viewB.kind !== 'VIEW') throw new Error('expected the latest execution row after scoring')
+    expect(viewB.view).toMatchObject({ executionId: executionIdB, status: 'READY' })
+    expect(viewB.view.assessmentId).not.toBe(baseA.assessmentId)
+
+    const repeatedBaseA = fixture.runtime.claimForApproval(owner, executionIdA)
+    expect(repeatedBaseA.kind).toBe('READY')
+    if (repeatedBaseA.kind === 'READY') {
+      expect(repeatedBaseA.assessmentId).toBe(baseA.assessmentId)
+      expect(repeatedBaseA.assessment).toBe(baseA.assessment)
+    }
+    fixture.runtime.releaseApproval(owner, executionIdA)
+    expect(fixture.runtime.query(owner)).toMatchObject({ kind: 'VIEW', view: { executionId: executionIdB, status: 'READY' } })
+    expect(fixture.queued()).toBe(0)
+    fixture.runtime.dispose()
+  })
+
+  it('attaches an approval for A after B capture without replacing the latest display row', async () => {
+    const fixture = setupRuntime()
+    const owner = session('runtime-risk-concurrent-approval-after-b')
+    const executionIdA = 'ra-execution-concurrent-approval-a'
+    const executionIdB = 'ra-execution-concurrent-approval-b'
+    const callIdA = 'runtime-risk-concurrent-approval-call-a'
+    const callIdB = 'runtime-risk-concurrent-approval-call-b'
+    fixture.addEvaluation(executionIdA)
+    fixture.addEvaluation(executionIdB)
+    fixture.runtime.capturePreExecute(execution(owner, executionIdA, callIdA), executionIdA)
+    const viewA = fixture.runtime.query(owner)
+    expect(viewA.kind).toBe('VIEW')
+    if (viewA.kind !== 'VIEW') throw new Error('expected execution A row')
+    fixture.runtime.capturePreExecute(execution(owner, executionIdB, callIdB), executionIdB)
+    expect(fixture.runtime.query(owner)).toMatchObject({ kind: 'VIEW', view: { executionId: executionIdB } })
+
+    const coordinator = new ApprovalAssessmentCoordinator(fixture.foundation, {
+      rules: fixture.rules,
+      failureChain: fixture.failureChain,
+      ledger: fixture.ledger,
+      runtimeRisk: fixture.runtime,
+    })
+    const index = {
+      lookup: (_session: Session, callId: string) => callId === callIdA
+        ? { status: 'FOUND', executionId: executionIdA }
+        : callId === callIdB
+          ? { status: 'FOUND', executionId: executionIdB }
+          : { status: 'NOT_FOUND', reason: 'NO_ACTIVE_EXECUTION' },
+    } as never
+    expect(coordinator.observeSessionEvent(owner, {
+      type: 'approval/asked', data: { id: 'runtime-risk-concurrent-approval-a', toolName: 'write', callId: callIdA },
+    } as never, index)).toBe('RECORDED')
+    const approvalA = coordinator.diagnostics.getForApproval(owner, 'runtime-risk-concurrent-approval-a')
+    expect(approvalA.assessmentId).toBe(viewA.view.assessmentId)
+    expect(approvalA.assessment?.assessmentId).toBe(viewA.view.assessmentId)
+    expect(fixture.queued()).toBe(1)
+    expect(fixture.runtime.query(owner)).toMatchObject({ kind: 'VIEW', view: { executionId: executionIdB, status: 'PENDING' } })
+
+    fixture.scheduled[1]!()
+    const viewBAfterScoring = fixture.runtime.query(owner)
+    expect(viewBAfterScoring.kind).toBe('VIEW')
+    if (viewBAfterScoring.kind !== 'VIEW') throw new Error('expected execution B to remain the display row')
+    expect(viewBAfterScoring.view).toMatchObject({ executionId: executionIdB, status: 'READY' })
+    expect(fixture.queued()).toBe(0)
+    expect(coordinator.diagnostics.getForApproval(owner, 'runtime-risk-concurrent-approval-a').assessment)
+      .toBe(approvalA.assessment)
+
+    coordinator.observeSessionEvent(owner, {
+      type: 'approval/decided', data: { id: 'runtime-risk-concurrent-approval-a', outcome: 'allowed-once' },
+    } as never, index)
+    expect(fixture.runtime.query(owner)).toMatchObject({ kind: 'VIEW', view: { executionId: executionIdB, status: 'READY' } })
+    await coordinator.dispose()
+    fixture.runtime.dispose()
+  })
+
+  it('does not transfer runtime ownership when approval capacity rejects admission', async () => {
+    const fixture = setupRuntime()
+    const blocker = session('runtime-risk-approval-capacity-blocker')
+    const owner = session('runtime-risk-approval-capacity-target')
+    const executionId = 'ra-execution-approval-capacity-target'
+    const callId = 'runtime-risk-approval-capacity-target-call'
+    fixture.addEvaluation(executionId)
+    const coordinator = new ApprovalAssessmentCoordinator(fixture.foundation, {
+      maxRecords: 1,
+      rules: fixture.rules,
+      failureChain: fixture.failureChain,
+      ledger: fixture.ledger,
+      runtimeRisk: fixture.runtime,
+    })
+    const index = {
+      lookup: (candidate: Session, candidateCallId: string) => candidate === owner && candidateCallId === callId
+        ? { status: 'FOUND', executionId }
+        : { status: 'NOT_FOUND', reason: 'NO_ACTIVE_EXECUTION' },
+    } as never
+
+    expect(coordinator.observeSessionEvent(blocker, {
+      type: 'approval/asked', data: { id: 'runtime-risk-capacity-blocker-id', toolName: 'write', callId: 'blocker-call' },
+    } as never, index)).toBe('RECORDED')
+    fixture.runtime.capturePreExecute(execution(owner, executionId, callId), executionId)
+    const captured = fixture.runtime.query(owner)
+    expect(captured.kind).toBe('VIEW')
+    if (captured.kind !== 'VIEW') throw new Error('expected the target runtime base')
+
+    expect(coordinator.observeSessionEvent(owner, {
+      type: 'approval/asked', data: { id: 'runtime-risk-capacity-target-id', toolName: 'write', callId },
+    } as never, index)).toBe('CAPACITY_EXCEEDED')
+    expect(fixture.runtime.query(owner)).toMatchObject({ kind: 'VIEW', view: { assessmentId: captured.view.assessmentId, status: 'PENDING' } })
+    expect(fixture.queued()).toBe(1)
+
+    fixture.scheduled[0]!()
+    const settled = fixture.runtime.query(owner)
+    expect(settled.kind).toBe('VIEW')
+    if (settled.kind !== 'VIEW') throw new Error('capacity rejection left the base hidden')
+    expect(settled.view).toMatchObject({ assessmentId: captured.view.assessmentId, status: 'READY' })
+    expect(fixture.queued()).toBe(0)
+
+    expect(coordinator.observeSessionEvent(blocker, {
+      type: 'approval/decided', data: { id: 'runtime-risk-capacity-blocker-id', outcome: 'rejected' },
+    } as never, index)).toBe('DECIDED')
+    expect(coordinator.observeSessionEvent(owner, {
+      type: 'approval/asked', data: { id: 'runtime-risk-capacity-target-id', toolName: 'write', callId },
+    } as never, index)).toBe('RECORDED')
+    const admitted = coordinator.diagnostics.getForApproval(owner, 'runtime-risk-capacity-target-id')
+    expect(admitted.assessment?.assessmentId).toBe(settled.view.assessmentId)
+    expect(admitted.assessment).toBe(settled.assessment)
+    expect(fixture.runtime.query(owner)).toEqual({ kind: 'NOT_FOUND' })
+
+    await coordinator.dispose()
+    fixture.runtime.dispose()
+  })
+
   it('attaches approval/asked to the captured A1 ID, synchronously finishing it before its deferred job', async () => {
     const fixture = setupRuntime()
     const owner = session('runtime-risk-approval-reuse')
