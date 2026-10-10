@@ -134,9 +134,9 @@ describe('Phase 14.1 ordinary Harness Tool execution', () => {
     expect(afterResult).toMatchObject({ kind: 'VIEW', sessionId: session.id, callId: 'p14-ordinary-tool-call', timing: 'PRE_EXECUTION_EVIDENCE', stage: 'COMPLETE' })
     expect(JSON.stringify(afterResult)).not.toContain('tool-input-private-sentinel')
     expect(JSON.stringify(afterResult)).not.toContain(input.file_path)
-    expect(connection.registrations).toBe(4)
+    expect(connection.registrations).toBe(5)
     await context.fiber.dispose()
-    expect(connection.disposals).toBe(4)
+    expect(connection.disposals).toBe(5)
     context = undefined
   })
 })
