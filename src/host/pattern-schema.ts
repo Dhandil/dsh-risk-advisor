@@ -147,26 +147,70 @@ export function eligiblePatternEpisode(episode: ExperienceEpisodeV1): boolean {
     && episode.operation.networkEffect !== 'unknown'
 }
 
-export function patternIdentityFor(
-  episode: ExperienceEpisodeV1,
-  evidence: NonNullable<OutcomeRevisionV1['postconditionEvidence']>,
+/**
+ * Compact Phase 11.3 operation facts accepted by the existing Pattern identity.
+ * Phase 14.2 uses this exact helper before settlement; it deliberately accepts
+ * no target, arguments, expected-effect payload, or workspace data.
+ */
+export interface PatternIdentityOperationV1 {
+  readonly platform: ExperienceEpisodeV1['runtime']['platform'] | undefined
+  readonly toolName: string
+  readonly kind: ExperienceEpisodeV1['operation']['kind']
+  readonly parserConfidence: ExperienceEpisodeV1['operation']['parserConfidence']
+  readonly mutating: ExperienceEpisodeV1['operation']['mutating']
+  readonly externalEffect: ExperienceEpisodeV1['operation']['externalEffect']
+  readonly networkEffect: ExperienceEpisodeV1['operation']['networkEffect']
+  readonly requestedPermission?: ExperienceEpisodeV1['operation']['requestedPermission']
+}
+
+export function patternIdentityForOperation(
+  operation: PatternIdentityOperationV1,
+  evidence: Pick<NonNullable<OutcomeRevisionV1['postconditionEvidence']>, 'source' | 'adapterId'>,
 ): string | undefined {
-  if (!eligiblePatternEpisode(episode) || !supportedPatternEvidence(evidence.source, evidence.adapterId)) return undefined
+  if (!['darwin', 'win32', 'linux', 'other'].includes(operation.platform ?? '')
+    || operation.kind === 'unknown'
+    || !['filesystem-read', 'filesystem-write', 'filesystem-edit', 'shell', 'network-read'].includes(operation.kind)
+    || operation.parserConfidence !== 'high'
+    || typeof operation.mutating !== 'boolean'
+    || typeof operation.externalEffect !== 'boolean'
+    || !['none', 'read', 'write'].includes(operation.networkEffect)
+    || (operation.requestedPermission !== undefined
+      && operation.requestedPermission !== 'workspace-write' && operation.requestedPermission !== 'danger-full-access')
+    || typeof operation.toolName !== 'string' || operation.toolName.length < 1 || operation.toolName.length > 128
+    || /[\u0000-\u001f\u007f]/.test(operation.toolName)
+    || !supportedPatternEvidence(evidence.source, evidence.adapterId)) return undefined
   const canonicalTuple = JSON.stringify([
     'operation-outcome-equivalence-v1',
-    episode.runtime.platform,
-    episode.operation.toolName,
-    episode.operation.kind,
-    episode.operation.parserConfidence,
-    episode.operation.mutating,
-    episode.operation.externalEffect,
-    episode.operation.networkEffect,
-    episode.operation.requestedPermission ?? null,
+    operation.platform,
+    operation.toolName,
+    operation.kind,
+    operation.parserConfidence,
+    operation.mutating,
+    operation.externalEffect,
+    operation.networkEffect,
+    operation.requestedPermission ?? null,
     evidence.source,
     evidence.adapterId,
   ])
   const digest = createHash('sha256').update(canonicalTuple, 'utf8').digest('hex')
   return `ra-pattern-v1_${digest}`
+}
+
+export function patternIdentityFor(
+  episode: ExperienceEpisodeV1,
+  evidence: NonNullable<OutcomeRevisionV1['postconditionEvidence']>,
+): string | undefined {
+  if (!eligiblePatternEpisode(episode)) return undefined
+  return patternIdentityForOperation({
+    platform: episode.runtime.platform,
+    toolName: episode.operation.toolName,
+    kind: episode.operation.kind,
+    parserConfidence: episode.operation.parserConfidence,
+    mutating: episode.operation.mutating,
+    externalEffect: episode.operation.externalEffect,
+    networkEffect: episode.operation.networkEffect,
+    ...(episode.operation.requestedPermission === undefined ? {} : { requestedPermission: episode.operation.requestedPermission }),
+  }, evidence)
 }
 
 export function patternRevisionKey(patternId: string, revisionNumber: number): string {

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useSyncExternalStore } from 'react'
 import type { BrowserRiskAssessmentV1, RuntimeRiskAwarenessReadV1 } from '../src/bridge-contract.ts'
 import { RuntimeRiskClient } from '../src/client/runtime-risk-client.ts'
+import { HistoricalContextClient } from '../src/client/historical-context-client.ts'
 import { RuntimeRiskAwarenessDock } from '../src/client/RuntimeRiskAwarenessDock.tsx'
 import { runtimeRiskEn } from '../src/client/runtime-risk-locales.ts'
 import type { RuntimeRiskConnectionLike } from '../src/client/runtime-risk-store.ts'
@@ -65,6 +66,7 @@ function setPending(pending: unknown): void {
 function translate(key: keyof typeof runtimeRiskEn): string { return runtimeRiskEn[key] }
 
 function renderDock(client: RuntimeRiskClient) {
+  const historicalContextClient = new HistoricalContextClient({ rpc: { call: async () => carrier({ schemaVersion: 1, kind: 'NOT_FOUND', sessionId: 'runtime-risk-ui-session' }) } })
   return render(<RuntimeRiskAwarenessDock
     sessionId={'runtime-risk-ui-session' as never}
     session={{} as never}
@@ -75,6 +77,7 @@ function renderDock(client: RuntimeRiskClient) {
     useSessionStatus={useSessionStatus as never}
     useSessionRetainInfo={(() => ({})) as never}
     runtimeRiskClient={client}
+    historicalContextClient={historicalContextClient}
     t={translate as never}
   />)
 }

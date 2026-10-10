@@ -72,6 +72,12 @@ export type ExpectedEffect =
       readonly packageName: string
     }
 
+/** Privacy-safe projection used only to compute the frozen Phase 11.3 identity. */
+export interface ExpectedEffectIdentityV1 {
+  readonly source: 'tool-contract' | 'known-adapter'
+  readonly adapterId: VerificationAdapterId
+}
+
 const MAX_STRING_LENGTH = 8192
 const MAX_ARGUMENT_KEYS = 64
 const MAX_EFFECTS = 512
@@ -255,6 +261,32 @@ export class ExpectedEffectRegistry {
     if (effect === undefined) return undefined
     this.remove(effect.executionId)
     return effect
+  }
+
+  /**
+   * Read the still-live effect's identity without consuming or exposing its
+   * target, content, digest, arguments, or retained Session object.
+   */
+  peekIdentity(
+    exec: Readonly<ToolExecution>,
+    executionId: ExecutionId,
+    session: Session,
+  ): ExpectedEffectIdentityV1 | undefined {
+    if (!this.active || this.disposedExecutions.has(exec as ToolExecution)) return undefined
+    const effect = this.executions.get(exec as ToolExecution)
+    const entry = this.effects.get(executionId)
+    if (effect === undefined || entry === undefined) return undefined
+    if (effect.executionId !== executionId || effect.session !== session
+      || this.executionsById.get(executionId) !== exec
+      || this.executions.get(exec as ToolExecution) !== effect) return undefined
+    try {
+      if (exec.agent?.session !== session) return undefined
+    } catch { return undefined }
+    if (this.clock() - entry.createdAt >= EFFECT_TTL_MS) {
+      this.remove(executionId)
+      return undefined
+    }
+    return Object.freeze({ source: effect.source, adapterId: effect.adapterId })
   }
 
   disposeSession(session: Session): void {

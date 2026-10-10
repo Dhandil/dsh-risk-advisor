@@ -110,7 +110,7 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
   const patterns = new PatternRuntime()
   const guidance = new GuidanceRuntime()
   const liveCorrection = new LiveCorrectionRuntime()
-  const runtimeRisk = new RuntimeRiskAwarenessRuntime(foundation.diagnostics, rules.diagnostics, failureChain.diagnostics, ledger)
+  const runtimeRisk = new RuntimeRiskAwarenessRuntime(foundation.diagnostics, rules.diagnostics, failureChain.diagnostics, ledger, { expectedEffects })
   const verifier = new PostconditionVerifier(expectedEffects, {
     onRecord: (record: VerificationRecordV1) => {
       try { liveCorrection.observeVerification(record) } catch { /* Live correction is observational. */ }
@@ -194,7 +194,7 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
   ctx.inject(['connection', 'sessions'], bridgeCtx => {
     const connection = bridgeCtx.get('connection', false) as HostConnectionLike | undefined
     if (connection !== undefined) {
-      installRiskAdvisorBrowserBridge(bridgeCtx, connection, assessments, runtimeRisk)
+      installRiskAdvisorBrowserBridge(bridgeCtx, connection, assessments, runtimeRisk, guidance.diagnostics)
       installOnlineCorrectionBrowserBridge(bridgeCtx, connection as OnlineCorrectionHostConnectionLike, liveCorrection.diagnostics)
     }
   })

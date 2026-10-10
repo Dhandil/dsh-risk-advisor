@@ -12,6 +12,7 @@ import { OnlineCorrectionClient } from './online-correction-client.ts'
 import { OnlineCorrectionDock } from './OnlineCorrectionDock.tsx'
 import { ONLINE_CORRECTION_NS, onlineCorrectionEn, onlineCorrectionZh } from './online-correction-locales.ts'
 import { RuntimeRiskClient } from './runtime-risk-client.ts'
+import { HistoricalContextClient } from './historical-context-client.ts'
 import { RuntimeRiskAwarenessDock } from './RuntimeRiskAwarenessDock.tsx'
 import { RUNTIME_RISK_NS, runtimeRiskEn, runtimeRiskZh } from './runtime-risk-locales.ts'
 
@@ -40,12 +41,15 @@ export {
   parseOnlineCorrectionRequest,
 } from '../online-correction-contract.ts'
 export { RuntimeRiskClient } from './runtime-risk-client.ts'
+export { HistoricalContextClient } from './historical-context-client.ts'
 export { RuntimeRiskStore, RUNTIME_RISK_POLL_INTERVAL_MS } from './runtime-risk-store.ts'
 export type { RuntimeRiskStoreSnapshot } from './runtime-risk-store.ts'
 export { createRuntimeRiskBridgeClient } from './runtime-risk-bridge.ts'
 export { RuntimeRiskAwarenessDock } from './RuntimeRiskAwarenessDock.tsx'
 export { RUNTIME_RISK_NS, runtimeRiskEn, runtimeRiskZh } from './runtime-risk-locales.ts'
 export type { RuntimeRiskLocaleKey } from './runtime-risk-locales.ts'
+export { HISTORICAL_CONTEXT_ENDPOINT, HISTORICAL_CONTEXT_ROUTE, HISTORICAL_CONTEXT_REASON_CODES_V1, parseHistoricalContextRead } from '../historical-context-contract.ts'
+export type { HistoricalContextReadV1, HistoricalContextClientResult, HistoricalContextV1, HistoricalContextReasonCodeV1 } from '../historical-context-contract.ts'
 export {
   RISK_ADVISOR_RUNTIME_RISK_ENDPOINT,
   RISK_ADVISOR_RUNTIME_RISK_ROUTE,
@@ -89,13 +93,13 @@ export function apply(ctx: ClientContext): void {
       inject: () => ({ onlineCorrectionClient }),
     }, OnlineCorrectionDock))
   }
-  const installRuntimeRiskSlot = (runtimeRiskClient: RuntimeRiskClient): void => {
+  const installRuntimeRiskSlot = (runtimeRiskClient: RuntimeRiskClient, historicalContextClient: HistoricalContextClient): void => {
     ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
       name: 'conversation.input.dock',
       id: 'risk-advisor-runtime-risk-awareness',
       order: 20,
       locale: RUNTIME_RISK_NS,
-      inject: () => ({ runtimeRiskClient }),
+      inject: () => ({ runtimeRiskClient, historicalContextClient }),
     }, RuntimeRiskAwarenessDock))
   }
   const installClients = (lateConnection: ClientConnectionLike): void => {
@@ -107,7 +111,9 @@ export function apply(ctx: ClientContext): void {
     installOnlineCorrectionSlot(onlineCorrectionClient)
     const runtimeRiskClient = new RuntimeRiskClient(lateConnection)
     ctx.effect(() => () => runtimeRiskClient.dispose(), 'risk-advisor-phase14.1: runtime risk client')
-    installRuntimeRiskSlot(runtimeRiskClient)
+    const historicalContextClient = new HistoricalContextClient(lateConnection)
+    ctx.effect(() => () => historicalContextClient.dispose(), 'risk-advisor-phase14.2: historical context client')
+    installRuntimeRiskSlot(runtimeRiskClient, historicalContextClient)
   }
   const connection = ctx.get('connection', false) as ClientConnectionLike | undefined
   if (connection !== undefined) {
@@ -125,6 +131,8 @@ export function apply(ctx: ClientContext): void {
     installOnlineCorrectionSlot(onlineCorrectionClient)
     const runtimeRiskClient = new RuntimeRiskClient(lateConnection)
     connectionCtx.effect(() => () => runtimeRiskClient.dispose(), 'risk-advisor-phase14.1: runtime risk client')
-    installRuntimeRiskSlot(runtimeRiskClient)
+    const historicalContextClient = new HistoricalContextClient(lateConnection)
+    connectionCtx.effect(() => () => historicalContextClient.dispose(), 'risk-advisor-phase14.2: historical context client')
+    installRuntimeRiskSlot(runtimeRiskClient, historicalContextClient)
   })
 }

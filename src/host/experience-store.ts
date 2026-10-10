@@ -10,6 +10,8 @@ import {
   experienceEpisodeKey,
   experienceEpisodeSchema,
   MAX_EXPERIENCE_EPISODES,
+  normalizeExperiencePlatform,
+  normalizeExperienceToolName,
 } from './experience-schema.ts'
 import type { ExperienceEpisodeId, ExperienceEpisodeV1 } from './experience-schema.ts'
 
@@ -23,7 +25,6 @@ export interface ExperienceDiagnostics {
 }
 
 type ExperienceDomain = Domain<typeof experienceDomainSpec>
-type Platform = ExperienceEpisodeV1['runtime']['platform']
 type ApprovalOutcome = NonNullable<ExperienceEpisodeV1['approval']['outcome']>
 
 const ERROR_NAME = /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/
@@ -45,10 +46,6 @@ function safeReasonCodes(values: readonly unknown[]): string[] {
     if (result.length >= 32) break
   }
   return result
-}
-
-function platformOf(value: string): Platform {
-  return value === 'darwin' || value === 'win32' || value === 'linux' ? value : 'other'
 }
 
 function ownData(value: unknown, key: string): unknown {
@@ -159,16 +156,14 @@ export function createExperienceEpisode(facts: ExperienceEpisodeFacts): Experien
   const rule = facts.rules.get(executionId)
   const retry = facts.failureChain.get(executionId)
   const approval = approvalFacts(exec, executionId, facts.observations)
-  const toolName = typeof exec.name === 'string' && exec.name.length <= 128 && !/[\u0000-\u001f\u007f]/.test(exec.name)
-    ? exec.name
-    : 'unknown'
+  const toolName = normalizeExperienceToolName(exec.name)
   const reasonCodes = safeReasonCodes([...rule.reasonCodes, ...retry.reasonCodes, ...approval.reasonCodes])
   const episode = experienceEpisodeSchema.parse({
     schemaVersion: 1,
     episodeId: experienceEpisodeKey(executionId),
     sourceExecutionId: executionId,
     observedAt: facts.now ?? Date.now(),
-    runtime: { platform: platformOf(facts.platform ?? runtimePlatform()) },
+    runtime: { platform: normalizeExperiencePlatform(facts.platform ?? runtimePlatform()) },
     operation: {
       toolName,
       kind: rule.operationKind,

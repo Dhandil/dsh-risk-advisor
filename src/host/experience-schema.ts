@@ -56,6 +56,18 @@ export const experienceEpisodeSchema = z.object({
 export type ExperienceEpisodeV1 = Readonly<z.infer<typeof experienceEpisodeSchema>>
 export type ExperienceEpisodeId = string & { readonly __experienceEpisodeId: unique symbol }
 
+/** The frozen Phase 11.1 Host-platform normalization shared by all consumers. */
+export function normalizeExperiencePlatform(value: unknown): ExperienceEpisodeV1['runtime']['platform'] {
+  return value === 'darwin' || value === 'win32' || value === 'linux' ? value : 'other'
+}
+
+/** The frozen Phase 11.1 Tool-name normalization, including its unknown fallback. */
+export function normalizeExperienceToolName(value: unknown): string {
+  return typeof value === 'string' && value.length <= 128 && !/[\u0000-\u001f\u007f]/.test(value)
+    ? value
+    : 'unknown'
+}
+
 export const experienceDomainSpec = defineDomain({
   name: 'risk_advisor_experience',
   version: 1,

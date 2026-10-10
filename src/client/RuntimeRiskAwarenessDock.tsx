@@ -2,23 +2,32 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } fr
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type { BrowserRiskAssessmentV1 } from '../bridge-contract.ts'
+import type { HistoricalContextV1 } from '../historical-context-contract.ts'
+import type { HistoricalContextClient } from './historical-context-client.ts'
 import type { RuntimeRiskClient } from './runtime-risk-client.ts'
+import { HISTORICAL_CONTEXT_MAX_FRESHNESS_MS } from './historical-context-store.ts'
 import { RUNTIME_RISK_NS } from './runtime-risk-locales.ts'
 import css from './RuntimeRiskAwarenessDock.module.css'
 
-export interface RuntimeRiskAwarenessDockInjected { readonly runtimeRiskClient: RuntimeRiskClient }
+export interface RuntimeRiskAwarenessDockInjected {
+  readonly runtimeRiskClient: RuntimeRiskClient
+  readonly historicalContextClient: HistoricalContextClient
+}
 
 export type RuntimeRiskAwarenessDockProps = PropsRuntime<'conversation.input.dock'>
   & RuntimeRiskAwarenessDockInjected
   & PropsLocale<typeof RUNTIME_RISK_NS>
 
-export function RuntimeRiskAwarenessDock({ sessionId, runtimeRiskClient, useSessionStatus, t }: RuntimeRiskAwarenessDockProps) {
+export function RuntimeRiskAwarenessDock({ sessionId, runtimeRiskClient, historicalContextClient, useSessionStatus, t }: RuntimeRiskAwarenessDockProps) {
   const store = runtimeRiskClient.getSource(sessionId)
   const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot)
+  const historicalStore = historicalContextClient.getSource(sessionId)
+  const historicalSnapshot = useSyncExternalStore(historicalStore.subscribe, historicalStore.getSnapshot, historicalStore.getSnapshot)
   const pendingInteraction = useSessionStatus(state => state.get(sessionId)?.pendingInteraction)
   const pendingApproval = pendingInteraction?.kind === 'approval'
   const pendingCallId = readCallId(pendingInteraction)
   const view = snapshot.status === 'VIEW' ? snapshot.view : undefined
+  const currentView = view
   const pendingMatches = pendingApproval && (view === undefined || view.callId === undefined || pendingCallId === undefined || view.callId === pendingCallId)
   const previousPending = useRef(pendingApproval)
   const [awaitingFreshHostRead, setAwaitingFreshHostRead] = useState(false)
@@ -38,6 +47,19 @@ export function RuntimeRiskAwarenessDock({ sessionId, runtimeRiskClient, useSess
   }, [pendingMatches, pendingApproval, runtimeRiskClient, sessionId])
 
   useEffect(() => {
+    historicalContextClient.retain(sessionId)
+    return () => { historicalContextClient.release(sessionId) }
+  }, [historicalContextClient, sessionId])
+
+  useLayoutEffect(() => {
+    const target = currentView !== undefined && snapshot.status === 'VIEW' && !pendingMatches && !awaitingFreshHostRead
+      ? { executionId: currentView.executionId, assessmentId: currentView.assessmentId }
+      : undefined
+    historicalContextClient.setTarget(sessionId, target)
+    return () => { historicalContextClient.setTarget(sessionId, undefined) }
+  }, [historicalContextClient, sessionId, snapshot.status, currentView?.executionId, currentView?.assessmentId, pendingMatches, awaitingFreshHostRead])
+
+  useEffect(() => {
     if (!pendingApproval && awaitingFreshHostRead && snapshot.status !== 'EMPTY') setAwaitingFreshHostRead(false)
   }, [awaitingFreshHostRead, pendingApproval, snapshot])
 
@@ -49,13 +71,23 @@ export function RuntimeRiskAwarenessDock({ sessionId, runtimeRiskClient, useSess
     </div></div>
   }
   if (snapshot.status === 'NOT_FOUND') return null
-  if (snapshot.status !== 'VIEW') return null
+  if (currentView === undefined) return null
 
   if (pendingMatches || awaitingFreshHostRead) return null
 
-  const currentView = snapshot.view
+  const historical = historicalSnapshot.status === 'VIEW'
+    && currentView !== undefined
+    && historicalSnapshot.view.sessionId === sessionId
+    && historicalSnapshot.view.executionId === currentView.executionId
+    && historicalSnapshot.view.assessmentId === currentView.assessmentId
+    && !pendingMatches && !awaitingFreshHostRead
+    && Date.now() - historicalSnapshot.view.observedAt >= 0
+    && Date.now() - historicalSnapshot.view.observedAt <= HISTORICAL_CONTEXT_MAX_FRESHNESS_MS
+    ? historicalSnapshot.view.historical
+    : undefined
   if (currentView.status === 'PENDING') return <div className={css.dock} role="status" aria-live="polite"><div className={css.panel}>
     <div className={css.title}>{t('title')}</div><div>{t('queued')}</div><div className={css.muted}>{t('preExecution')}</div><div className={css.muted}>{t('advisory')}</div>
+    {historical !== undefined && <HistoricalContextSection historical={historical} />}
   </div></div>
 
   const assessment = currentView.assessment
@@ -73,6 +105,7 @@ export function RuntimeRiskAwarenessDock({ sessionId, runtimeRiskClient, useSess
       <div className={css.reason}><span className={css.label}>{t('reason')}: </span>{primaryReason}</div>
       <div className={degraded ? css.caveat : css.muted}>{degraded ? t('degraded') : t('preExecution')}</div>
       <div className={css.muted}>{t('advisory')}</div>
+      {historical !== undefined && <HistoricalContextSection historical={historical} />}
       {assessment !== undefined && <details className={css.details}>
         <summary>{t('details')}</summary>
         <dl>{dimensionRows(assessment).map(([name, value]) => <div className={css.dimension} key={name}>
@@ -83,6 +116,18 @@ export function RuntimeRiskAwarenessDock({ sessionId, runtimeRiskClient, useSess
       </details>}
     </div>
   </div>
+}
+
+function HistoricalContextSection({ historical }: { readonly historical: HistoricalContextV1 }) {
+  return <section className={css.historical} aria-label="Verified historical context">
+    <strong className={css.historicalHeading}>Verified historical context</strong>
+    <div className={css.muted}>Host-storage-scoped historical context; target and Workspace applicability unproven.</div>
+    <div>{historical.title}</div>
+    <div>{historical.observation}</div>
+    <div>{historical.contextCaveat}</div>
+    <div>{historical.nextCheck}</div>
+    <div>{historical.authorityNotice}</div>
+  </section>
 }
 
 function readCallId(value: unknown): string | undefined {

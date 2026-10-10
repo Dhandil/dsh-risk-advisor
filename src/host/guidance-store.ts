@@ -165,7 +165,7 @@ export class GuidanceRuntime {
     status: () => this.readStatus(),
     guidanceIds: () => this.readGuidanceIds(),
     current: (id: string) => this.readCurrent(id),
-    currentForPattern: (patternId: string) => this.readCurrent(guidanceIdFor(patternId)),
+    currentForPattern: (patternId: string) => this.readCurrentForPattern(patternId),
     revisions: (id: string) => Object.freeze([...(this.guidanceChains.get(id) ?? [])]),
     render: (id: string) => {
       const revision = this.readCurrent(id)
@@ -305,10 +305,26 @@ export class GuidanceRuntime {
     if (this.readStatus() !== 'READY' || this.projectionDirty) return undefined
     const patternId = [...this.identitiesByPattern.entries()].find(([, id]) => id === guidanceId)?.[0]
     if (patternId === undefined) return undefined
+    return this.readCurrentForReadyPattern(patternId, guidanceId)
+  }
+
+  /** Exact indexed Pattern lookup used by the Phase 14.2 per-execution read path. */
+  private readCurrentForPattern(patternId: string): VerifiedHistoricalGuidanceRevisionV1 | undefined {
+    if (this.readStatus() !== 'READY' || this.projectionDirty) return undefined
+    const guidanceId = this.identitiesByPattern.get(patternId)
+    if (guidanceId === undefined) return undefined
+    return this.readCurrentForReadyPattern(patternId, guidanceId)
+  }
+
+  private readCurrentForReadyPattern(patternId: string, guidanceId: string): VerifiedHistoricalGuidanceRevisionV1 | undefined {
+    if (this.readStatus() !== 'READY' || this.projectionDirty) return undefined
     const row = this.guidanceChains.get(guidanceId)?.at(-1)
     if (row === undefined || row.state !== 'ACTIVE' || row.patternState !== 'QUALIFIED') return undefined
     try {
-      const latest = this.patterns?.guidanceSnapshot().find(item => item.patternId === patternId)?.revisions.at(-1)
+      // PatternRuntime.current is an exact O(1) read from its fully validated
+      // chain. Avoid rebuilding/scanning the complete 60k-identity snapshot on
+      // each bounded Browser poll while retaining every source-readiness gate.
+      const latest = this.patterns?.diagnostics.current(patternId)
       if (latest === undefined || latest.state !== 'QUALIFIED'
         || latest.revisionId !== row.patternRevisionId
         || latest.provenanceDigest !== row.patternProvenanceDigest

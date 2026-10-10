@@ -11,6 +11,9 @@ import type {
   Phase6PresentationQuery,
 } from './assessment-envelope.ts'
 import type { RuntimeRiskAwarenessRuntime } from './runtime-risk-awareness.ts'
+import type { GuidanceDiagnostics } from './guidance-store.ts'
+import type { ExecutionId } from './correlation.ts'
+import { renderGuidance } from './guidance-schema.ts'
 import {
   RISK_ADVISOR_ACTIVE_ENDPOINT,
   RISK_ADVISOR_ACTIVE_ROUTE,
@@ -25,6 +28,13 @@ import {
   freezeRuntimeRiskAwarenessRead,
   type RuntimeRiskAwarenessReadV1,
 } from '../bridge-contract.ts'
+import {
+  freezeHistoricalContextRead,
+  HISTORICAL_CONTEXT_ENDPOINT,
+  HISTORICAL_CONTEXT_REASON_CODES_V1,
+  HISTORICAL_CONTEXT_ROUTE,
+  type HistoricalContextReadV1,
+} from '../historical-context-contract.ts'
 import { presentRiskAssessment } from './presentation/risk-assessment-presenter.ts'
 
 export interface HostConnectionLike {
@@ -54,11 +64,12 @@ export function installRiskAdvisorBrowserBridge(
   connection: HostConnectionLike,
   coordinator: ApprovalAssessmentCoordinator,
   runtimeRisk?: RuntimeRiskAwarenessRuntime,
+  guidance?: GuidanceDiagnostics,
 ): void {
   ctx.effect(
     async () => {
       const registrations: (() => Promise<void>)[] = []
-      const handler: ConnectionRpcHandler = (endpoint, payload, signal) => handleRiskAdvisorRpc(ctx.sessions, coordinator, endpoint, payload, signal, runtimeRisk)
+      const handler: ConnectionRpcHandler = (endpoint, payload, signal) => handleRiskAdvisorRpc(ctx.sessions, coordinator, endpoint, payload, signal, runtimeRisk, guidance)
       try {
         registrations.push(connection.fetch.register(createRiskAdvisorRoute(
           RISK_ADVISOR_ACTIVE_ROUTE,
@@ -70,6 +81,12 @@ export function installRiskAdvisorBrowserBridge(
           RISK_ADVISOR_RUNTIME_RISK_ROUTE,
           RISK_ADVISOR_RUNTIME_RISK_ENDPOINT,
           'runtime-risk',
+          handler,
+        )))
+        if (runtimeRisk !== undefined && guidance !== undefined) registrations.push(connection.fetch.register(createRiskAdvisorRoute(
+          HISTORICAL_CONTEXT_ROUTE,
+          HISTORICAL_CONTEXT_ENDPOINT,
+          'historical-context',
           handler,
         )))
         registrations.push(connection.fetch.register(createRiskAdvisorRoute(
@@ -92,8 +109,8 @@ const INVALID_REQUEST_RPC_ID = RpcId('invalid-request')
 
 function createRiskAdvisorRoute(
   path: string,
-  wireEndpoint: typeof RISK_ADVISOR_ACTIVE_ENDPOINT | typeof RISK_ADVISOR_ASSESSMENT_ENDPOINT | typeof RISK_ADVISOR_RUNTIME_RISK_ENDPOINT,
-  endpoint: 'active' | 'assessment' | 'runtime-risk',
+  wireEndpoint: typeof RISK_ADVISOR_ACTIVE_ENDPOINT | typeof RISK_ADVISOR_ASSESSMENT_ENDPOINT | typeof RISK_ADVISOR_RUNTIME_RISK_ENDPOINT | typeof HISTORICAL_CONTEXT_ENDPOINT,
+  endpoint: 'active' | 'assessment' | 'runtime-risk' | 'historical-context',
   handler: ConnectionRpcHandler,
 ): ConnectionFetchRoute {
   return {
@@ -106,8 +123,8 @@ function createRiskAdvisorRoute(
 
 async function handleConnectionFetch(
   request: Request,
-  wireEndpoint: typeof RISK_ADVISOR_ACTIVE_ENDPOINT | typeof RISK_ADVISOR_ASSESSMENT_ENDPOINT | typeof RISK_ADVISOR_RUNTIME_RISK_ENDPOINT,
-  endpoint: 'active' | 'assessment' | 'runtime-risk',
+  wireEndpoint: typeof RISK_ADVISOR_ACTIVE_ENDPOINT | typeof RISK_ADVISOR_ASSESSMENT_ENDPOINT | typeof RISK_ADVISOR_RUNTIME_RISK_ENDPOINT | typeof HISTORICAL_CONTEXT_ENDPOINT,
+  endpoint: 'active' | 'assessment' | 'runtime-risk' | 'historical-context',
   handler: ConnectionRpcHandler,
 ): Promise<Response> {
   if (request.method !== 'POST') return new Response('not found', { status: 404 })
@@ -155,16 +172,95 @@ export async function handleRiskAdvisorRpc(
   payload: unknown,
   signal: AbortSignal,
   runtimeRisk?: RuntimeRiskAwarenessRuntime,
+  guidance?: GuidanceDiagnostics,
 ): Promise<ConnectionRpcResultLike> {
   try {
     if (signal.aborted) return failure('risk-advisor/cancelled', 'request cancelled')
     if (endpoint === 'active') return await handleActive(sessions, coordinator, payload, signal)
     if (endpoint === 'assessment') return await handleAssessment(coordinator, payload, signal)
     if (endpoint === 'runtime-risk') return await handleRuntimeRisk(sessions, runtimeRisk, payload, signal)
+    if (endpoint === 'historical-context') return await handleHistoricalContext(sessions, runtimeRisk, guidance, payload, signal)
     return failure('risk-advisor/endpoint-not-found', 'endpoint not found')
   } catch {
     return failure('risk-advisor/internal', 'bridge unavailable')
   }
+}
+
+const MAX_HISTORICAL_CONTEXT_RESPONSE_CHARS = 24_000
+
+async function handleHistoricalContext(
+  sessions: SessionStore,
+  runtimeRisk: RuntimeRiskAwarenessRuntime | undefined,
+  guidance: GuidanceDiagnostics | undefined,
+  payload: unknown,
+  signal: AbortSignal,
+): Promise<ConnectionRpcResultLike> {
+  if (!isPlainRecord(payload) || !exactKeys(payload, ['sessionId', 'executionId', 'assessmentId'])
+    || !isBoundedIdentifier(payload.sessionId) || !isBoundedIdentifier(payload.executionId)
+    || !isBoundedIdentifier(payload.assessmentId)) return failure('risk-advisor/bad-request', 'invalid request')
+  const { sessionId, executionId, assessmentId } = payload
+  if (signal.aborted) return failure('risk-advisor/cancelled', 'request cancelled')
+  const session = sessions.get(sessionId as SessionId)
+  if (session === undefined) return historicalSuccess({ schemaVersion: 1, kind: 'NOT_FOUND', sessionId })
+  if (runtimeRisk === undefined || guidance === undefined) {
+    return historicalUnavailable(sessionId, HISTORICAL_CONTEXT_REASON_CODES_V1[0])
+  }
+  const patternId = runtimeRisk.currentHistoricalPatternId(session, executionId as ExecutionId, assessmentId)
+  if (patternId === undefined) return historicalSuccess({ schemaVersion: 1, kind: 'NOT_FOUND', sessionId })
+  if (signal.aborted) return failure('risk-advisor/cancelled', 'request cancelled')
+  try {
+    if (guidance.status() !== 'READY') return historicalUnavailable(sessionId, 'GUIDANCE_UNAVAILABLE')
+    const revision = guidance.currentForPattern(patternId)
+    if (signal.aborted) return failure('risk-advisor/cancelled', 'request cancelled')
+    if (revision === undefined) return guidance.status() === 'READY'
+      ? historicalSuccess({ schemaVersion: 1, kind: 'NOT_FOUND', sessionId })
+      : historicalUnavailable(sessionId, 'GUIDANCE_UNAVAILABLE')
+    if (revision.patternId !== patternId || revision.state !== 'ACTIVE' || revision.patternState !== 'QUALIFIED'
+      || revision.evidenceStrength !== 'QUALIFIED_PATTERN' || revision.supportCount === undefined
+      || revision.supportUtcDateCount === undefined || revision.guidanceId.length > 256
+      || revision.revisionId.length > 256 || revision.patternRevisionId.length > 256
+      || !/^[a-f0-9]{64}$/.test(revision.patternProvenanceDigest)) {
+      return historicalUnavailable(sessionId, 'PROJECTION_UNAVAILABLE')
+    }
+    const rendered = renderGuidance(revision)
+    if (rendered === undefined) return historicalUnavailable(sessionId, 'PROJECTION_UNAVAILABLE')
+    const value: HistoricalContextReadV1 = {
+      schemaVersion: 1,
+      kind: 'VIEW',
+      sessionId,
+      executionId,
+      assessmentId,
+      historical: {
+        guidanceId: revision.guidanceId,
+        guidanceRevisionId: revision.revisionId,
+        patternId: revision.patternId,
+        patternRevisionId: revision.patternRevisionId,
+        patternProvenanceDigest: revision.patternProvenanceDigest,
+        evidenceStrength: revision.evidenceStrength,
+        supportCount: revision.supportCount,
+        supportUtcDateCount: revision.supportUtcDateCount,
+        ...rendered,
+      },
+      observedAt: Date.now(),
+    }
+    if (JSON.stringify(value).length > MAX_HISTORICAL_CONTEXT_RESPONSE_CHARS) {
+      return historicalUnavailable(sessionId, 'PROJECTION_UNAVAILABLE')
+    }
+    return historicalSuccess(value)
+  } catch {
+    return historicalUnavailable(sessionId, 'PROJECTION_UNAVAILABLE')
+  }
+}
+
+function historicalSuccess(value: HistoricalContextReadV1): ConnectionRpcResultLike {
+  const frozen = freezeHistoricalContextRead(value)
+  return frozen === undefined
+    ? historicalUnavailable(value.sessionId, 'PROJECTION_UNAVAILABLE')
+    : Object.freeze({ ok: true as const, value: frozen })
+}
+
+function historicalUnavailable(sessionId: string, reason: 'GUIDANCE_UNAVAILABLE' | 'PROJECTION_UNAVAILABLE'): ConnectionRpcResultLike {
+  return historicalSuccess({ schemaVersion: 1, kind: 'UNAVAILABLE', sessionId, reasonCodes: [reason] })
 }
 
 const MAX_RUNTIME_RESPONSE_CHARS = 24_000

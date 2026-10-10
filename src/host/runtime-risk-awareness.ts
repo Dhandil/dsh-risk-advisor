@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { performance } from 'node:perf_hooks'
+import { platform as runtimePlatform } from 'node:os'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { ToolExecution } from '@deepseek-ai/dsh-tools'
 import type { ExecutionId } from './correlation.ts'
@@ -13,6 +14,9 @@ import type { BuiltPhase5Context, LocalPhase5Context } from './context-builder.t
 import { createDeterministicAssessment } from './risk-engine.ts'
 import type { RiskAssessment } from './risk-engine.ts'
 import type { RuntimeRiskAwarenessViewV1, RuntimeRiskReasonCodeV1 } from '../bridge-contract.ts'
+import { normalizeExperiencePlatform, normalizeExperienceToolName } from './experience-schema.ts'
+import { patternIdentityForOperation } from './pattern-schema.ts'
+import type { ExpectedEffectRegistry } from './expected-effect.ts'
 
 const MAX_RECORDS = 256
 const MAX_QUEUED = 64
@@ -28,6 +32,7 @@ interface RuntimeRecord {
   readonly sessionId: string
   readonly executionId: ExecutionId
   readonly assessmentId: string
+  readonly historicalPatternId?: string
   readonly callId?: string
   readonly capturedAt: number
   updatedAt: number
@@ -60,6 +65,7 @@ export interface RuntimeRiskAwarenessOptions {
   readonly maxRecords?: number
   readonly maxQueued?: number
   readonly schedule?: (callback: () => void) => () => void
+  readonly expectedEffects?: ExpectedEffectRegistry
 }
 
 /**
@@ -77,6 +83,7 @@ export class RuntimeRiskAwarenessRuntime {
   private readonly maxRecords: number
   private readonly maxQueued: number
   private readonly schedule: (callback: () => void) => () => void
+  private readonly expectedEffects: ExpectedEffectRegistry | undefined
   private queued = 0
   private lastClock = 0
   private active = true
@@ -95,6 +102,7 @@ export class RuntimeRiskAwarenessRuntime {
       const handle = setImmediate(callback)
       return () => clearImmediate(handle)
     })
+    this.expectedEffects = options.expectedEffects
     if (!Number.isSafeInteger(this.maxRecords) || this.maxRecords < 1
       || !Number.isSafeInteger(this.maxQueued) || this.maxQueued < 0) {
       throw new RangeError('Runtime risk bounds must be non-negative safe integers')
@@ -135,6 +143,7 @@ export class RuntimeRiskAwarenessRuntime {
     if (ruleEvaluation !== undefined) {
       try { this.seedStore.capture(executionId, exec, ruleEvaluation) } catch { /* bounded seed is advisory */ }
     }
+    const historicalPatternId = this.preExecutionPatternId(exec, session, executionId, ruleEvaluation)
     let callId: string | undefined
     try { callId = safeIdentifier(exec.callId) } catch { /* correlation may be unavailable */ }
     const record: RuntimeRecord = {
@@ -142,6 +151,7 @@ export class RuntimeRiskAwarenessRuntime {
       sessionId,
       executionId,
       assessmentId: `ra-assessment-${randomUUID()}`,
+      ...(historicalPatternId === undefined ? {} : { historicalPatternId }),
       ...(callId === undefined ? {} : { callId }),
       capturedAt: now,
       updatedAt: now,
@@ -309,6 +319,22 @@ export class RuntimeRiskAwarenessRuntime {
     return { kind: 'VIEW', view, ...(assessment === undefined ? {} : { assessment }) }
   }
 
+  /** Exact opaque Pattern match for the one current ordinary row; never a history query. */
+  currentHistoricalPatternId(session: Session, executionId: ExecutionId, assessmentId: string): string | undefined {
+    if (!this.active) return undefined
+    const now = this.readClock()
+    this.sweep(now)
+    const record = this.recordsBySession.get(session)?.get(executionId)
+    if (record === undefined || record.sessionRef.deref() !== session
+      || record.sessionId !== safeIdentifier(readSessionId(session))
+      || this.latestBySession.get(session) !== record
+      || record.assessmentId !== assessmentId
+      || record.approvalOwned
+      || record.state === 'UNAVAILABLE'
+      || record.expiresAt <= now) return undefined
+    return record.historicalPatternId
+  }
+
   disposeSession(session: Session): void {
     this.userRing.disposeSession(session)
     const records = this.recordsBySession.get(session)
@@ -351,6 +377,32 @@ export class RuntimeRiskAwarenessRuntime {
 
   private safeRuleEvaluation(executionId: ExecutionId): RuleEvaluation | undefined {
     try { return this.rules?.get(executionId) } catch { return undefined }
+  }
+
+  private preExecutionPatternId(
+    exec: ToolExecution,
+    session: Session,
+    executionId: ExecutionId,
+    evaluation: RuleEvaluation | undefined,
+  ): string | undefined {
+    if (this.expectedEffects === undefined || evaluation === undefined
+      || evaluation.executionId !== executionId || evaluation.rulesetVersion !== 'phase4-v1'
+      || evaluation.status !== 'READY') return undefined
+    let identity: ReturnType<ExpectedEffectRegistry['peekIdentity']>
+    try { identity = this.expectedEffects.peekIdentity(exec, executionId, session) } catch { return undefined }
+    if (identity === undefined) return undefined
+    try {
+      return patternIdentityForOperation({
+        platform: normalizeExperiencePlatform(runtimePlatform()),
+        toolName: normalizeExperienceToolName(exec.name),
+        kind: evaluation.operationKind,
+        parserConfidence: evaluation.parserConfidence,
+        mutating: evaluation.mutating,
+        externalEffect: evaluation.externalEffect,
+        networkEffect: evaluation.networkEffect,
+        ...(evaluation.requestedPermission === undefined ? {} : { requestedPermission: evaluation.requestedPermission }),
+      }, identity)
+    } catch { return undefined }
   }
 
   private failRecord(record: RuntimeRecord, reason: RuntimeRiskReasonCodeV1): void {
