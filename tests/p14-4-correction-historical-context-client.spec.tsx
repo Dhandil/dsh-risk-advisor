@@ -60,6 +60,11 @@ function finding(id: string, observedAt: number): BrowserOnlineCorrectionFinding
     disposition: 'ADVISE', advisoryCode: 'STOP_EXACT_RETRY_PATH_V1', observedAt })
 }
 
+function postconditionFinding(id: string, observedAt: number): BrowserOnlineCorrectionFindingV1 {
+  return Object.freeze({ findingId: id, kind: 'POSTCONDITION_NOT_SATISFIED', diagnosis: 'VERIFIED_POSTCONDITION_MISMATCH',
+    disposition: 'ADVISE', advisoryCode: 'INSPECT_UNSATISFIED_POSTCONDITION_V1', observedAt })
+}
+
 function correctionView(sessionId: string, findings: readonly BrowserOnlineCorrectionFindingV1[]): BrowserOnlineCorrectionViewV1 {
   return Object.freeze({ schemaVersion: 1, sessionId, findings, truncated: false, reasonCodes: Object.freeze([]) })
 }
@@ -95,7 +100,61 @@ describe('Phase 14.4 Client C9/C10 cancellation, generation and freshness', () =
     expect(first.getSnapshot()).toMatchObject({ status: 'VIEW' })
     client.dispose()
     expect(first.getSnapshot()).toEqual({ status: 'EMPTY' })
-    expect(() => client.getSource('p14-4-client-session')).toThrow('correction historical context client disposed')
+    expect(client.getSource('p14-4-client-session').getSnapshot()).toEqual({ status: 'EMPTY' })
+    expect(client.setFinding('p14-4-client-session', undefined)).toBe(false)
+    expect(client.retain('p14-4-client-session')).toBe(false)
+    expect(client.release('p14-4-client-session')).toBe(false)
+  })
+
+  it('B2 keeps the Session store count bounded, disables optional history at capacity, and reclaims idle stores', () => {
+    const clock = new FakeClock()
+    const env = setupStore(clock, async target => historyRead(target.sessionId, target.findingId, clock.wall))
+    const client = new CorrectionHistoricalContextClient(env.connection as never, {
+      maxStores: 2, idleRetentionMs: 1000, setTimer: clock.setTimer, clearTimer: clock.clearTimer,
+    })
+    const sessionA = 'capacity-session-a'
+    const sessionB = 'capacity-session-b'
+    const sessionC = 'capacity-session-c'
+    const sourceA = client.getSource(sessionA)
+    expect(client.retain(sessionA)).toBe(true)
+    const sourceB = client.getSource(sessionB)
+    expect(client.retain(sessionB)).toBe(true)
+    const unavailableC = client.getSource(sessionC)
+    expect(unavailableC.getSnapshot()).toEqual({ status: 'EMPTY' })
+    expect(client.setFinding(sessionC, `ra-correction-v1_${'6'.repeat(64)}`)).toBe(false)
+    expect(client.retain(sessionC)).toBe(false)
+    expect(client.getSource(sessionA)).toBe(sourceA)
+    expect(client.getSource(sessionB)).toBe(sourceB)
+
+    expect(client.release(sessionA)).toBe(true)
+    const sourceC = client.getSource(sessionC)
+    expect(sourceC).not.toBe(unavailableC)
+    expect(sourceA.getSnapshot()).toEqual({ status: 'EMPTY' })
+    expect(client.retain(sessionC)).toBe(true)
+    expect(client.getSource(sessionB)).toBe(sourceB)
+    expect(client.release(sessionB)).toBe(true)
+    expect(client.release(sessionC)).toBe(true)
+    client.dispose()
+  })
+
+  it('B2 reuses a released Session store for remount, then expires it while idle', async () => {
+    const clock = new FakeClock()
+    const env = setupStore(clock, async target => historyRead(target.sessionId, target.findingId, clock.wall))
+    const client = new CorrectionHistoricalContextClient(env.connection as never, {
+      idleRetentionMs: 1000, setTimer: clock.setTimer, clearTimer: clock.clearTimer,
+    })
+    const sessionId = 'remount-session'
+    const first = client.getSource(sessionId)
+    expect(client.setFinding(sessionId, `ra-correction-v1_${'7'.repeat(64)}`)).toBe(true)
+    expect(client.retain(sessionId)).toBe(true)
+    expect(client.release(sessionId)).toBe(true)
+    expect(client.getSource(sessionId)).toBe(first)
+    expect(client.retain(sessionId)).toBe(true)
+    expect(client.getSource(sessionId)).toBe(first)
+    expect(client.release(sessionId)).toBe(true)
+    await clock.advance(1000)
+    expect(client.getSource(sessionId)).not.toBe(first)
+    client.dispose()
   })
 
   it('C9 synchronously clears on Finding switch, throttles at 1Hz, and ignores a late old response', async () => {
@@ -166,7 +225,7 @@ describe('Phase 14.4 Client C9/C10 cancellation, generation and freshness', () =
 
 describe('Phase 14.4 OnlineCorrectionDock additive display C11', () => {
   it('keeps the original top-three advisory text and displays history only under the matching newest Finding', async () => {
-    const sessionId = 'p14-4-ui-session'
+    const sessionId = 'p14-4-client-session'
     const id1 = liveCorrectionFindingId('exec-a', 'REPEATED_FAILURE_WITHOUT_PROGRESS')
     const id2 = liveCorrectionFindingId('exec-b', 'REPEATED_FAILURE_WITHOUT_PROGRESS')
     let baseSnapshot: { readonly status: 'VIEW'; readonly view: BrowserOnlineCorrectionViewV1 } = {
@@ -203,6 +262,65 @@ describe('Phase 14.4 OnlineCorrectionDock additive display C11', () => {
     await act(async () => { for (const listener of [...baseListeners]) listener() })
     expect(view.container.querySelector('[data-correction-history]')).toBeNull()
     expect(view.container.textContent).toContain('The same operation is repeatedly failing')
+    view.unmount()
+  })
+
+  it('B1 contains optional Client render and lifecycle exceptions while preserving F1 and F2', () => {
+    const sessionId = 'p14-4-isolation-session'
+    const f1 = finding(liveCorrectionFindingId('exec-isolation-a', 'REPEATED_FAILURE_WITHOUT_PROGRESS'), 200)
+    const f2 = postconditionFinding(liveCorrectionFindingId('exec-isolation-b', 'POSTCONDITION_NOT_SATISFIED'), 100)
+    const baseSnapshot = { status: 'VIEW' as const, view: correctionView(sessionId, [f1, f2]) }
+    const baseClient = {
+      getSource: () => ({ getSnapshot: () => baseSnapshot, subscribe: (_listener: () => void) => () => undefined }),
+      retain: () => undefined, release: () => undefined,
+    }
+    const translation: Record<string, string> = {
+      title: 'Execution advisory', 'kind.f1': 'Repeated failure', 'kind.f2': 'Postcondition mismatch',
+      overflow: '{n} more', degraded: 'Some execution advisories may be unavailable.',
+      'history.label': 'Verified historical context — not a diagnosis or fix',
+      'history.warning': 'Same operation class only. Current target, Workspace and failure cause are unverified.',
+      'history.title': 'Historical note', 'history.observation': 'Evidence', 'history.caveat': 'Applicability caveat',
+      'history.nextCheck': 'Independent check', 'history.authority': 'Authority boundary',
+    }
+    const t = (key: string) => translation[key]!
+    const clock = new FakeClock()
+    const env = setupStore(clock, async target => historyRead(target.sessionId, target.findingId, clock.wall))
+    const brokenClients = [
+      {
+        getSource: () => { throw new Error('disposed getSource') },
+        setFinding: () => { throw new Error('setFinding failed') },
+        retain: () => { throw new Error('retain failed') },
+        release: () => { throw new Error('release failed') },
+      },
+      {
+        getSource: () => env.store,
+        setFinding: () => { throw new Error('setFinding failed') },
+        retain: () => { throw new Error('retain failed') },
+        release: () => { throw new Error('release failed') },
+      },
+      {
+        getSource: () => env.store,
+        setFinding: () => true,
+        retain: () => { throw new Error('retain failed') },
+        release: () => { throw new Error('release failed') },
+      },
+    ]
+
+    for (const correctionHistoricalContextClient of brokenClients) {
+      const view = render(<OnlineCorrectionDock sessionId={sessionId} onlineCorrectionClient={baseClient as never}
+        correctionHistoricalContextClient={correctionHistoricalContextClient as never} t={t as never} />)
+      expect(view.container.textContent).toContain('The same operation is repeatedly failing')
+      expect(view.container.textContent).toContain('The operation completed, but the verified expected postcondition was not satisfied.')
+      expect(view.container.querySelector('[data-online-correction-dock]')).not.toBeNull()
+      view.unmount()
+    }
+
+    const disposed = new CorrectionHistoricalContextClient(env.connection as never)
+    disposed.dispose()
+    const view = render(<OnlineCorrectionDock sessionId={sessionId} onlineCorrectionClient={baseClient as never}
+      correctionHistoricalContextClient={disposed} t={t as never} />)
+    expect(view.container.textContent).toContain('The same operation is repeatedly failing')
+    expect(view.container.textContent).toContain('The operation completed, but the verified expected postcondition was not satisfied.')
     view.unmount()
   })
 })
