@@ -1,0 +1,35 @@
+.section {
+  border-top: 1px solid var(--dsh-border-subtle, #d8dce2);
+  margin-top: 12px;
+  padding-top: 10px;
+  color: var(--dsh-text-primary, #20242a);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.warning {
+  color: var(--dsh-text-secondary, #59616d);
+  margin: 8px 0;
+}
+
+.fields {
+  display: grid;
+  grid-template-columns: minmax(100px, 0.32fr) minmax(0, 1fr);
+  gap: 6px 12px;
+  margin: 8px 0 0;
+}
+
+.fields dt {
+  color: var(--dsh-text-secondary, #59616d);
+  font-weight: 600;
+}
+
+.fields dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}

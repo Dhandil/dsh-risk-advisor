@@ -172,6 +172,10 @@ export type Phase6PresentationQuery =
   | { readonly kind: 'NOT_FOUND' }
   | { readonly kind: 'AMBIGUOUS' }
 
+export type ApprovalHistoricalBindingQuery =
+  | { readonly kind: 'VIEW'; readonly approvalId: string; readonly executionId: ExecutionId; readonly baseAssessmentId: string }
+  | { readonly kind: 'NOT_FOUND' }
+
 export interface AssessmentDiagnostics {
   readonly getForApproval: (session: Session, approvalId: string) => AssessmentDiagnostic
   readonly getAssessment: (assessmentId: string) => RiskAssessment | undefined
@@ -562,6 +566,28 @@ export class ApprovalAssessmentCoordinator {
     if (matches.length === 0) return { kind: 'NOT_FOUND' }
     if (matches.length > 1) return { kind: 'AMBIGUOUS' }
     return { kind: 'VIEW', view: phase6View(this.presentationSource(matches[0]!, session, callId)) }
+  }
+
+  /** Host-private exact approval owner for the optional native-detail history read. */
+  queryOpenApprovalHistoricalBinding(session: Session, callIdValue: unknown): ApprovalHistoricalBindingQuery {
+    if (!this.active) return { kind: 'NOT_FOUND' }
+    const callId = safeId(callIdValue, true)
+    const sessionId = safeId(session.id, true)
+    if (callId === undefined || sessionId === undefined) return { kind: 'NOT_FOUND' }
+    this.sweep(this.readClock())
+    const matches = [...this.recordsBySession.get(session)?.values() ?? []]
+      .filter(record => record.sessionRef.deref() === session && record.shell.closed === false && record.callId === callId)
+    if (matches.length !== 1) return { kind: 'NOT_FOUND' }
+    const record = matches[0]!
+    const phase5 = record.phase5
+    const executionId = record.shell.executionId
+    const baseAssessmentId = phase5?.a1.assessmentId
+    if (record.shell.sessionId !== sessionId || record.shell.association !== 'BOUND'
+      || executionId === undefined || safeId(executionId, true) !== executionId
+      || phase5 === undefined || phase5.closed
+      || typeof baseAssessmentId !== 'string' || !safeId(baseAssessmentId, true)
+      || record.shell.assessmentId !== baseAssessmentId) return { kind: 'NOT_FOUND' }
+    return Object.freeze({ kind: 'VIEW', approvalId: record.approvalId, executionId, baseAssessmentId })
   }
 
   queryOpenPresentationByAssessmentId(assessmentIdValue: unknown): Phase6PresentationQuery {

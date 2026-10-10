@@ -116,7 +116,10 @@ export async function createQualifiedHistoryFixture(options: {
  * spanning two UTC dates; no Pattern, Guidance, count, or provenance row is
  * inserted directly by this fixture.
  */
-export async function createQualifiedPatternScaleFixture(maximumPatterns: number): Promise<QualifiedPatternScaleFixture> {
+export async function createQualifiedPatternScaleFixture(
+  maximumPatterns: number,
+  options: { readonly platform?: ExperienceEpisodeV1['runtime']['platform']; readonly firstToolName?: string } = {},
+): Promise<QualifiedPatternScaleFixture> {
   if (!Number.isSafeInteger(maximumPatterns) || maximumPatterns < 1 || maximumPatterns * 3 > 10_000) {
     throw new Error('qualified-pattern-scale-exceeds-frozen-episode-capacity')
   }
@@ -132,9 +135,9 @@ export async function createQualifiedPatternScaleFixture(maximumPatterns: number
       episodeId: experienceEpisodeKey(sourceExecutionId),
       sourceExecutionId,
       observedAt: Date.UTC(2026, 0, memberOrdinal === 2 ? 2 : 1, 12),
-      runtime: { platform: 'darwin' },
+      runtime: { platform: options.platform ?? 'darwin' },
       operation: {
-        toolName: `p14-2-scale-write-${String(patternOrdinal).padStart(4, '0')}`,
+        toolName: patternOrdinal === 0 ? options.firstToolName ?? `p14-2-scale-write-${String(patternOrdinal).padStart(4, '0')}` : `p14-2-scale-write-${String(patternOrdinal).padStart(4, '0')}`,
         kind: 'filesystem-write',
         parserConfidence: 'high',
         mutating: true,

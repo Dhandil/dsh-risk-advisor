@@ -335,6 +335,23 @@ export class RuntimeRiskAwarenessRuntime {
     return record.historicalPatternId
   }
 
+  /** Approval-only projection of the pre-execute Pattern identity; ordinary history semantics stay unchanged. */
+  currentApprovalHistoricalPatternId(session: Session, executionId: ExecutionId, baseAssessmentId: string): string | undefined {
+    if (!this.active) return undefined
+    const now = this.readClock()
+    this.sweep(now)
+    const record = this.recordsBySession.get(session)?.get(executionId)
+    if (record === undefined || record.sessionRef.deref() !== session
+      || record.sessionId !== safeIdentifier(readSessionId(session))
+      || record.executionId !== executionId
+      || record.assessmentId !== baseAssessmentId
+      || !record.approvalOwned
+      || record.state !== 'BASE_READY'
+      || record.expiresAt <= now) return undefined
+    const patternId = record.historicalPatternId
+    return typeof patternId === 'string' && /^ra-pattern-v1_[a-f0-9]{64}$/.test(patternId) ? patternId : undefined
+  }
+
   disposeSession(session: Session): void {
     this.userRing.disposeSession(session)
     const records = this.recordsBySession.get(session)

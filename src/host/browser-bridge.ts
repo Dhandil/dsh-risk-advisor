@@ -35,6 +35,13 @@ import {
   HISTORICAL_CONTEXT_ROUTE,
   type HistoricalContextReadV1,
 } from '../historical-context-contract.ts'
+import {
+  APPROVAL_HISTORICAL_CONTEXT_ENDPOINT,
+  APPROVAL_HISTORICAL_CONTEXT_ROUTE,
+  parseApprovalHistoricalContextRequest,
+  freezeApprovalHistoricalContextRead,
+  type ApprovalHistoricalContextReadV1,
+} from '../approval-historical-context-contract.ts'
 import { presentRiskAssessment } from './presentation/risk-assessment-presenter.ts'
 
 export interface HostConnectionLike {
@@ -89,6 +96,12 @@ export function installRiskAdvisorBrowserBridge(
           'historical-context',
           handler,
         )))
+        if (runtimeRisk !== undefined && guidance !== undefined) registrations.push(connection.fetch.register(createRiskAdvisorRoute(
+          APPROVAL_HISTORICAL_CONTEXT_ROUTE,
+          APPROVAL_HISTORICAL_CONTEXT_ENDPOINT,
+          'approval-historical-context',
+          handler,
+        )))
         registrations.push(connection.fetch.register(createRiskAdvisorRoute(
           RISK_ADVISOR_ASSESSMENT_ROUTE,
           RISK_ADVISOR_ASSESSMENT_ENDPOINT,
@@ -109,8 +122,8 @@ const INVALID_REQUEST_RPC_ID = RpcId('invalid-request')
 
 function createRiskAdvisorRoute(
   path: string,
-  wireEndpoint: typeof RISK_ADVISOR_ACTIVE_ENDPOINT | typeof RISK_ADVISOR_ASSESSMENT_ENDPOINT | typeof RISK_ADVISOR_RUNTIME_RISK_ENDPOINT | typeof HISTORICAL_CONTEXT_ENDPOINT,
-  endpoint: 'active' | 'assessment' | 'runtime-risk' | 'historical-context',
+  wireEndpoint: typeof RISK_ADVISOR_ACTIVE_ENDPOINT | typeof RISK_ADVISOR_ASSESSMENT_ENDPOINT | typeof RISK_ADVISOR_RUNTIME_RISK_ENDPOINT | typeof HISTORICAL_CONTEXT_ENDPOINT | typeof APPROVAL_HISTORICAL_CONTEXT_ENDPOINT,
+  endpoint: 'active' | 'assessment' | 'runtime-risk' | 'historical-context' | 'approval-historical-context',
   handler: ConnectionRpcHandler,
 ): ConnectionFetchRoute {
   return {
@@ -123,8 +136,8 @@ function createRiskAdvisorRoute(
 
 async function handleConnectionFetch(
   request: Request,
-  wireEndpoint: typeof RISK_ADVISOR_ACTIVE_ENDPOINT | typeof RISK_ADVISOR_ASSESSMENT_ENDPOINT | typeof RISK_ADVISOR_RUNTIME_RISK_ENDPOINT | typeof HISTORICAL_CONTEXT_ENDPOINT,
-  endpoint: 'active' | 'assessment' | 'runtime-risk' | 'historical-context',
+  wireEndpoint: typeof RISK_ADVISOR_ACTIVE_ENDPOINT | typeof RISK_ADVISOR_ASSESSMENT_ENDPOINT | typeof RISK_ADVISOR_RUNTIME_RISK_ENDPOINT | typeof HISTORICAL_CONTEXT_ENDPOINT | typeof APPROVAL_HISTORICAL_CONTEXT_ENDPOINT,
+  endpoint: 'active' | 'assessment' | 'runtime-risk' | 'historical-context' | 'approval-historical-context',
   handler: ConnectionRpcHandler,
 ): Promise<Response> {
   if (request.method !== 'POST') return new Response('not found', { status: 404 })
@@ -180,10 +193,111 @@ export async function handleRiskAdvisorRpc(
     if (endpoint === 'assessment') return await handleAssessment(coordinator, payload, signal)
     if (endpoint === 'runtime-risk') return await handleRuntimeRisk(sessions, runtimeRisk, payload, signal)
     if (endpoint === 'historical-context') return await handleHistoricalContext(sessions, runtimeRisk, guidance, payload, signal)
+    if (endpoint === 'approval-historical-context') return await handleApprovalHistoricalContext(sessions, coordinator, runtimeRisk, guidance, payload, signal)
     return failure('risk-advisor/endpoint-not-found', 'endpoint not found')
   } catch {
     return failure('risk-advisor/internal', 'bridge unavailable')
   }
+}
+
+async function handleApprovalHistoricalContext(
+  sessions: SessionStore,
+  coordinator: ApprovalAssessmentCoordinator,
+  runtimeRisk: RuntimeRiskAwarenessRuntime | undefined,
+  guidance: GuidanceDiagnostics | undefined,
+  payload: unknown,
+  signal: AbortSignal,
+): Promise<ConnectionRpcResultLike> {
+  const request = parseApprovalHistoricalContextRequest(payload)
+  if (request === undefined) return failure('risk-advisor/bad-request', 'invalid request')
+  const { sessionId, callId } = request
+  if (signal.aborted) return failure('risk-advisor/cancelled', 'request cancelled')
+  const session = sessions.get(sessionId as SessionId)
+  if (session === undefined) return approvalHistoricalSuccess({ schemaVersion: 1, kind: 'NOT_FOUND', sessionId, callId })
+  if (runtimeRisk === undefined || guidance === undefined) return approvalHistoricalUnavailable(sessionId, callId, 'GUIDANCE_UNAVAILABLE')
+
+  const binding = coordinator.queryOpenApprovalHistoricalBinding(session, callId)
+  if (binding.kind !== 'VIEW') return approvalHistoricalSuccess({ schemaVersion: 1, kind: 'NOT_FOUND', sessionId, callId })
+  const patternId = runtimeRisk.currentApprovalHistoricalPatternId(session, binding.executionId, binding.baseAssessmentId)
+  if (patternId === undefined) return approvalHistoricalSuccess({ schemaVersion: 1, kind: 'NOT_FOUND', sessionId, callId })
+  if (signal.aborted) return failure('risk-advisor/cancelled', 'request cancelled')
+
+  try {
+    if (guidance.status() !== 'READY') return approvalHistoricalUnavailable(sessionId, callId, 'GUIDANCE_UNAVAILABLE')
+    const revision = guidance.currentForPattern(patternId)
+    if (signal.aborted) return failure('risk-advisor/cancelled', 'request cancelled')
+    if (revision === undefined) return guidance.status() === 'READY'
+      ? approvalHistoricalSuccess({ schemaVersion: 1, kind: 'NOT_FOUND', sessionId, callId })
+      : approvalHistoricalUnavailable(sessionId, callId, 'GUIDANCE_UNAVAILABLE')
+    if (!eligibleApprovalGuidance(revision, patternId)) return approvalHistoricalUnavailable(sessionId, callId, 'PROJECTION_UNAVAILABLE')
+    const rendered = renderGuidance(revision)
+    if (rendered === undefined) return approvalHistoricalUnavailable(sessionId, callId, 'PROJECTION_UNAVAILABLE')
+
+    // Reconfirm every authority-bearing identity after projection and before disclosure.
+    if (signal.aborted) return failure('risk-advisor/cancelled', 'request cancelled')
+    if (sessions.get(sessionId as SessionId) !== session) return approvalHistoricalSuccess({ schemaVersion: 1, kind: 'NOT_FOUND', sessionId, callId })
+    const currentBinding = coordinator.queryOpenApprovalHistoricalBinding(session, callId)
+    const currentPatternId = runtimeRisk.currentApprovalHistoricalPatternId(session, binding.executionId, binding.baseAssessmentId)
+    if (currentBinding.kind !== 'VIEW' || currentPatternId !== patternId
+      || currentBinding.approvalId !== binding.approvalId
+      || currentBinding.executionId !== binding.executionId
+      || currentBinding.baseAssessmentId !== binding.baseAssessmentId) {
+      return approvalHistoricalSuccess({ schemaVersion: 1, kind: 'NOT_FOUND', sessionId, callId })
+    }
+    if (guidance.status() !== 'READY') return approvalHistoricalUnavailable(sessionId, callId, 'GUIDANCE_UNAVAILABLE')
+    const latestRevision = guidance.currentForPattern(patternId)
+    if (latestRevision === undefined) return approvalHistoricalSuccess({ schemaVersion: 1, kind: 'NOT_FOUND', sessionId, callId })
+    if (!eligibleApprovalGuidance(latestRevision, patternId)) return approvalHistoricalUnavailable(sessionId, callId, 'PROJECTION_UNAVAILABLE')
+    if (latestRevision.revisionId !== revision.revisionId
+      || latestRevision.patternRevisionId !== revision.patternRevisionId
+      || latestRevision.patternProvenanceDigest !== revision.patternProvenanceDigest) {
+      return approvalHistoricalUnavailable(sessionId, callId, 'PROJECTION_UNAVAILABLE')
+    }
+    const value: ApprovalHistoricalContextReadV1 = {
+      schemaVersion: 1,
+      kind: 'VIEW',
+      sessionId,
+      callId,
+      approvalId: binding.approvalId,
+      executionId: binding.executionId,
+      baseAssessmentId: binding.baseAssessmentId,
+      historical: {
+        guidanceId: revision.guidanceId,
+        guidanceRevisionId: revision.revisionId,
+        patternId: revision.patternId,
+        patternRevisionId: revision.patternRevisionId,
+        patternProvenanceDigest: revision.patternProvenanceDigest,
+        evidenceStrength: revision.evidenceStrength!,
+        supportCount: revision.supportCount!,
+        supportUtcDateCount: revision.supportUtcDateCount!,
+        ...rendered,
+      },
+      observedAt: Date.now(),
+    }
+    if (JSON.stringify(value).length > MAX_HISTORICAL_CONTEXT_RESPONSE_CHARS) return approvalHistoricalUnavailable(sessionId, callId, 'PROJECTION_UNAVAILABLE')
+    return approvalHistoricalSuccess(value)
+  } catch {
+    return approvalHistoricalUnavailable(sessionId, callId, 'PROJECTION_UNAVAILABLE')
+  }
+}
+
+function eligibleApprovalGuidance(revision: NonNullable<ReturnType<GuidanceDiagnostics['currentForPattern']>>, patternId: string): boolean {
+  return revision.patternId === patternId && revision.state === 'ACTIVE' && revision.patternState === 'QUALIFIED'
+    && revision.evidenceStrength === 'QUALIFIED_PATTERN' && revision.supportCount !== undefined
+    && revision.supportUtcDateCount !== undefined && revision.guidanceId.length <= 256
+    && revision.revisionId.length <= 256 && revision.patternRevisionId.length <= 256
+    && /^[a-f0-9]{64}$/.test(revision.patternProvenanceDigest)
+}
+
+function approvalHistoricalSuccess(value: ApprovalHistoricalContextReadV1): ConnectionRpcResultLike {
+  const frozen = freezeApprovalHistoricalContextRead(value)
+  return frozen === undefined
+    ? approvalHistoricalUnavailable(value.sessionId, value.callId, 'PROJECTION_UNAVAILABLE')
+    : Object.freeze({ ok: true as const, value: frozen })
+}
+
+function approvalHistoricalUnavailable(sessionId: string, callId: string, reason: 'GUIDANCE_UNAVAILABLE' | 'PROJECTION_UNAVAILABLE'): ConnectionRpcResultLike {
+  return approvalHistoricalSuccess({ schemaVersion: 1, kind: 'UNAVAILABLE', sessionId, callId, reasonCodes: [reason] })
 }
 
 const MAX_HISTORICAL_CONTEXT_RESPONSE_CHARS = 24_000

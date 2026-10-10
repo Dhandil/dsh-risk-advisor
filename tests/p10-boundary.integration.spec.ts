@@ -1,7 +1,12 @@
 import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
 
-const PRODUCT_FILES = ['src/index.ts', 'src/host/assessment-envelope.ts', 'src/host/fast-judge.ts', 'src/host/deep-judge.ts', 'src/host/evidence-collector.ts', 'src/client/RiskAdvisorDetail.tsx']
+const PRODUCT_FILES = [
+  'src/index.ts', 'src/host/assessment-envelope.ts', 'src/host/fast-judge.ts', 'src/host/deep-judge.ts',
+  'src/host/evidence-collector.ts', 'src/host/browser-bridge.ts', 'src/client/RiskAdvisorDetail.tsx',
+  'src/client/approval-historical-context-bridge.ts', 'src/client/approval-historical-context-client.ts',
+  'src/client/approval-historical-context-store.ts', 'src/approval-historical-context-contract.ts',
+]
 
 describe('Phase 10 product boundary audit', () => {
   it('does not add a Risk Advisor answerer, mutation RPC, hidden tool, or custom session event', async () => {

@@ -1,12 +1,17 @@
 import { performance } from 'node:perf_hooks'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MAX_EXPERIENCE_EPISODES } from '../src/host/experience-schema.ts'
+import { platform as runtimePlatform } from 'node:os'
+import { normalizeExperiencePlatform } from '../src/host/experience-schema.ts'
+import { createApprovalHistoryPerformanceProbe } from './p14-3-approval-history-performance.ts'
 import type { QualifiedHistoryFixture, QualifiedPatternScaleFixture } from './p14-2-historical-context-fixtures.ts'
 import { createQualifiedHistoryFixture, createQualifiedPatternScaleFixture } from './p14-2-historical-context-fixtures.ts'
 
 const fixtures: QualifiedHistoryFixture[] = []
 const scaleFixtures: QualifiedPatternScaleFixture[] = []
+const approvalProbes: ReturnType<typeof createApprovalHistoryPerformanceProbe>[] = []
 afterEach(async () => {
+  await Promise.all(approvalProbes.splice(0).map(probe => probe.dispose()))
   await Promise.all(fixtures.splice(0).map(fixture => fixture.close()))
   await Promise.all(scaleFixtures.splice(0).map(fixture => fixture.close()))
 })
@@ -46,8 +51,13 @@ describe('Phase 14.2 H10 bounded exact Guidance lookup', () => {
 
   it('measures real trusted qualified Guidance at 1, 1,000, and the frozen Episode-capacity maximum of 3,333 identities', async () => {
     const maximumPatterns = Math.floor(MAX_EXPERIENCE_EPISODES / 3)
-    const fixture = await createQualifiedPatternScaleFixture(maximumPatterns)
+    const fixture = await createQualifiedPatternScaleFixture(maximumPatterns, {
+      platform: normalizeExperiencePlatform(runtimePlatform()),
+      firstToolName: 'write',
+    })
     scaleFixtures.push(fixture)
+    const approvalProbe = createApprovalHistoryPerformanceProbe(fixture)
+    approvalProbes.push(approvalProbe)
     expect(fixture.episodes).toHaveLength(maximumPatterns * 3)
     expect(fixture.episodes.length).toBeLessThanOrEqual(MAX_EXPERIENCE_EPISODES)
 
@@ -61,6 +71,9 @@ describe('Phase 14.2 H10 bounded exact Guidance lookup', () => {
       expect(guidance.diagnostics.status()).toBe('READY')
       expect(patternIds).toHaveLength(patternCount)
       expect(guidanceIds).toHaveLength(patternCount)
+
+      const approvalLatency = await approvalProbe.sample(guidance.diagnostics, patternCount)
+      console.info(`P14.3 actual approval-bound Host lookup (${patternCount} qualified Pattern/Guidance identities) latency ms: ${JSON.stringify(approvalLatency)}`)
 
       for (const id of patternIds) {
         const pattern = fixture.patterns.diagnostics.current(id)
