@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { BrowserOnlineCorrectionFindingV1, BrowserOnlineCorrectionViewV1 } from '../src/online-correction-contract.ts'
 import type { CorrectionHistoricalContextReadV1 } from '../src/correction-historical-context-contract.ts'
 import { CorrectionHistoricalContextStore } from '../src/client/correction-historical-context-store.ts'
-import { CorrectionHistoricalContextClient } from '../src/client/correction-historical-context-client.ts'
+import { CORRECTION_HISTORICAL_CONTEXT_MAX_SESSION_STORES, CorrectionHistoricalContextClient } from '../src/client/correction-historical-context-client.ts'
 import { OnlineCorrectionDock } from '../src/client/OnlineCorrectionDock.tsx'
 import { liveCorrectionFindingId } from '../src/host/live-correction.ts'
 
@@ -154,6 +154,29 @@ describe('Phase 14.4 Client C9/C10 cancellation, generation and freshness', () =
     expect(client.release(sessionId)).toBe(true)
     await clock.advance(1000)
     expect(client.getSource(sessionId)).not.toBe(first)
+    client.dispose()
+  })
+
+  it('B2 bounds repeated Session switching and retains only the most recently used idle stores', () => {
+    expect(CORRECTION_HISTORICAL_CONTEXT_MAX_SESSION_STORES).toBe(64)
+    const clock = new FakeClock()
+    const env = setupStore(clock, async target => historyRead(target.sessionId, target.findingId, clock.wall))
+    const client = new CorrectionHistoricalContextClient(env.connection as never, {
+      maxStores: 4, idleRetentionMs: 10_000, setTimer: clock.setTimer, clearTimer: clock.clearTimer,
+    })
+    let first: ReturnType<typeof client.getSource> | undefined
+    let latest: ReturnType<typeof client.getSource> | undefined
+    for (let index = 0; index < 128; index += 1) {
+      const sessionId = `batch-session-${index}`
+      const source = client.getSource(sessionId)
+      if (index === 0) first = source
+      latest = source
+      expect(client.retain(sessionId)).toBe(true)
+      expect(client.getSource(sessionId)).toBe(source)
+      expect(client.release(sessionId)).toBe(true)
+    }
+    expect(client.getSource('batch-session-0')).not.toBe(first)
+    expect(client.getSource('batch-session-127')).toBe(latest)
     client.dispose()
   })
 
