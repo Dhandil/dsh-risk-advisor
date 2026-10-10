@@ -71,3 +71,23 @@
   margin: 0;
   overflow-wrap: anywhere;
 }
+
+.nextCheck {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-left: 2px solid var(--dsh-border-subtle, rgba(127, 127, 127, 0.35));
+  color: var(--dsh-text-secondary, currentColor);
+  font-size: 12px;
+}
+
+.nextCheck summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.nextCheckWarning,
+.nextCheckEvidence,
+.nextCheckBody {
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+}

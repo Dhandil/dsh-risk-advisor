@@ -10,6 +10,7 @@ import { PresentationClient } from './presentation-client.ts'
 import type { ClientConnectionLike } from './presentation-store.ts'
 import { OnlineCorrectionClient } from './online-correction-client.ts'
 import { CorrectionHistoricalContextClient } from './correction-historical-context-client.ts'
+import { CorrectionNextCheckClient } from './correction-next-check-client.ts'
 import { OnlineCorrectionDock } from './OnlineCorrectionDock.tsx'
 import { ONLINE_CORRECTION_NS, onlineCorrectionEn, onlineCorrectionZh } from './online-correction-locales.ts'
 import { RuntimeRiskClient } from './runtime-risk-client.ts'
@@ -30,6 +31,28 @@ export { en, NS, zh } from './locales.ts'
 export { OnlineCorrectionClient } from './online-correction-client.ts'
 export { OnlineCorrectionDock, renderOnlineCorrectionAdvisory } from './OnlineCorrectionDock.tsx'
 export { CorrectionHistoricalContextClient } from './correction-historical-context-client.ts'
+export { CorrectionNextCheckClient, CORRECTION_NEXT_CHECK_MAX_SESSION_STORES, CORRECTION_NEXT_CHECK_IDLE_RETENTION_MS } from './correction-next-check-client.ts'
+export { CorrectionNextCheckStore, CORRECTION_NEXT_CHECK_MIN_READ_INTERVAL_MS, CORRECTION_NEXT_CHECK_MAX_FRESHNESS_MS } from './correction-next-check-store.ts'
+export { createCorrectionNextCheckBridgeClient } from './correction-next-check-bridge.ts'
+export type { CorrectionNextCheckBridgeClient, CorrectionNextCheckRpcLike } from './correction-next-check-bridge.ts'
+export type { CorrectionNextCheckStoreSnapshot, CorrectionNextCheckStoreOptions } from './correction-next-check-store.ts'
+export type { CorrectionNextCheckStoreSource, CorrectionNextCheckClientOptions } from './correction-next-check-client.ts'
+export {
+  CORRECTION_NEXT_CHECK_RPC_CHANNEL,
+  CORRECTION_NEXT_CHECK_ENDPOINT,
+  CORRECTION_NEXT_CHECK_ROUTE,
+  CORRECTION_NEXT_CHECK_REASON_CODES_V1,
+  parseCorrectionNextCheckRequest,
+  parseCorrectionNextCheckRead,
+} from '../correction-next-check-contract.ts'
+export type {
+  CorrectionNextCheckRequestV1,
+  CorrectionNextCheckReadV1,
+  CorrectionNextCheckClientResult,
+  CorrectionNextCheckReasonCodeV1,
+  CorrectionNextCheckEvidenceCodeV1,
+  CorrectionNextCheckCodeV1,
+} from '../correction-next-check-contract.ts'
 export { CorrectionHistoricalContextStore, CORRECTION_HISTORICAL_CONTEXT_MIN_READ_INTERVAL_MS, CORRECTION_HISTORICAL_CONTEXT_MAX_FRESHNESS_MS } from './correction-historical-context-store.ts'
 export { createCorrectionHistoricalContextBridgeClient } from './correction-historical-context-bridge.ts'
 export {
@@ -117,13 +140,14 @@ export function apply(ctx: ClientContext): void {
   const installOnlineCorrectionSlot = (
     onlineCorrectionClient: OnlineCorrectionClient,
     correctionHistoricalContextClient: CorrectionHistoricalContextClient,
+    correctionNextCheckClient: CorrectionNextCheckClient,
   ): void => {
     ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
       name: 'conversation.input.dock',
       id: 'risk-advisor-online-correction',
       order: 10,
       locale: ONLINE_CORRECTION_NS,
-      inject: () => ({ onlineCorrectionClient, correctionHistoricalContextClient }),
+      inject: () => ({ onlineCorrectionClient, correctionHistoricalContextClient, correctionNextCheckClient }),
     }, OnlineCorrectionDock))
   }
   const installRuntimeRiskSlot = (runtimeRiskClient: RuntimeRiskClient, historicalContextClient: HistoricalContextClient): void => {
@@ -145,7 +169,9 @@ export function apply(ctx: ClientContext): void {
     ctx.effect(() => () => onlineCorrectionClient.dispose(), 'risk-advisor-phase12.2: online correction client')
     const correctionHistoricalContextClient = new CorrectionHistoricalContextClient(lateConnection)
     ctx.effect(() => () => correctionHistoricalContextClient.dispose(), 'risk-advisor-phase14.4: correction history client')
-    installOnlineCorrectionSlot(onlineCorrectionClient, correctionHistoricalContextClient)
+    const correctionNextCheckClient = new CorrectionNextCheckClient(lateConnection)
+    ctx.effect(() => () => correctionNextCheckClient.dispose(), 'risk-advisor-phase14.5: correction next check client')
+    installOnlineCorrectionSlot(onlineCorrectionClient, correctionHistoricalContextClient, correctionNextCheckClient)
     const runtimeRiskClient = new RuntimeRiskClient(lateConnection)
     ctx.effect(() => () => runtimeRiskClient.dispose(), 'risk-advisor-phase14.1: runtime risk client')
     const historicalContextClient = new HistoricalContextClient(lateConnection)
@@ -169,7 +195,9 @@ export function apply(ctx: ClientContext): void {
     connectionCtx.effect(() => () => onlineCorrectionClient.dispose(), 'risk-advisor-phase12.2: online correction client')
     const correctionHistoricalContextClient = new CorrectionHistoricalContextClient(lateConnection)
     connectionCtx.effect(() => () => correctionHistoricalContextClient.dispose(), 'risk-advisor-phase14.4: correction history client')
-    installOnlineCorrectionSlot(onlineCorrectionClient, correctionHistoricalContextClient)
+    const correctionNextCheckClient = new CorrectionNextCheckClient(lateConnection)
+    connectionCtx.effect(() => () => correctionNextCheckClient.dispose(), 'risk-advisor-phase14.5: correction next check client')
+    installOnlineCorrectionSlot(onlineCorrectionClient, correctionHistoricalContextClient, correctionNextCheckClient)
     const runtimeRiskClient = new RuntimeRiskClient(lateConnection)
     connectionCtx.effect(() => () => runtimeRiskClient.dispose(), 'risk-advisor-phase14.1: runtime risk client')
     const historicalContextClient = new HistoricalContextClient(lateConnection)

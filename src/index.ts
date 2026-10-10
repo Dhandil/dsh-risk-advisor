@@ -39,6 +39,7 @@ import { LiveCorrectionRuntime } from './host/live-correction.ts'
 import type { LiveCorrectionDiagnostics } from './host/live-correction.ts'
 import { CorrectionHistoricalIdentityRegistry } from './host/correction-historical-identity.ts'
 import { installCorrectionHistoricalContextBrowserBridge } from './host/correction-historical-context-bridge.ts'
+import { installCorrectionNextCheckBrowserBridge } from './host/correction-next-check-bridge.ts'
 import type { DomainFacility } from '@deepseek-ai/dsh-storage-domain'
 
 export const inject = ['tools']
@@ -215,6 +216,8 @@ export function apply(ctx: Context, config: { readonly fastJudge?: FastJudgeConf
       installOnlineCorrectionBrowserBridge(bridgeCtx, connection as OnlineCorrectionHostConnectionLike, liveCorrection.diagnostics)
       installCorrectionHistoricalContextBrowserBridge(bridgeCtx, connection as OnlineCorrectionHostConnectionLike,
         liveCorrection.diagnostics, correctionHistoricalIdentity, guidance.diagnostics)
+      installCorrectionNextCheckBrowserBridge(bridgeCtx, connection as OnlineCorrectionHostConnectionLike,
+        liveCorrection.diagnostics, verifier.store.diagnostics)
     }
   })
   ctx.inject(['llm'], judgeCtx => {

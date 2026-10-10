@@ -5,11 +5,14 @@ import { ONLINE_CORRECTION_NS } from './online-correction-locales.ts'
 import type { OnlineCorrectionClient } from './online-correction-client.ts'
 import type { CorrectionHistoricalContextClient } from './correction-historical-context-client.ts'
 import type { CorrectionHistoricalContextStoreSnapshot } from './correction-historical-context-store.ts'
+import type { CorrectionNextCheckClient } from './correction-next-check-client.ts'
+import { CorrectionNextCheckBoundary, CorrectionNextCheckSection } from './CorrectionNextCheckSection.tsx'
 import css from './OnlineCorrectionDock.module.css'
 
 export interface OnlineCorrectionDockInjected {
   readonly onlineCorrectionClient: OnlineCorrectionClient
   readonly correctionHistoricalContextClient?: CorrectionHistoricalContextClient
+  readonly correctionNextCheckClient?: CorrectionNextCheckClient
 }
 
 export type OnlineCorrectionDockProps = PropsRuntime<'conversation.input.dock'>
@@ -31,7 +34,7 @@ export function renderOnlineCorrectionAdvisory(code: BrowserOnlineCorrectionAdvi
   return ADVISORY_BODIES[code]
 }
 
-export function OnlineCorrectionDock({ sessionId, onlineCorrectionClient, correctionHistoricalContextClient, t }: OnlineCorrectionDockProps) {
+export function OnlineCorrectionDock({ sessionId, onlineCorrectionClient, correctionHistoricalContextClient, correctionNextCheckClient, t }: OnlineCorrectionDockProps) {
   const store = onlineCorrectionClient.getSource(sessionId)
   const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot)
   const historyStore = safeHistorySource(correctionHistoricalContextClient, sessionId)
@@ -81,6 +84,9 @@ export function OnlineCorrectionDock({ sessionId, onlineCorrectionClient, correc
           <div className={css.finding} key={finding.findingId} data-advisory-kind={finding.kind}>
             <span className={css.kind}>{t(finding.kind === 'REPEATED_FAILURE_WITHOUT_PROGRESS' ? 'kind.f1' : 'kind.f2')}</span>
             <span className={css.body}>{renderOnlineCorrectionAdvisory(finding.advisoryCode)}</span>
+            {index === 0 ? <CorrectionNextCheckBoundary key={`${sessionId}:${finding.findingId}`}>
+              <CorrectionNextCheckSection client={correctionNextCheckClient} sessionId={sessionId} finding={finding} t={t} />
+            </CorrectionNextCheckBoundary> : null}
             {index === 0 && historyEnabled && historySnapshot.status === 'VIEW' && historySnapshot.findingId === finding.findingId
               && historySnapshot.view.kind === 'VIEW' && historySnapshot.view.sessionId === sessionId
               && historySnapshot.view.findingId === finding.findingId && historySnapshot.view.findingKind === finding.kind
