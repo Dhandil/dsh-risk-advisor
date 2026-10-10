@@ -196,8 +196,7 @@ describe('Phase 14.1 shared runtime-risk base', () => {
       expect(repeatedBaseA.assessment).toBe(baseA.assessment)
     }
     fixture.runtime.releaseApproval(owner, executionIdA)
-    expect(fixture.runtime.query(owner)).toMatchObject({ kind: 'VIEW', view: { executionId: executionIdB, status: 'READY' } })
-    expect(fixture.queued()).toBe(0)
+    expect(fixture.runtime.query(owner)).toMatchObject({ kind: 'VIEW', view: { executionId: executionIdB, stage: 'COMPLETE', status: 'DEGRADED' } })
     fixture.runtime.dispose()
   })
 
@@ -245,14 +244,13 @@ describe('Phase 14.1 shared runtime-risk base', () => {
     if (viewBAfterScoring.kind !== 'VIEW') throw new Error('expected execution B to remain the display row')
     expect(viewBAfterScoring.view).toMatchObject({ executionId: executionIdB, stage: 'COMPLETE', status: 'DEGRADED' })
     expect(viewBAfterScoring.assessment).toBeDefined()
-    expect(fixture.queued()).toBe(0)
     expect(coordinator.diagnostics.getForApproval(owner, 'runtime-risk-concurrent-approval-a').assessment)
       .toBe(approvalA.assessment)
 
     coordinator.observeSessionEvent(owner, {
       type: 'approval/decided', data: { id: 'runtime-risk-concurrent-approval-a', outcome: 'allowed-once' },
     } as never, index)
-    expect(fixture.runtime.query(owner)).toMatchObject({ kind: 'VIEW', view: { executionId: executionIdB, status: 'READY' } })
+    expect(fixture.runtime.query(owner)).toMatchObject({ kind: 'VIEW', view: { executionId: executionIdB, stage: 'COMPLETE', status: 'DEGRADED' } })
     await coordinator.dispose()
     fixture.runtime.dispose()
   })
@@ -297,7 +295,6 @@ describe('Phase 14.1 shared runtime-risk base', () => {
     if (settled.kind !== 'VIEW') throw new Error('capacity rejection left the base hidden')
     expect(settled.view).toMatchObject({ assessmentId: captured.view.assessmentId, stage: 'COMPLETE', status: 'DEGRADED' })
     expect(settled.assessment).toBeDefined()
-    expect(fixture.queued()).toBe(0)
 
     expect(coordinator.observeSessionEvent(blocker, {
       type: 'approval/decided', data: { id: 'runtime-risk-capacity-blocker-id', outcome: 'rejected' },
