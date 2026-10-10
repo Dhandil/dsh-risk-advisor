@@ -26,6 +26,10 @@ import {
   ONLINE_CORRECTION_ENDPOINT,
   ONLINE_CORRECTION_ROUTE,
 } from '../src/online-correction-contract.ts'
+import {
+  RISK_ADVISOR_RUNTIME_RISK_ENDPOINT,
+  RISK_ADVISOR_RUNTIME_RISK_ROUTE,
+} from '../src/bridge-contract.ts'
 import { createJsonStorageFixture } from './p11-1-experience-fixtures.ts'
 import { createQualifiedHistoryFixture } from './p14-2-historical-context-fixtures.ts'
 
@@ -33,6 +37,7 @@ type FetchRoute = { readonly path: string; readonly fetch: (request: Request) =>
 type Rpc = { readonly call: (channel: string, endpoint: string, payload: unknown, signal?: AbortSignal) => Promise<unknown> }
 
 const routeForEndpoint = new Map([
+  [RISK_ADVISOR_RUNTIME_RISK_ENDPOINT, RISK_ADVISOR_RUNTIME_RISK_ROUTE],
   [ONLINE_CORRECTION_ENDPOINT, ONLINE_CORRECTION_ROUTE],
   [CORRECTION_HISTORICAL_CONTEXT_ENDPOINT, CORRECTION_HISTORICAL_CONTEXT_ROUTE],
   [CORRECTION_NEXT_CHECK_ENDPOINT, CORRECTION_NEXT_CHECK_ROUTE],
@@ -115,17 +120,30 @@ async function createHostFixture() {
   }
 
   let executionId: string | undefined
+  const executionIds = new Map<string, string>()
+  const settledTools = new Map<string, { readonly exec: object; readonly result: object }>()
+  let heldWriteStarted: (() => void) | undefined
+  let releaseHeldWrite: (() => void) | undefined
+  const heldWriteStartedPromise = new Promise<void>(resolve => { heldWriteStarted = resolve })
+  const heldWriteReleasePromise = new Promise<void>(resolve => { releaseHeldWrite = resolve })
   ctx.on('tools/pre-execute', (exec, next) => {
     const found = ctx.get('riskAdvisorCorrelation').lookup(exec.agent?.session, exec.callId)
-    if (found.status === 'FOUND') executionId = found.executionId
+    if (found.status === 'FOUND') {
+      executionId = found.executionId
+      executionIds.set(String(exec.callId), found.executionId)
+    }
     return next()
   })
+  ctx.on('tools/result', (exec, result) => { settledTools.set(String(exec.callId), { exec, result }) })
   const session = ctx.sessions.create('phase14-6-integrated-session')
-  session.append('turn/start', { turn: 1 })
-  session.append('user/message', createUserMessage({
-    content: [{ type: 'text', text: 'Read the synthetic fixture and verify the resulting file state.' }],
-    source: { kind: 'user' },
-  }), { surfaceOp: 'append' })
+  const prepareSession = (owner: Session, prompt = 'Read the synthetic fixture and verify the resulting file state.') => {
+    owner.append('turn/start', { turn: 1 })
+    owner.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: prompt }],
+      source: { kind: 'user' },
+    }), { surfaceOp: 'append' })
+  }
+  prepareSession(session)
   ctx.tools.register(defineTool({
     name: 'write',
     description: 'deterministic local write fixture for cross-surface verification',
@@ -138,10 +156,19 @@ async function createHostFixture() {
       render: () => [{ type: 'text' as const, text: 'bounded synthetic write result' }],
     },
     async execute(args) {
+      if (args.content === 'phase14-6-e1-held-mismatch') {
+        heldWriteStarted?.()
+        await heldWriteReleasePromise
+      }
       // The independently observed postcondition deliberately differs from
       // the requested content. This is a deterministic Tool fixture, not a
       // provider response or a fabricated Risk Advisor Finding.
-      return { path: args.file_path, operation: 'create', before: null, after: 'unexpected synthetic content' }
+      return {
+        path: args.file_path,
+        operation: 'create',
+        before: null,
+        after: args.content === 'phase14-6-matched-content' ? args.content : 'unexpected synthetic content',
+      }
     },
   }))
 
@@ -149,6 +176,34 @@ async function createHostFixture() {
   return {
     ctx, routes, history, session,
     get executionId() { return executionId },
+    rpc: connection.rpc,
+    createSession(sessionId: string) {
+      const created = ctx.sessions.create(sessionId)
+      prepareSession(created, `Observe the isolated synthetic session ${sessionId}.`)
+      return created
+    },
+    executionIdFor(callId: string) { return executionIds.get(callId) },
+    settledToolFor(callId: string) { return settledTools.get(callId) },
+    waitForHeldWrite() { return heldWriteStartedPromise },
+    releaseHeldWrite() { releaseHeldWrite?.() },
+    async executeWrite(options: { readonly session: Session; readonly callId: string; readonly path: string; readonly content: string }) {
+      return await ctx.tools.execute({
+        signal: new AbortController().signal,
+        callId: ToolCallId(options.callId),
+        name: 'write',
+        arguments: { file_path: options.path, content: options.content },
+        agent: { session: options.session } as unknown as Agent,
+      })
+    },
+    async readRuntimeRisk(sessionId: string) {
+      return await connection.rpc.call('/api', RISK_ADVISOR_RUNTIME_RISK_ENDPOINT, { sessionId })
+    },
+    async readOnlineCorrection(sessionId: string) {
+      return await connection.rpc.call('/api', ONLINE_CORRECTION_ENDPOINT, { sessionId })
+    },
+    async readHistoricalContext(sessionId: string, findingId: string) {
+      return await connection.rpc.call('/api', CORRECTION_HISTORICAL_CONTEXT_ENDPOINT, { sessionId, findingId })
+    },
     async executeMismatch() {
       const result = await ctx.tools.execute({
         signal: new AbortController().signal,
@@ -171,7 +226,15 @@ async function createHostFixture() {
 
 async function createBrowserFixture(rpc: Rpc) {
   const ctx = new Context()
-  ctx.provide('connection', { rpc, generation: { getSnapshot: () => 1, subscribe: (_listener: () => void) => () => undefined } })
+  let connectionGeneration = 1
+  const generationListeners = new Set<() => void>()
+  ctx.provide('connection', { rpc, generation: {
+    getSnapshot: () => connectionGeneration,
+    subscribe: (listener: () => void) => {
+      generationListeners.add(listener)
+      return () => { generationListeners.delete(listener) }
+    },
+  } })
   await ctx.plugin(SlotRegistry).await()
   const locale = new LocaleRuntime(ctx)
   ctx.provide('locale', locale)
@@ -211,6 +274,11 @@ async function createBrowserFixture(rpc: Rpc) {
         {...injected}
       />)
       return mounted
+    },
+    replaceGeneration() {
+      connectionGeneration += 1
+      for (const listener of [...generationListeners]) listener()
+      return connectionGeneration
     },
     async close() {
       mounted?.unmount()
@@ -341,6 +409,224 @@ describe('Phase 14.6 actual Host-to-Client cross-surface integration', () => {
       expect(finding.kind).toBe('POSTCONDITION_NOT_SATISFIED')
     } finally {
       for (const browser of clients) await browser.close()
+      await host.close()
+    }
+  })
+
+  it('keeps one Session ordinary-risk projection independent from a late F2 and duplicate settled Tool events', async () => {
+    const host = await createHostFixture()
+    const olderCallId = 'phase14-6-e1-older-write'
+    const newerCallId = 'phase14-6-e1-newer-write'
+    const olderPath = '/private/phase14-6/e1-held-mismatch.txt'
+    const newerPath = '/private/phase14-6/e1-matched-write.txt'
+    try {
+      const olderExecution = host.executeWrite({
+        session: host.session,
+        callId: olderCallId,
+        path: olderPath,
+        content: 'phase14-6-e1-held-mismatch',
+      })
+      await host.waitForHeldWrite()
+
+      let capturedRisk: { readonly ok: boolean; readonly value?: Record<string, unknown> } | undefined
+      await waitFor(async () => {
+        capturedRisk = await host.readRuntimeRisk(host.session.id) as typeof capturedRisk
+        expect(capturedRisk).toMatchObject({ ok: true, value: {
+          kind: 'VIEW', sessionId: host.session.id, callId: olderCallId, timing: 'PRE_EXECUTION_EVIDENCE',
+        } })
+      })
+      const olderExecutionId = host.executionIdFor(olderCallId)
+      expect(olderExecutionId).toBeDefined()
+      expect(capturedRisk?.value?.executionId).toBe(olderExecutionId)
+      expect(capturedRisk?.value?.status).toBe('DEGRADED')
+      expect(capturedRisk?.value?.reasonCodes).toEqual(expect.arrayContaining([expect.any(String)]))
+
+      const beforeOlderSettlement = await host.readOnlineCorrection(host.session.id) as {
+        readonly ok: boolean; readonly value?: { readonly kind: string; readonly view?: { readonly findings: readonly unknown[] } }
+      }
+      expect(beforeOlderSettlement).toMatchObject({ ok: true, value: { kind: 'VIEW', view: { findings: [] } } })
+
+      const newerResult = await host.executeWrite({
+        session: host.session,
+        callId: newerCallId,
+        path: newerPath,
+        content: 'phase14-6-matched-content',
+      })
+      expect(newerResult.isError).toBe(false)
+      const newerExecutionId = host.executionIdFor(newerCallId)
+      expect(newerExecutionId).toBeDefined()
+      expect(newerExecutionId).not.toBe(olderExecutionId)
+
+      let newerRisk: { readonly ok: boolean; readonly value?: Record<string, unknown> } | undefined
+      await waitFor(async () => {
+        newerRisk = await host.readRuntimeRisk(host.session.id) as typeof newerRisk
+        expect(newerRisk).toMatchObject({ ok: true, value: {
+          kind: 'VIEW', sessionId: host.session.id, executionId: newerExecutionId,
+          callId: newerCallId, timing: 'PRE_EXECUTION_EVIDENCE', status: expect.stringMatching(/^(READY|DEGRADED)$/u),
+        } })
+      })
+
+      host.releaseHeldWrite()
+      const olderResult = await olderExecution
+      expect(olderResult.isError).toBe(false)
+      const settled = host.settledToolFor(olderCallId)
+      expect(settled).toBeDefined()
+      const actualFindings = await host.readOnlineCorrection(host.session.id) as {
+        readonly ok: boolean; readonly value?: { readonly kind: string; readonly view?: { readonly findings: readonly { readonly findingId: string; readonly kind: string }[] } }
+      }
+      expect(actualFindings).toMatchObject({ ok: true, value: { kind: 'VIEW', view: { findings: [
+        { kind: 'POSTCONDITION_NOT_SATISFIED' },
+      ] } } })
+      const actualFindingIds = actualFindings.value?.kind === 'VIEW'
+        ? actualFindings.value.view?.findings.map(finding => finding.findingId)
+        : []
+      expect(actualFindingIds).toHaveLength(1)
+
+      const afterOutOfOrderSettlement = await host.readRuntimeRisk(host.session.id) as {
+        readonly ok: boolean; readonly value?: Record<string, unknown>
+      }
+      expect(afterOutOfOrderSettlement).toMatchObject({ ok: true, value: {
+        kind: 'VIEW', sessionId: host.session.id, executionId: newerExecutionId, callId: newerCallId,
+      } })
+      expect(afterOutOfOrderSettlement.value?.executionId).not.toBe(olderExecutionId)
+
+      host.ctx.emit('tools/result', settled!.exec as never, settled!.result as never)
+      host.ctx.emit('tools/result', settled!.exec as never, settled!.result as never)
+      await flush()
+
+      const afterDuplicateDelivery = await host.readOnlineCorrection(host.session.id) as typeof actualFindings
+      const finalRisk = await host.readRuntimeRisk(host.session.id) as typeof afterOutOfOrderSettlement
+      expect(afterDuplicateDelivery.value).toEqual(actualFindings.value)
+      expect(finalRisk.value).toMatchObject({
+        kind: 'VIEW', sessionId: host.session.id, executionId: newerExecutionId, callId: newerCallId,
+      })
+      expect(finalRisk.value?.executionId).not.toBe(olderExecutionId)
+    } finally {
+      host.releaseHeldWrite()
+      await host.close()
+    }
+  })
+
+  it('fences both optional projections through Session A→B→A, late replies, and connection generation replacement', async () => {
+    const host = await createHostFixture()
+    const sessionA = host.session
+    const sessionB = host.createSession('phase14-6-e2-session-b')
+    try {
+      const aResult = await host.executeWrite({
+        session: sessionA,
+        callId: 'phase14-6-e2-session-a-write',
+        path: '/private/phase14-6/e2-session-a-mismatch.txt',
+        content: 'private-content-sentinel',
+      })
+      expect(aResult.isError).toBe(false)
+      const aRisk = await host.readRuntimeRisk(sessionA.id) as { readonly ok: boolean; readonly value?: Record<string, unknown> }
+      expect(aRisk).toMatchObject({ ok: true, value: { kind: 'VIEW', sessionId: sessionA.id, callId: 'phase14-6-e2-session-a-write' } })
+
+      const delayed = new Map<string, { readonly value: unknown; readonly deliver: () => void }>()
+      const rpcTrace: Array<{ endpoint: string; sessionId: string | undefined; findingId: string | undefined; kind: string | undefined; observedAt: number | undefined }> = []
+      const deferredAEndpoints = new Set([CORRECTION_HISTORICAL_CONTEXT_ENDPOINT, CORRECTION_NEXT_CHECK_ENDPOINT])
+      const intercepted: Rpc = {
+        call: async (channel, endpoint, payload, signal) => {
+          const value = await host.rpc.call(channel, endpoint, payload, signal)
+          const requestSessionId = payload !== null && typeof payload === 'object' && 'sessionId' in payload
+            ? String((payload as { readonly sessionId: unknown }).sessionId)
+            : undefined
+          const requestFindingId = payload !== null && typeof payload === 'object' && 'findingId' in payload
+            ? String((payload as { readonly findingId: unknown }).findingId)
+            : undefined
+          const valueRecord = value !== null && typeof value === 'object' && 'value' in value
+            ? (value as { readonly value: unknown }).value
+            : undefined
+          const valueView = valueRecord !== null && typeof valueRecord === 'object' ? valueRecord as Record<string, unknown> : undefined
+          rpcTrace.push({
+            endpoint,
+            sessionId: requestSessionId,
+            findingId: requestFindingId,
+            kind: typeof valueView?.kind === 'string' ? valueView.kind : undefined,
+            observedAt: typeof valueView?.observedAt === 'number' ? valueView.observedAt : undefined,
+          })
+          if (requestSessionId === sessionA.id && deferredAEndpoints.has(endpoint) && !delayed.has(endpoint)) {
+            return await new Promise(resolve => { delayed.set(endpoint, { value, deliver: () => resolve(value) }) })
+          }
+          return value
+        },
+      }
+      const browser = await createBrowserFixture(intercepted)
+      try {
+        const viewA1 = browser.mount(sessionA.id)
+        await screen.findByText(translate('kind.f2'))
+        await waitFor(() => {
+          expect(viewA1.container.querySelector('[data-correction-history]')).toBeNull()
+          expect(viewA1.container.querySelector('[data-correction-next-check]')).toBeNull()
+          expect(delayed.size).toBe(2)
+        })
+        expect(delayed.get(CORRECTION_HISTORICAL_CONTEXT_ENDPOINT)?.value).toMatchObject({
+          ok: true, value: { kind: 'VIEW', sessionId: sessionA.id, findingKind: 'POSTCONDITION_NOT_SATISFIED' },
+        })
+        expect(delayed.get(CORRECTION_NEXT_CHECK_ENDPOINT)?.value).toMatchObject({
+          ok: true, value: { kind: 'VIEW', sessionId: sessionA.id, findingKind: 'POSTCONDITION_NOT_SATISFIED' },
+        })
+        const findingA = host.ctx.get('riskAdvisorLiveCorrection').forSession(sessionA).findings[0]
+        expect(findingA).toBeDefined()
+        for (const endpoint of deferredAEndpoints) {
+          expect(rpcTrace).toContainEqual(expect.objectContaining({
+            endpoint, sessionId: sessionA.id, findingId: findingA!.findingId, kind: 'VIEW',
+          }))
+        }
+
+        const viewB = browser.mount(sessionB.id)
+        await waitFor(async () => {
+          const read = await host.readOnlineCorrection(sessionB.id) as {
+            readonly ok: boolean; readonly value?: { readonly kind: string; readonly view?: { readonly findings: readonly unknown[] } }
+          }
+          expect(read).toMatchObject({ ok: true, value: { kind: 'VIEW', view: { findings: [] } } })
+          expect(viewB.container.querySelector('[data-advisory-kind]')).toBeNull()
+          expect(viewB.container.querySelector('[data-correction-history]')).toBeNull()
+          expect(viewB.container.querySelector('[data-correction-next-check]')).toBeNull()
+        })
+
+        const generationAfterReplacement = browser.replaceGeneration()
+        expect(generationAfterReplacement).toBe(2)
+        await waitFor(() => {
+          expect(viewB.container.querySelector('[data-advisory-kind]')).toBeNull()
+          expect(viewB.container.querySelector('[data-correction-history]')).toBeNull()
+          expect(viewB.container.querySelector('[data-correction-next-check]')).toBeNull()
+        })
+
+        for (const response of delayed.values()) response.deliver()
+        await flush()
+        expect(viewB.container.querySelector('[data-advisory-kind]')).toBeNull()
+        expect(viewB.container.querySelector('[data-correction-history]')).toBeNull()
+        expect(viewB.container.querySelector('[data-correction-next-check]')).toBeNull()
+
+        const viewA2 = browser.mount(sessionA.id)
+        await screen.findByText(translate('kind.f2'))
+        await waitFor(() => {
+          expect(viewA2.container.querySelectorAll('[data-advisory-kind="POSTCONDITION_NOT_SATISFIED"]')).toHaveLength(1)
+          expect(viewA2.container.querySelector('[data-correction-history]')).toBeNull()
+          expect(viewA2.container.querySelector('[data-correction-next-check]')).not.toBeNull()
+        }, { timeout: 5000, interval: 20 })
+        expect(viewA2.container.textContent).not.toContain(translate('history.label'))
+        expect(viewA2.container.textContent).toContain(translate('nextCheck.inspectWrite'))
+        const currentFinding = host.ctx.get('riskAdvisorLiveCorrection').forSession(sessionA).findings[0]
+        expect(currentFinding).toBeDefined()
+        const currentHistorical = await host.readHistoricalContext(sessionA.id, currentFinding!.findingId) as {
+          readonly ok: boolean; readonly value?: { readonly kind: string; readonly sessionId?: string; readonly findingId?: string }
+        }
+        expect(currentHistorical).toMatchObject({ ok: true, value: {
+          kind: 'NOT_FOUND', sessionId: sessionA.id, findingId: currentFinding!.findingId,
+        } })
+        expect(host.ctx.get('riskAdvisorPatterns').current(host.history.patternId)?.state).toBe('INVALIDATED')
+        expect(rpcTrace).toContainEqual(expect.objectContaining({
+          endpoint: CORRECTION_HISTORICAL_CONTEXT_ENDPOINT,
+          sessionId: sessionA.id,
+          findingId: currentFinding!.findingId,
+          kind: 'NOT_FOUND',
+        }))
+      } finally {
+        await browser.close()
+      }
+    } finally {
       await host.close()
     }
   })
