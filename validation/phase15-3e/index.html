@@ -47,10 +47,6 @@
     <script src="/lib/client.js"></script>
     <script>
       (() => {
-        const f1 = 'The same operation is repeatedly failing with the same normalized failure signature. Stop repeating this exact retry path and inspect the underlying cause before trying again.'
-        const f2 = 'The operation completed, but the verified expected postcondition was not satisfied. Do not treat this execution as goal completion; inspect the target state before continuing.'
-        const zhF1 = '同一操作反复失败，且归一化后的失败特征一致。请停止按原方式重试，先检查原因，再决定是否继续。'
-        const zhF2 = '操作已结束，但经验证，预期后置条件未满足。不能认定本次目标已完成；继续前请核对目标状态。'
         const findings = [
           { findingId: `ra-correction-v1_${'a'.repeat(64)}`, kind: 'REPEATED_FAILURE_WITHOUT_PROGRESS', advisoryCode: 'STOP_EXACT_RETRY_PATH_V1', observedAt: 10 },
           { findingId: `ra-correction-v1_${'b'.repeat(64)}`, kind: 'POSTCONDITION_NOT_SATISFIED', advisoryCode: 'INSPECT_UNSATISFIED_POSTCONDITION_V1', observedAt: 20 },
@@ -64,13 +60,10 @@
         }) })
         const source = Object.freeze({ getSnapshot: () => snapshot, subscribe: () => () => undefined })
         const client = Object.freeze({ getSource: () => source, retain: () => undefined, release: () => undefined })
-        const dictionary = {
-          en: { title: 'Execution advisory', 'kind.f1': 'Repeated failure', 'kind.f2': 'Postcondition mismatch', 'advisory.f1': f1, 'advisory.f2': f2 },
-          zh: { title: '执行建议', 'kind.f1': '重复失败', 'kind.f2': '后置条件不匹配', 'advisory.f1': zhF1, 'advisory.f2': zhF2 },
-        }
+        const module = window.__riskAdvisorFixtureModule
+        const dictionary = { en: module.onlineCorrectionEn, zh: module.onlineCorrectionZh }
         const root = ReactDOM.createRoot(document.getElementById('mount'))
         function show(locale) {
-          const module = window.__riskAdvisorFixtureModule
           root.render(React.createElement(module.OnlineCorrectionDock, {
             sessionId: 'phase15-3e-synthetic-session',
             session: {}, input: {},
