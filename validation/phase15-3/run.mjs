@@ -157,12 +157,13 @@ try {
   const profilePath = join(tempRoot, 'profile')
   const chromePathExists = await realpath(chromePath)
   invariant(chromePathExists === chromePath, 'installed Google Chrome executable path is exact')
-  remotePort = await freePort()
+  // Let Chrome atomically allocate an ephemeral port and publish it in
+  // DevToolsActivePort; probing a free port first would have a TOCTOU race.
   chrome = spawn(chromePath, [
     '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--disable-extensions',
     '--disable-background-networking', '--disable-component-update', '--disable-sync', '--disable-features=MediaRouter,OptimizationHints',
     '--no-proxy-server', '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1',
-    `--user-data-dir=${profilePath}`, `--remote-debugging-port=${remotePort}`, 'about:blank',
+    `--user-data-dir=${profilePath}`, '--remote-debugging-port=0', 'about:blank',
   ], { stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' } })
   let chromeErrors = ''
   chrome.stderr.on('data', chunk => { chromeErrors = `${chromeErrors}${String(chunk)}`.slice(-3000) })
