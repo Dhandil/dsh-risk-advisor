@@ -235,6 +235,7 @@ function App() {
   const [activeSession, setActiveSession] = useState(sessionA)
   const [theme, setTheme] = useState('light')
   React.useEffect(() => { document.documentElement.dataset.theme = theme }, [theme])
+  React.useEffect(() => { document.documentElement.lang = locale }, [locale])
   React.useEffect(() => { seedScenario(scenario, activeSession) }, [scenario, activeSession])
   window.__phase15Fixture = {
     setScenario(value) { setScenario(value); setActiveSession(sessionA) },

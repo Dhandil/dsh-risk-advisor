@@ -117,6 +117,8 @@ async function selectScenario(scenario, locale = 'en', theme = 'light') {
   await fixtureAction(`document.querySelector('[data-fixture-scenario="${scenario}"]').click()`)
   await fixtureAction(`document.querySelector('[data-fixture-locale="${locale}"]').click()`)
   await fixtureAction(`document.querySelector('[data-fixture-theme="${theme}"]').click()`)
+  await evaluate(`document.querySelectorAll('.dock-mount details[open]').forEach(item=>item.querySelector('summary')?.click())`)
+  await delay(80)
   await waitFor(async () => (await evaluate('document.querySelector("[data-testid=fixture-state]")?.textContent'))?.includes(`${scenario} ·`), `scenario ${scenario} render`)
 }
 
@@ -205,7 +207,7 @@ try {
   await selectScenario('V2', 'zh', 'dark')
   observed = await evaluate(`(() => ({...window.__phase15Fixture.metrics(), language:document.documentElement.lang, inlineHistory:!!document.querySelector('[aria-label="Verified historical context"]'), historyHeading:document.querySelector('[aria-label="Verified historical context"]')?.innerText, bodyBackground:getComputedStyle(document.body).backgroundColor, rootBackground:getComputedStyle(document.documentElement).backgroundColor, syntheticBanner:document.querySelector('.synthetic-banner')?.innerText}))()`)
   invariant(observed.inlineHistory && observed.historyHeading?.includes('qualified verified-success pattern') && observed.composerHeight > results.V1.observed.composerHeight, 'V2 qualified-history-shaped context is actually inline and adds height', observed)
-  invariant(observed.syntheticBanner?.includes('SYNTHETIC') && observed.currentSession.includes('locale zh'), 'V2 visibly labels its Chinese history DTO as synthetic', observed)
+  invariant(observed.syntheticBanner?.includes('SYNTHETIC') && observed.currentSession.includes('locale zh') && observed.language === 'zh', 'V2 visibly labels its Chinese history DTO as synthetic and marks the document language', observed)
   results.V2 = { outcome: 'OBSERVED_UX_CONCERN', concern: 'Historical Guidance-shaped block is inline rather than collapsed; it materially increases default composer height.', observed }
   await screenshot('02-V2-desktop-zh-dark-inline-history.png')
 
