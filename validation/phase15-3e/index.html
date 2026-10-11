@@ -5,10 +5,27 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Risk Advisor Phase 15.3E synthetic locale fixture</title>
     <style>
-      body { box-sizing: border-box; margin: 0; padding: 20px; font: 16px/1.45 system-ui, sans-serif; }
+      :root {
+        color-scheme: light;
+        --dsh-text-primary: #202124;
+        --dsh-text-secondary: #5f6368;
+        --dsh-border-subtle: rgba(0, 0, 0, 0.14);
+        --dsh-surface-secondary: rgba(0, 0, 0, 0.04);
+      }
+      body { box-sizing: border-box; margin: 0; padding: 20px; background: #fff; color: var(--dsh-text-primary); font: 16px/1.45 system-ui, sans-serif; }
       #controls { display: flex; gap: 8px; margin-bottom: 16px; }
       #mount { max-width: 760px; }
       @media (max-width: 480px) { body { padding: 10px; } }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          color-scheme: dark;
+          --dsh-text-primary: #e8eaed;
+          --dsh-text-secondary: #bdc1c6;
+          --dsh-border-subtle: rgba(255, 255, 255, 0.2);
+          --dsh-surface-secondary: rgba(255, 255, 255, 0.08);
+        }
+        body { background: #202124; }
+      }
     </style>
   </head>
   <body>
