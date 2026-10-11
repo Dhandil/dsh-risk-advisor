@@ -1,6 +1,6 @@
-import { existsSync } from 'node:fs'
+import { realpathSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
-import { basename, dirname, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import type { UserConfig } from 'tsdown'
 import type { TsdownPlugin } from 'tsdown'
 
@@ -39,13 +39,78 @@ const cssModulePrefix = '\0dsh-risk-advisor-css:'
 const cssModuleSuffix = '.mjs'
 const emittedTypesMarker = `${sep}lib${sep}types${sep}`
 
-/** Resolve CSS modules beside their original source after tsc emitted JS to lib/types. */
-function sourceStylePath(source: string, importer: string): string {
-  const emitted = resolve(dirname(importer), source)
-  if (existsSync(emitted)) return emitted
-  const boundary = emitted.indexOf(emittedTypesMarker)
-  if (boundary < 0) return emitted
-  return resolve(emitted.slice(0, boundary), 'src', emitted.slice(boundary + emittedTypesMarker.length))
+function isWithinDirectory(parent: string, path: string): boolean {
+  const child = relative(parent, path)
+  return child !== '' && child !== '..' && !child.startsWith(`..${sep}`) && !isAbsolute(child)
+}
+
+function toPosixPath(path: string): string {
+  return path.split(sep).join('/')
+}
+
+/** Resolve one emitted CSS import to a stable source-relative virtual identity. */
+function cssModuleIdentity(source: string, importer: string): string {
+  const resolvedImporter = resolve(importer)
+  const boundary = resolvedImporter.lastIndexOf(emittedTypesMarker)
+  if (boundary < 0) throw new Error('Risk Advisor CSS importer is outside lib/types')
+
+  const lexicalProjectRoot = resolvedImporter.slice(0, boundary)
+  const emittedRoot = resolve(lexicalProjectRoot, 'lib', 'types')
+  const emittedFile = resolve(dirname(resolvedImporter), source)
+  if (!isWithinDirectory(emittedRoot, emittedFile)) {
+    throw new Error('Risk Advisor CSS import escapes the emitted client source tree')
+  }
+
+  const sourceRelative = relative(emittedRoot, emittedFile)
+  if (!sourceRelative.endsWith('.module.css')) {
+    throw new Error('Risk Advisor CSS import is not a CSS module')
+  }
+
+  const projectRoot = realpathSync(lexicalProjectRoot)
+  const sourceRoot = realpathSync(resolve(projectRoot, 'src'))
+  const sourceFile = resolve(sourceRoot, sourceRelative)
+  if (!isWithinDirectory(sourceRoot, sourceFile)) {
+    throw new Error('Risk Advisor CSS import escapes src')
+  }
+
+  const file = realpathSync(sourceFile)
+  if (!isWithinDirectory(sourceRoot, file)) {
+    throw new Error('Risk Advisor CSS file resolves outside src')
+  }
+
+  const projectRelative = toPosixPath(relative(projectRoot, file))
+  if (!projectRelative.startsWith('src/client/') || !projectRelative.endsWith('.module.css')) {
+    throw new Error('Risk Advisor CSS file is outside the client CSS source tree')
+  }
+
+  return `${cssModulePrefix}${projectRelative}${cssModuleSuffix}`
+}
+
+/** Resolve a stable virtual ID against this build's source root, never an encoded host path. */
+function sourceStylePathFromId(id: string): string {
+  const projectRelative = id.slice(cssModulePrefix.length, -cssModuleSuffix.length)
+  const segments = projectRelative.split('/')
+  if (
+    projectRelative.includes('\\') ||
+    !projectRelative.startsWith('src/client/') ||
+    !projectRelative.endsWith('.module.css') ||
+    segments.some(segment => segment === '' || segment === '.' || segment === '..')
+  ) {
+    throw new Error('Invalid Risk Advisor CSS virtual module identity')
+  }
+
+  const projectRoot = realpathSync(process.cwd())
+  const sourceRoot = realpathSync(resolve(projectRoot, 'src'))
+  const sourceFile = resolve(projectRoot, ...segments)
+  if (!isWithinDirectory(sourceRoot, sourceFile)) {
+    throw new Error('Risk Advisor CSS virtual module escapes src')
+  }
+
+  const file = realpathSync(sourceFile)
+  if (!isWithinDirectory(sourceRoot, file)) {
+    throw new Error('Risk Advisor CSS virtual module resolves outside src')
+  }
+  return file
 }
 
 /** Keep the row's namespaced CSS module in this plugin's standalone client bundle. */
@@ -53,11 +118,11 @@ const cssModulePlugin: TsdownPlugin = {
   name: 'dsh-risk-advisor-css-module',
   resolveId(source, importer) {
     if (!source.endsWith('.module.css') || importer === undefined) return null
-    return `${cssModulePrefix}${sourceStylePath(source, importer)}${cssModuleSuffix}`
+    return cssModuleIdentity(source, importer)
   },
   async load(id) {
     if (!id.startsWith(cssModulePrefix) || !id.endsWith(cssModuleSuffix)) return null
-    const file = id.slice(cssModulePrefix.length, -cssModuleSuffix.length)
+    const file = sourceStylePathFromId(id)
     this.addWatchFile(file)
     const css = await readFile(file, 'utf8')
     const classes = [...new Set([...css.matchAll(/\.([A-Za-z_][A-Za-z0-9_-]*)/g)].map(match => match[1]))]
