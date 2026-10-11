@@ -1,0 +1,87 @@
+:root {
+  font: 14px/1.45 system-ui, sans-serif;
+  color: #1d2733;
+  background: #f4f6f8;
+  color-scheme: light;
+  --dsh-text-primary: #1d2733;
+  --dsh-text-secondary: #586677;
+  --dsh-border-subtle: #cbd3dc;
+  --dsh-surface-secondary: #edf1f5;
+  --dsh-warning: #8a4f00;
+  --dsh-danger: #a32323;
+  --dsw-alias-label-primary: #1d2733;
+  --dsw-alias-label-secondary: #526171;
+  --dsw-alias-label-tertiary: #697786;
+  --dsw-alias-border-l4: #cbd3dc;
+  --dsw-alias-text-warning: #8a4f00;
+  --dsw-alias-bg-layer-2: #ffffff;
+  --dsw-alias-bg-layer-3: #eef2f6;
+  --dsw-alias-bg-module-platform: #e9eef3;
+  --dsw-alias-bg-mask-1: rgb(18 25 34 / 24%);
+  --dsw-mask-blur: blur(2px);
+  --dsw-elevation-prominent: 0 16px 48px rgb(0 0 0 / 22%);
+  --dsw-alias-interactive-bg-hover: rgb(77 112 150 / 12%);
+  --dsw-alias-state-success-primary: #237a45;
+  --dsw-alias-state-business-primary: #247db5;
+  --dsw-alias-state-warn-primary: #9a5b00;
+  --dsw-alias-state-error-primary: #b02b2b;
+  --dsw-static-deepseek-450: #418ac3;
+}
+
+:root[data-theme='dark'] {
+  color: #e6edf5;
+  background: #171c22;
+  color-scheme: dark;
+  --dsh-text-primary: #e6edf5;
+  --dsh-text-secondary: #b5c0cc;
+  --dsh-border-subtle: #46515e;
+  --dsh-surface-secondary: #242c35;
+  --dsh-warning: #ffca73;
+  --dsh-danger: #ff9a9a;
+  --dsw-alias-label-primary: #e6edf5;
+  --dsw-alias-label-secondary: #c1ccd7;
+  --dsw-alias-label-tertiary: #aab6c2;
+  --dsw-alias-border-l4: #46515e;
+  --dsw-alias-text-warning: #ffca73;
+  --dsw-alias-bg-layer-2: #252d36;
+  --dsw-alias-bg-layer-3: #303a45;
+  --dsw-alias-bg-module-platform: #303a45;
+  --dsw-alias-bg-mask-1: rgb(0 0 0 / 52%);
+  --dsw-mask-blur: blur(2px);
+  --dsw-elevation-prominent: 0 16px 48px rgb(0 0 0 / 42%);
+  --dsw-alias-interactive-bg-hover: rgb(203 222 242 / 12%);
+  --dsw-alias-state-success-primary: #55c47b;
+  --dsw-alias-state-business-primary: #61b6ea;
+  --dsw-alias-state-warn-primary: #ffc66f;
+  --dsw-alias-state-error-primary: #ff8989;
+  --dsw-static-deepseek-450: #65b7ee;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; }
+button { font: inherit; }
+.fixture-shell { width: min(100%, 1280px); margin: 0 auto; padding: 16px 22px 28px; }
+.fixture-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.fixture-heading h1 { margin: 0; font-size: 16px; }
+.synthetic-banner { padding: 7px 10px; border: 1px solid #bb7928; border-radius: 6px; color: #78420a; background: #fff5df; font-weight: 700; }
+:root[data-theme='dark'] .synthetic-banner { color: #ffe1ad; background: #46361e; border-color: #bb7928; }
+.fixture-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 9px; border: 1px dashed var(--dsh-border-subtle); border-radius: 8px; margin-bottom: 14px; }
+.fixture-controls button, .fixture-controls select { min-height: 30px; padding: 3px 8px; border: 1px solid var(--dsh-border-subtle); border-radius: 5px; background: transparent; color: inherit; cursor: pointer; }
+.fixture-controls button[aria-pressed='true'] { outline: 2px solid #3286c5; outline-offset: 1px; }
+.fixture-label { color: var(--dsh-text-secondary); font-size: 12px; }
+.surface-caption { margin: 12px 0 3px; color: var(--dsh-text-secondary); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+.composer-shell { border: 1px solid var(--dsh-border-subtle); border-radius: 11px; padding: 8px; background: color-mix(in srgb, var(--dsh-surface-secondary) 52%, transparent); }
+.fixture-prompt { min-height: 44px; padding: 10px 12px; border: 1px solid var(--dsh-border-subtle); border-radius: 8px; color: var(--dsh-text-secondary); overflow-wrap: anywhere; }
+.dock-mount { display: flex; flex-direction: column; }
+.approval-shell { padding: 12px; border: 1px solid var(--dsh-border-subtle); border-radius: 10px; }
+.approval-shell h2 { margin: 0 0 4px; font-size: 14px; }
+.approval-shell p { margin: 0 0 8px; color: var(--dsh-text-secondary); }
+.approval-controls-omitted { font-size: 12px; color: var(--dsh-text-secondary); }
+.fixture-state { margin-top: 10px; color: var(--dsh-text-secondary); font-size: 11px; }
+
+@media (max-width: 480px) {
+  .fixture-shell { padding: 10px 8px 20px; }
+  .fixture-heading { align-items: flex-start; }
+  .fixture-controls { gap: 5px; }
+  .fixture-controls button, .fixture-controls select { padding-inline: 6px; }
+}
