@@ -1,4 +1,5 @@
 export type OnlineCorrectionLocaleKey = 'title' | 'kind.f1' | 'kind.f2' | 'overflow' | 'degraded'
+  | 'advisory.f1' | 'advisory.f2'
   | 'history.label' | 'history.warning' | 'history.title' | 'history.observation' | 'history.caveat' | 'history.nextCheck' | 'history.authority'
   | 'nextCheck.label' | 'nextCheck.warning' | 'nextCheck.evidence.f1' | 'nextCheck.evidence.f2'
   | 'nextCheck.reviewRetry' | 'nextCheck.inspectWrite' | 'nextCheck.inspectEdit' | 'nextCheck.checkDirectory'
@@ -16,6 +17,8 @@ export const onlineCorrectionEn = {
   title: 'Execution advisory',
   'kind.f1': 'Repeated failure',
   'kind.f2': 'Postcondition mismatch',
+  'advisory.f1': 'The same operation is repeatedly failing with the same normalized failure signature. Stop repeating this exact retry path and inspect the underlying cause before trying again.',
+  'advisory.f2': 'The operation completed, but the verified expected postcondition was not satisfied. Do not treat this execution as goal completion; inspect the target state before continuing.',
   overflow: '{n} additional live advisories',
   degraded: 'Some execution advisories may be unavailable.',
   'history.label': 'Verified historical context — not a diagnosis or fix',
@@ -42,6 +45,8 @@ export const onlineCorrectionZh = {
   title: '执行建议',
   'kind.f1': '重复失败',
   'kind.f2': '后置条件不匹配',
+  'advisory.f1': '同一操作反复失败，且归一化后的失败特征一致。请停止按原方式重试，先检查原因，再决定是否继续。',
+  'advisory.f2': '操作已结束，但经验证，预期后置条件未满足。不能认定本次目标已完成；继续前请核对目标状态。',
   overflow: '另有 {n} 条实时建议',
   degraded: '部分执行建议可能未显示。',
   'history.label': '已验证的历史上下文——不是诊断或修复方案',

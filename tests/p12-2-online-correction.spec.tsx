@@ -31,6 +31,8 @@ import type { VerificationRecordV1 } from '../src/host/verification-store.ts'
 const session = (id: string): Session => ({ id, header: { cwd: '/private/path/sentinel' } }) as unknown as Session
 const f1Text = 'The same operation is repeatedly failing with the same normalized failure signature. Stop repeating this exact retry path and inspect the underlying cause before trying again.'
 const f2Text = 'The operation completed, but the verified expected postcondition was not satisfied. Do not treat this execution as goal completion; inspect the target state before continuing.'
+const zhF1Text = '同一操作反复失败，且归一化后的失败特征一致。请停止按原方式重试，先检查原因，再决定是否继续。'
+const zhF2Text = '操作已结束，但经验证，预期后置条件未满足。不能认定本次目标已完成；继续前请核对目标状态。'
 
 function browserFinding(
   kind: BrowserOnlineCorrectionFindingV1['kind'] = 'REPEATED_FAILURE_WITHOUT_PROGRESS',
@@ -187,17 +189,19 @@ async function flushMicrotasks(): Promise<void> {
   await Promise.resolve()
 }
 
-function tFor(locale: 'en' | 'zh' = 'en') {
+function tFor(locale: 'en' | 'zh' = 'en', advisoryFailure?: 'missing' | 'throw') {
   const dictionary = locale === 'en' ? onlineCorrectionEn : onlineCorrectionZh
   return ((key: keyof typeof onlineCorrectionEn, params?: Record<string, unknown>) => {
+    if (key === 'advisory.f1' && advisoryFailure === 'missing') return key
+    if (key === 'advisory.f1' && advisoryFailure === 'throw') throw new Error('synthetic locale lookup failure')
     let value = dictionary[key]
     for (const [name, replacement] of Object.entries(params ?? {})) value = value.replaceAll(`{${name}}`, String(replacement))
     return value
   }) as never
 }
 
-function renderDock(client: OnlineCorrectionClient, sessionId = 'session-1', locale: 'en' | 'zh' = 'en') {
-  return render(<OnlineCorrectionDock
+function dockElement(client: OnlineCorrectionClient, sessionId: string, t: unknown) {
+  return <OnlineCorrectionDock
     sessionId={sessionId as never}
     session={{} as never}
     input={{} as never}
@@ -207,8 +211,12 @@ function renderDock(client: OnlineCorrectionClient, sessionId = 'session-1', loc
     useSessionStatus={(() => ({})) as never}
     useSessionRetainInfo={(() => ({})) as never}
     onlineCorrectionClient={client}
-    t={tFor(locale)}
-  />)
+    t={t as never}
+  />
+}
+
+function renderDock(client: OnlineCorrectionClient, sessionId = 'session-1', locale: 'en' | 'zh' = 'en') {
+  return render(dockElement(client, sessionId, tFor(locale)))
 }
 
 afterEach(() => {
@@ -561,6 +569,72 @@ describe('Phase 12.2 User Advisory Surface U1-U22', () => {
     expect(source).not.toMatch(/pattern-store|guidance-store|deep-judge|fast-judge|\bllm\b|\bmodel\b|subagent|agent context/i)
     expect(source).toContain('ONLINE_CORRECTION_ROUTE')
     expect(source).toContain('conversation')
+  })
+})
+
+describe('Phase 15.3E Locale-only F1/F2 display', () => {
+  it('keeps canonical English bodies byte-identical and adds the two approved Chinese sentences', () => {
+    expect(onlineCorrectionEn['advisory.f1']).toBe(f1Text)
+    expect(onlineCorrectionEn['advisory.f2']).toBe(f2Text)
+    expect(onlineCorrectionZh['advisory.f1']).toBe(zhF1Text)
+    expect(onlineCorrectionZh['advisory.f2']).toBe(zhF2Text)
+    expect(renderOnlineCorrectionAdvisory('STOP_EXACT_RETRY_PATH_V1')).toBe(f1Text)
+    expect(renderOnlineCorrectionAdvisory('INSPECT_UNSATISFIED_POSTCONDITION_V1')).toBe(f2Text)
+  })
+
+  it('switches mixed F1/F2 Findings in the mounted Dock between Chinese-only and canonical English-only bodies', async () => {
+    const findings = [
+      browserFinding('REPEATED_FAILURE_WITHOUT_PROGRESS', 1, 'a'),
+      browserFinding('POSTCONDITION_NOT_SATISFIED', 3, 'b'),
+      browserFinding('REPEATED_FAILURE_WITHOUT_PROGRESS', 2, 'c'),
+    ]
+    const client = new OnlineCorrectionClient({
+      rpc: { call: async () => ({ ok: true, value: { kind: 'VIEW', view: browserView({ findings }) } }) },
+    })
+    const view = renderDock(client)
+    await screen.findByText(f2Text)
+
+    const getBodies = () => [...view.container.querySelectorAll('[data-advisory-kind]')].map(row => ({
+      kind: row.getAttribute('data-advisory-kind'),
+      body: row.querySelectorAll('span')[1]?.textContent,
+    }))
+    expect(getBodies()).toEqual([
+      { kind: 'POSTCONDITION_NOT_SATISFIED', body: f2Text },
+      { kind: 'REPEATED_FAILURE_WITHOUT_PROGRESS', body: f1Text },
+      { kind: 'REPEATED_FAILURE_WITHOUT_PROGRESS', body: f1Text },
+    ])
+
+    view.rerender(dockElement(client, 'session-1', tFor('zh')))
+    await waitFor(() => expect(getBodies()).toEqual([
+      { kind: 'POSTCONDITION_NOT_SATISFIED', body: zhF2Text },
+      { kind: 'REPEATED_FAILURE_WITHOUT_PROGRESS', body: zhF1Text },
+      { kind: 'REPEATED_FAILURE_WITHOUT_PROGRESS', body: zhF1Text },
+    ]))
+    expect(view.container.textContent).not.toContain(f1Text)
+    expect(view.container.textContent).not.toContain(f2Text)
+    expect(view.container.textContent).not.toMatch(/English original|英文原文|查看原文/)
+
+    view.rerender(dockElement(client, 'session-1', tFor('en')))
+    await waitFor(() => expect(getBodies()).toEqual([
+      { kind: 'POSTCONDITION_NOT_SATISFIED', body: f2Text },
+      { kind: 'REPEATED_FAILURE_WITHOUT_PROGRESS', body: f1Text },
+      { kind: 'REPEATED_FAILURE_WITHOUT_PROGRESS', body: f1Text },
+    ]))
+    expect(view.container.textContent).not.toContain(zhF1Text)
+    expect(view.container.textContent).not.toContain(zhF2Text)
+    client.dispose()
+  })
+
+  it.each(['missing', 'throw'] as const)('keeps the Finding visible with canonical English when locale lookup is %s', async failure => {
+    const client = new OnlineCorrectionClient({
+      rpc: { call: async () => ({ ok: true, value: { kind: 'VIEW', view: browserView({ findings: [browserFinding()] }) } }) },
+    })
+    const view = render(dockElement(client, 'session-1', tFor('zh', failure)))
+    await screen.findByText(f1Text)
+    expect(view.container.querySelectorAll('[data-advisory-kind]')).toHaveLength(1)
+    expect(view.container.querySelector('[data-advisory-kind]')?.textContent).toContain(f1Text)
+    expect(view.container.textContent).not.toContain(zhF1Text)
+    client.dispose()
   })
 })
 

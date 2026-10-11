@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Risk Advisor Phase 15.3E synthetic locale fixture</title>
+    <style>
+      body { box-sizing: border-box; margin: 0; padding: 20px; font: 16px/1.45 system-ui, sans-serif; }
+      #controls { display: flex; gap: 8px; margin-bottom: 16px; }
+      #mount { max-width: 760px; }
+      @media (max-width: 480px) { body { padding: 10px; } }
+    </style>
+  </head>
+  <body>
+    <div id="controls" aria-label="Synthetic fixture controls">
+      <button id="locale-en" type="button">English</button>
+      <button id="locale-zh" type="button">中文</button>
+    </div>
+    <main id="mount"></main>
+
+    <script src="/node_modules/react/umd/react.production.min.js"></script>
+    <script src="/node_modules/react-dom/umd/react-dom.production.min.js"></script>
+    <script>
+      (() => {
+        const jsxRuntime = {
+          Fragment: React.Fragment,
+          jsx: (type, props, key) => React.createElement(type, { ...props, key: key ?? props?.key }),
+          jsxs: (type, props, key) => React.createElement(type, { ...props, key: key ?? props?.key }),
+        }
+        const component = () => null
+        const primitives = new Proxy({ writeClipboard: async () => undefined }, {
+          get: (target, key) => target[key] ?? component,
+        })
+        window.__ModuleLoader__ = {
+          load({ id, factory }) {
+            if (id !== '@dhandil/dsh-risk-advisor') throw new Error(`Unexpected module ${id}`)
+            window.__riskAdvisorFixtureModule = factory(specifier => {
+              if (specifier === 'react') return React
+              if (specifier === 'react/jsx-runtime') return jsxRuntime
+              if (specifier === '@deepseek-ai/dsh-client-ui-primitives') return primitives
+              throw new Error(`Unexpected external module ${specifier}`)
+            })
+          },
+        }
+      })()
+    </script>
+    <script src="/lib/client.js"></script>
+    <script>
+      (() => {
+        const f1 = 'The same operation is repeatedly failing with the same normalized failure signature. Stop repeating this exact retry path and inspect the underlying cause before trying again.'
+        const f2 = 'The operation completed, but the verified expected postcondition was not satisfied. Do not treat this execution as goal completion; inspect the target state before continuing.'
+        const zhF1 = '同一操作反复失败，且归一化后的失败特征一致。请停止按原方式重试，先检查原因，再决定是否继续。'
+        const zhF2 = '操作已结束，但经验证，预期后置条件未满足。不能认定本次目标已完成；继续前请核对目标状态。'
+        const findings = [
+          { findingId: `ra-correction-v1_${'a'.repeat(64)}`, kind: 'REPEATED_FAILURE_WITHOUT_PROGRESS', advisoryCode: 'STOP_EXACT_RETRY_PATH_V1', observedAt: 10 },
+          { findingId: `ra-correction-v1_${'b'.repeat(64)}`, kind: 'POSTCONDITION_NOT_SATISFIED', advisoryCode: 'INSPECT_UNSATISFIED_POSTCONDITION_V1', observedAt: 20 },
+        ]
+        const snapshot = Object.freeze({ status: 'VIEW', view: Object.freeze({
+          schemaVersion: 1,
+          sessionId: 'phase15-3e-synthetic-session',
+          findings: Object.freeze(findings),
+          truncated: false,
+          reasonCodes: Object.freeze([]),
+        }) })
+        const source = Object.freeze({ getSnapshot: () => snapshot, subscribe: () => () => undefined })
+        const client = Object.freeze({ getSource: () => source, retain: () => undefined, release: () => undefined })
+        const dictionary = {
+          en: { title: 'Execution advisory', 'kind.f1': 'Repeated failure', 'kind.f2': 'Postcondition mismatch', 'advisory.f1': f1, 'advisory.f2': f2 },
+          zh: { title: '执行建议', 'kind.f1': '重复失败', 'kind.f2': '后置条件不匹配', 'advisory.f1': zhF1, 'advisory.f2': zhF2 },
+        }
+        const root = ReactDOM.createRoot(document.getElementById('mount'))
+        function show(locale) {
+          const module = window.__riskAdvisorFixtureModule
+          root.render(React.createElement(module.OnlineCorrectionDock, {
+            sessionId: 'phase15-3e-synthetic-session',
+            session: {}, input: {},
+            useSession: () => ({}), useProjection: () => undefined,
+            useSessions: () => ({}), useSessionStatus: () => ({}), useSessionRetainInfo: () => ({}),
+            onlineCorrectionClient: client,
+            t: key => dictionary[locale][key] ?? key,
+          }))
+          document.documentElement.lang = locale
+          document.documentElement.dataset.fixtureLocale = locale
+        }
+        document.getElementById('locale-en').addEventListener('click', () => show('en'))
+        document.getElementById('locale-zh').addEventListener('click', () => show('zh'))
+        window.showRiskAdvisorFixtureLocale = show
+        show('en')
+      })()
+    </script>
+  </body>
+</html>

@@ -23,6 +23,10 @@ const ADVISORY_BODIES: Readonly<Record<BrowserOnlineCorrectionAdvisoryCode, stri
   STOP_EXACT_RETRY_PATH_V1: 'The same operation is repeatedly failing with the same normalized failure signature. Stop repeating this exact retry path and inspect the underlying cause before trying again.',
   INSPECT_UNSATISFIED_POSTCONDITION_V1: 'The operation completed, but the verified expected postcondition was not satisfied. Do not treat this execution as goal completion; inspect the target state before continuing.',
 })
+const ADVISORY_LOCALE_KEYS = Object.freeze({
+  STOP_EXACT_RETRY_PATH_V1: 'advisory.f1',
+  INSPECT_UNSATISFIED_POSTCONDITION_V1: 'advisory.f2',
+} satisfies Record<BrowserOnlineCorrectionAdvisoryCode, 'advisory.f1' | 'advisory.f2'>)
 const EMPTY_HISTORY_SNAPSHOT: CorrectionHistoricalContextStoreSnapshot = Object.freeze({ status: 'EMPTY' })
 const EMPTY_HISTORY_SOURCE = Object.freeze({
   getSnapshot: () => EMPTY_HISTORY_SNAPSHOT,
@@ -83,7 +87,7 @@ export function OnlineCorrectionDock({ sessionId, onlineCorrectionClient, correc
         {visible.map((finding, index) => (
           <div className={css.finding} key={finding.findingId} data-advisory-kind={finding.kind}>
             <span className={css.kind}>{t(finding.kind === 'REPEATED_FAILURE_WITHOUT_PROGRESS' ? 'kind.f1' : 'kind.f2')}</span>
-            <span className={css.body}>{renderOnlineCorrectionAdvisory(finding.advisoryCode)}</span>
+            <span className={css.body}>{renderLocalizedAdvisory(finding.advisoryCode, t)}</span>
             {index === 0 ? <CorrectionNextCheckBoundary key={`${sessionId}:${finding.findingId}`}>
               <CorrectionNextCheckSection client={correctionNextCheckClient} sessionId={sessionId} finding={finding} t={t} />
             </CorrectionNextCheckBoundary> : null}
@@ -109,6 +113,21 @@ export function OnlineCorrectionDock({ sessionId, onlineCorrectionClient, correc
       </div>
     </div>
   )
+}
+
+function renderLocalizedAdvisory(
+  code: BrowserOnlineCorrectionAdvisoryCode,
+  translate: (key: 'advisory.f1' | 'advisory.f2') => string,
+): string {
+  const key = ADVISORY_LOCALE_KEYS[code]
+  try {
+    const localized = translate(key)
+    return typeof localized === 'string' && localized.length > 0 && localized !== key
+      ? localized
+      : renderOnlineCorrectionAdvisory(code)
+  } catch {
+    return renderOnlineCorrectionAdvisory(code)
+  }
 }
 
 function safeHistorySource(
