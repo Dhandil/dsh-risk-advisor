@@ -1,7 +1,7 @@
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useSyncExternalStore } from 'react'
-import type { RuntimeRiskAwarenessReadV1 } from '../src/bridge-contract.ts'
+import type { BrowserRiskAssessmentV1, RuntimeRiskAwarenessReadV1 } from '../src/bridge-contract.ts'
 import type { HistoricalContextReadV1 } from '../src/historical-context-contract.ts'
 import { HistoricalContextClient } from '../src/client/historical-context-client.ts'
 import { HistoricalContextStore, HISTORICAL_CONTEXT_MAX_FRESHNESS_MS } from '../src/client/historical-context-store.ts'
@@ -100,8 +100,38 @@ function runtimeView(overrides: Partial<Extract<RuntimeRiskAwarenessReadV1, { ki
   }) as Extract<RuntimeRiskAwarenessReadV1, { kind: 'VIEW' }>
 }
 
+function completedAssessment(assessmentId: string): BrowserRiskAssessmentV1 {
+  const dimension = (verdict: string) => ({ verdict, source: 'RULE' as const, evidenceQuality: 'HIGH' as const, reasons: Object.freeze([]) })
+  return Object.freeze({
+    schemaVersion: 1,
+    assessmentId,
+    status: 'COMPLETE',
+    dimensions: {
+      risk: dimension('HIGH'), authorization: dimension('UNKNOWN'), necessity: dimension('UNKNOWN'),
+      privilege: dimension('UNKNOWN'), alternatives: dimension('UNKNOWN'), evidenceQuality: dimension('HIGH'),
+    },
+    aggregate: { recommendation: 'APPROVE_WITH_CAUTION', hazardLevel: 'HIGH', attention: 'ELEVATED', primaryReasonCodes: ['HIGH_HAZARD_UNRESOLVED_CONTEXT'] },
+    findings: Object.freeze([{ code: 'HIGH_HAZARD', title: 'Review the current target', detail: 'Synthetic assessment evidence.', dimension: 'RISK', severity: 'WARNING', strength: 'DETERMINISTIC' }]),
+    uncertainties: Object.freeze([]),
+    alternatives: Object.freeze([]),
+    evidence: { ledgerHealth: 'HEALTHY' },
+    judgeAssisted: false,
+  }) as BrowserRiskAssessmentV1
+}
+
+function readyRuntimeView(sessionId: string, executionId: string, assessmentId: string) {
+  return runtimeView({
+    sessionId,
+    executionId,
+    assessmentId,
+    status: 'READY',
+    stage: 'COMPLETE',
+    assessment: completedAssessment(assessmentId),
+  })
+}
+
 describe('Phase 14.2 historical Client H5/H6/H7/H10', () => {
-  afterEach(() => { cleanup(); setPending(undefined); vi.restoreAllMocks() })
+  afterEach(() => { cleanup(); setPending(undefined); vi.restoreAllMocks(); vi.useRealTimers() })
 
   it('H5/H10 scopes reads to exact current identity, enforces one read/second and 1.5s freshness, aborts stale replies and restarts', async () => {
     const clock = new Clockwork()
@@ -260,13 +290,13 @@ describe('Phase 14.2 historical Client H5/H6/H7/H10', () => {
     expect(historySignals[0]?.aborted).toBe(true)
     pendingHistory.resolve(carrier(historicalRead('p14-2-ui-session', 'ra-execution-p14-2-ui', 'ra-assessment-p14-2-ui')))
     await act(async () => { await flush() })
-    expect(screen.queryByText('Verified historical context')).toBeNull()
+    expect(screen.queryByText(runtimeRiskEn.historicalSummary)).toBeNull()
     expect(view.container.querySelectorAll('[role="status"]')).toHaveLength(0)
     contextClient.dispose()
     riskClient.dispose()
   })
 
-  it('H6 displays all five fixed renderer fields inside the existing card only', async () => {
+  it('I1 keeps history collapsed by default and reveals every original source field unchanged on disclosure', async () => {
     const rpc = async (_channel: string, endpoint: string): Promise<unknown> => endpoint === 'risk-advisor/runtime-risk'
       ? carrier(runtimeView())
       : carrier(historicalRead('p14-2-ui-session', 'ra-execution-p14-2-ui', 'ra-assessment-p14-2-ui'))
@@ -284,14 +314,163 @@ describe('Phase 14.2 historical Client H5/H6/H7/H10', () => {
       historicalContextClient={contextClient}
       t={translate as never}
     />)
-    await screen.findByText('Host-storage-scoped historical context; target and Workspace applicability unproven.')
-    expect(screen.getByText('Verified historical pattern')).toBeTruthy()
-    expect(screen.getByText('A qualified verified-success pattern covers 3 distinct Episodes across 2 UTC dates.')).toBeTruthy()
-    expect(screen.getByText('Historical evidence is advisory only; it does not establish that the current operation is safe or correctly targeted.')).toBeTruthy()
-    expect(screen.getByText('Independently verify the current target and expected postcondition.')).toBeTruthy()
-    expect(screen.getByText('This guidance does not determine risk or grant permission or approval.')).toBeTruthy()
+    await screen.findByText(runtimeRiskEn.historicalSummary)
+    const disclosure = view.container.querySelector('details[aria-label]') as HTMLDetailsElement
+    expect(disclosure.open).toBe(false)
+    expect(disclosure.querySelectorAll('summary')).toHaveLength(1)
+    expect(disclosure.querySelector('summary')?.tagName).toBe('SUMMARY')
+    expect(disclosure.textContent).toContain('Historical context')
+    expect(disclosure.textContent).toContain('current applicability unverified')
+    expect(view.container.querySelector('[role="status"]')?.textContent).toContain('Assessment is being prepared from evidence captured before execution.')
+    fireEvent.click(disclosure.querySelector('summary')!)
+    expect(disclosure.open).toBe(true)
+    expect(disclosure.querySelector('strong')?.textContent).toBe(runtimeRiskEn.historicalOriginal)
+    expect(disclosure.textContent).toContain('Verified historical pattern')
+    expect(disclosure.textContent).toContain('A qualified verified-success pattern covers 3 distinct Episodes across 2 UTC dates.')
+    expect(disclosure.textContent).toContain('Historical evidence is advisory only; it does not establish that the current operation is safe or correctly targeted.')
+    expect(disclosure.textContent).toContain('Independently verify the current target and expected postcondition.')
+    expect(disclosure.textContent).toContain('This guidance does not determine risk or grant permission or approval.')
+    expect(Array.from(disclosure.children).slice(3).map(item => item.textContent)).toEqual([
+      'Verified historical pattern',
+      'A qualified verified-success pattern covers 3 distinct Episodes across 2 UTC dates.',
+      'Historical evidence is advisory only; it does not establish that the current operation is safe or correctly targeted.',
+      'Independently verify the current target and expected postcondition.',
+      'This guidance does not determine risk or grant permission or approval.',
+    ])
     expect(view.container.querySelectorAll('[role="status"]')).toHaveLength(1)
     expect(view.container.querySelector('dialog')).toBeNull()
+    contextClient.dispose()
+    riskClient.dispose()
+  })
+
+  it('I2 resets an open disclosure across real Client A→B→A and ignores delayed stale history after the Session switch', async () => {
+    const historyRequests: Array<{
+      readonly request: { readonly sessionId: string; readonly executionId: string; readonly assessmentId: string }
+      readonly resolve: (value: unknown) => void
+      readonly signal: AbortSignal | undefined
+    }> = []
+    const runtimeViews = new Map([
+      ['p15-3c-session-a', readyRuntimeView('p15-3c-session-a', 'p15-3c-execution-a1', 'p15-3c-assessment-a1')],
+      ['p15-3c-session-b', readyRuntimeView('p15-3c-session-b', 'p15-3c-execution-b1', 'p15-3c-assessment-b1')],
+    ])
+    const rpc = async (_channel: string, endpoint: string, payload: unknown, signal?: AbortSignal): Promise<unknown> => {
+      const request = payload as { readonly sessionId: string; readonly executionId?: string; readonly assessmentId?: string }
+      if (endpoint === 'risk-advisor/runtime-risk') {
+        const view = runtimeViews.get(request.sessionId)
+        return carrier(view ?? { schemaVersion: 1, kind: 'NOT_FOUND', sessionId: request.sessionId })
+      }
+      return await new Promise(resolve => historyRequests.push({
+        request: request as { readonly sessionId: string; readonly executionId: string; readonly assessmentId: string },
+        resolve,
+        signal,
+      }))
+    }
+    const riskClient = new RuntimeRiskClient({ rpc: { call: rpc } })
+    const contextClient = new HistoricalContextClient({ rpc: { call: rpc } })
+    const renderSession = (sessionId: string) => <RuntimeRiskAwarenessDock
+      sessionId={sessionId as never}
+      session={{} as never} input={{} as never}
+      useSession={(() => ({}) as never) as never}
+      useProjection={(() => undefined) as never}
+      useSessions={(() => ({})) as never}
+      useSessionStatus={useSessionStatus as never}
+      useSessionRetainInfo={(() => ({})) as never}
+      runtimeRiskClient={riskClient}
+      historicalContextClient={contextClient}
+      t={translate as never}
+    />
+    const view = render(renderSession('p15-3c-session-a'))
+    await vi.waitFor(() => expect(historyRequests).toHaveLength(1))
+    await act(async () => { historyRequests[0]!.resolve(carrier(historicalRead('p15-3c-session-a', 'p15-3c-execution-a1', 'p15-3c-assessment-a1'))); await flush() })
+    await screen.findByText(runtimeRiskEn.historicalSummary)
+    let disclosure = view.container.querySelector('details[aria-label]') as HTMLDetailsElement
+    expect(disclosure.open).toBe(false)
+    fireEvent.click(disclosure.querySelector('summary')!)
+    expect(disclosure.open).toBe(true)
+
+    view.rerender(renderSession('p15-3c-session-b'))
+    await vi.waitFor(() => expect(historyRequests).toHaveLength(2))
+    expect(view.container.querySelector('details[aria-label]')).toBeNull()
+    // Keep B's real store request in flight while returning to A, then deliver B late.
+    view.rerender(renderSession('p15-3c-session-a'))
+    await vi.waitFor(() => expect(historyRequests).toHaveLength(3), { timeout: 4000 })
+    expect(historyRequests[1]?.signal?.aborted).toBe(true)
+    await act(async () => { historyRequests[1]!.resolve(carrier(historicalRead('p15-3c-session-b', 'p15-3c-execution-b1', 'p15-3c-assessment-b1'))); await flush() })
+    expect(view.container.querySelector('details[aria-label]')).toBeNull()
+    await act(async () => { historyRequests[2]!.resolve(carrier(historicalRead('p15-3c-session-a', 'p15-3c-execution-a1', 'p15-3c-assessment-a1'))); await flush() })
+    await screen.findByText(runtimeRiskEn.historicalSummary)
+    disclosure = view.container.querySelector('details[aria-label]') as HTMLDetailsElement
+    expect(disclosure.open).toBe(false)
+    fireEvent.click(disclosure.querySelector('summary')!)
+    expect(disclosure.open).toBe(true)
+
+    // An execution identity change re-fetches history and starts a closed disclosure.
+    runtimeViews.set('p15-3c-session-a', readyRuntimeView('p15-3c-session-a', 'p15-3c-execution-a2', 'p15-3c-assessment-a1'))
+    act(() => riskClient.refresh('p15-3c-session-a'))
+    await vi.waitFor(() => expect(historyRequests).toHaveLength(4), { timeout: 4000 })
+    expect(view.container.querySelector('details[aria-label]')).toBeNull()
+    await act(async () => { historyRequests[3]!.resolve(carrier(historicalRead('p15-3c-session-a', 'p15-3c-execution-a2', 'p15-3c-assessment-a1'))); await flush() })
+    await screen.findByText(runtimeRiskEn.historicalSummary)
+    disclosure = view.container.querySelector('details[aria-label]') as HTMLDetailsElement
+    expect(disclosure.open).toBe(false)
+    fireEvent.click(disclosure.querySelector('summary')!)
+    expect(disclosure.open).toBe(true)
+
+    // An assessment-only change also starts a fresh closed disclosure.
+    runtimeViews.set('p15-3c-session-a', readyRuntimeView('p15-3c-session-a', 'p15-3c-execution-a2', 'p15-3c-assessment-a2'))
+    act(() => riskClient.refresh('p15-3c-session-a'))
+    await vi.waitFor(() => expect(historyRequests).toHaveLength(5), { timeout: 4000 })
+    expect(view.container.querySelector('details[aria-label]')).toBeNull()
+    await act(async () => { historyRequests[4]!.resolve(carrier(historicalRead('p15-3c-session-a', 'p15-3c-execution-a2', 'p15-3c-assessment-a2'))); await flush() })
+    await screen.findByText(runtimeRiskEn.historicalSummary)
+    disclosure = view.container.querySelector('details[aria-label]') as HTMLDetailsElement
+    expect(disclosure.open).toBe(false)
+    fireEvent.click(disclosure.querySelector('summary')!)
+    expect(disclosure.open).toBe(true)
+
+    // A history withdrawal removes the open disclosure instead of reviving it.
+    runtimeViews.set('p15-3c-session-a', readyRuntimeView('p15-3c-session-a', 'p15-3c-execution-a2', 'p15-3c-assessment-a3'))
+    act(() => riskClient.refresh('p15-3c-session-a'))
+    await vi.waitFor(() => expect(historyRequests).toHaveLength(6), { timeout: 4000 })
+    expect(view.container.querySelector('details[aria-label]')).toBeNull()
+    await act(async () => { historyRequests[5]!.resolve(carrier({ schemaVersion: 1, kind: 'NOT_FOUND', sessionId: 'p15-3c-session-a' })); await flush() })
+    expect(view.container.querySelector('details[aria-label]')).toBeNull()
+    contextClient.dispose()
+    riskClient.dispose()
+  })
+
+  it('I2 removes an open disclosure when the real history store freshness timer expires', async () => {
+    let historyReads = 0
+    const rpc = async (_channel: string, endpoint: string, payload: unknown, signal?: AbortSignal): Promise<unknown> => {
+      const request = payload as { readonly sessionId: string; readonly executionId?: string; readonly assessmentId?: string }
+      if (endpoint === 'risk-advisor/runtime-risk') return carrier(readyRuntimeView('p15-3c-expiry-session', 'p15-3c-expiry-execution', 'p15-3c-expiry-assessment'))
+      historyReads += 1
+      if (historyReads === 1) return carrier(historicalRead(request.sessionId, request.executionId!, request.assessmentId!))
+      return await new Promise(resolve => signal?.addEventListener('abort', () => {
+        resolve(carrier({ schemaVersion: 1, kind: 'NOT_FOUND', sessionId: request.sessionId }))
+      }, { once: true }))
+    }
+    const riskClient = new RuntimeRiskClient({ rpc: { call: rpc } })
+    const contextClient = new HistoricalContextClient({ rpc: { call: rpc } })
+    const view = render(<RuntimeRiskAwarenessDock
+      sessionId={'p15-3c-expiry-session' as never}
+      session={{} as never} input={{} as never}
+      useSession={(() => ({}) as never) as never}
+      useProjection={(() => undefined) as never}
+      useSessions={(() => ({})) as never}
+      useSessionStatus={useSessionStatus as never}
+      useSessionRetainInfo={(() => ({})) as never}
+      runtimeRiskClient={riskClient}
+      historicalContextClient={contextClient}
+      t={translate as never}
+    />)
+    await screen.findByText(runtimeRiskEn.historicalSummary)
+    expect(view.container.querySelector('details[aria-label]')).not.toBeNull()
+    const disclosure = view.container.querySelector('details[aria-label]') as HTMLDetailsElement
+    fireEvent.click(disclosure.querySelector('summary')!)
+    expect(disclosure.open).toBe(true)
+    await vi.waitFor(() => expect(view.container.querySelector('details[aria-label]')).toBeNull(), { timeout: 2500, interval: 25 })
+    expect(historyReads).toBeGreaterThanOrEqual(2)
     contextClient.dispose()
     riskClient.dispose()
   })

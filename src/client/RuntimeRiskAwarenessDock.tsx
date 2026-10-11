@@ -87,7 +87,7 @@ export function RuntimeRiskAwarenessDock({ sessionId, runtimeRiskClient, histori
     : undefined
   if (currentView.status === 'PENDING') return <div className={css.dock} role="status" aria-live="polite"><div className={css.panel}>
     <div className={css.title}>{t('title')}</div><div>{t('queued')}</div><div className={css.muted}>{t('preExecution')}</div><div className={css.muted}>{t('advisory')}</div>
-    {historical !== undefined && <HistoricalContextSection historical={historical} />}
+    {historical !== undefined && <HistoricalContextSection key={historicalIdentity(sessionId, currentView.executionId, currentView.assessmentId)} historical={historical} t={t} />}
   </div></div>
 
   const assessment = currentView.assessment
@@ -105,7 +105,7 @@ export function RuntimeRiskAwarenessDock({ sessionId, runtimeRiskClient, histori
       <div className={css.reason}><span className={css.label}>{t('reason')}: </span>{primaryReason}</div>
       <div className={degraded ? css.caveat : css.muted}>{degraded ? t('degraded') : t('preExecution')}</div>
       <div className={css.muted}>{t('advisory')}</div>
-      {historical !== undefined && <HistoricalContextSection historical={historical} />}
+      {historical !== undefined && <HistoricalContextSection key={historicalIdentity(sessionId, currentView.executionId, currentView.assessmentId)} historical={historical} t={t} />}
       {assessment !== undefined && <details className={css.details}>
         <summary>{t('details')}</summary>
         <dl>{dimensionRows(assessment).map(([name, value]) => <div className={css.dimension} key={name}>
@@ -118,16 +118,21 @@ export function RuntimeRiskAwarenessDock({ sessionId, runtimeRiskClient, histori
   </div>
 }
 
-function HistoricalContextSection({ historical }: { readonly historical: HistoricalContextV1 }) {
-  return <section className={css.historical} aria-label="Verified historical context">
-    <strong className={css.historicalHeading}>Verified historical context</strong>
-    <div className={css.muted}>Host-storage-scoped historical context; target and Workspace applicability unproven.</div>
+function HistoricalContextSection({ historical, t }: { readonly historical: HistoricalContextV1; readonly t: PropsLocale<typeof RUNTIME_RISK_NS>['t'] }) {
+  return <details className={css.historical} aria-label={t('historicalSummary')}>
+    <summary>{t('historicalSummary')}</summary>
+    <div className={css.historicalHelper}>{t('historicalHelper')}</div>
+    <strong className={css.historicalHeading}>{t('historicalOriginal')}</strong>
     <div>{historical.title}</div>
     <div>{historical.observation}</div>
     <div>{historical.contextCaveat}</div>
     <div>{historical.nextCheck}</div>
     <div>{historical.authorityNotice}</div>
-  </section>
+  </details>
+}
+
+function historicalIdentity(sessionId: string, executionId: string, assessmentId: string): string {
+  return JSON.stringify([sessionId, executionId, assessmentId])
 }
 
 function readCallId(value: unknown): string | undefined {

@@ -95,9 +95,17 @@ describe('Phase 6 real advisory UI', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Risk Advisor details' })
     expect(dialog.textContent).toContain('Native Approval remains authoritative')
     expect(screen.getByTestId('risk-advisor-operation').textContent).toContain('Run a shell operation')
-    expect(screen.getByTestId('risk-advisor-operation-details').textContent).toContain('workspace/project')
-    expect(screen.getByTestId('risk-advisor-operation-details').textContent).toContain('workspace-write')
-    expect(screen.getByTestId('risk-advisor-operation-details').textContent).toContain('Workspace containment: unknown')
+    const operationDetails = screen.getByTestId('risk-advisor-operation-details')
+    expect(operationDetails.tagName).toBe('DL')
+    expect(Array.from(operationDetails.querySelectorAll('dt')).map(item => item.textContent)).toEqual([
+      'Resources', 'Requested permission', 'Workspace containment', 'Sandbox coverage', 'Recovery / reversibility',
+    ])
+    expect(Array.from(operationDetails.querySelectorAll('[data-testid="risk-advisor-resource"]')).map(item => item.textContent)).toEqual([
+      'workdir: workspace/project', 'other: redacted target',
+    ])
+    expect(operationDetails.querySelector('dd')?.textContent).toContain('workspace/project')
+    expect(operationDetails.textContent).toContain('workspace-write')
+    expect(operationDetails.querySelectorAll('dd')[2]?.textContent).toBe('unknown')
     expect(screen.getByTestId('risk-advisor-dimensions').querySelectorAll('details')).toHaveLength(6)
     expect(screen.getByTestId('risk-advisor-dimensions').textContent).toContain('DIMENSION_RULE')
     expect(screen.getByTestId('risk-advisor-findings').textContent).toContain('Authorization needs confirmation')

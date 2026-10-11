@@ -3,6 +3,7 @@ export type RuntimeRiskLocaleKey =
   | 'risk' | 'authorization' | 'necessity' | 'privilege' | 'alternatives' | 'evidenceQuality'
   | 'recommendation' | 'reason' | 'unknown' | 'low' | 'medium' | 'high' | 'critical'
   | 'approve' | 'caution' | 'saferAlternative' | 'moreInformation' | 'reject'
+  | 'historicalSummary' | 'historicalHelper' | 'historicalOriginal'
 
 export const RUNTIME_RISK_NS = 'risk-advisor.runtime-risk'
 
@@ -36,6 +37,9 @@ export const runtimeRiskEn = {
   saferAlternative: 'Prefer a safer alternative',
   moreInformation: 'More information needed',
   reject: 'Reject recommended',
+  historicalSummary: 'Historical context · current applicability unverified',
+  historicalHelper: 'Past evidence only; independently verify the current target and expected outcome.',
+  historicalOriginal: 'Original historical record',
 } satisfies Record<RuntimeRiskLocaleKey, string>
 
 export const runtimeRiskZh = {
@@ -64,4 +68,7 @@ export const runtimeRiskZh = {
   saferAlternative: '优先考虑更安全的替代方案',
   moreInformation: '需要更多信息',
   reject: '建议拒绝',
+  historicalSummary: '历史经验 · 当前目标适用性尚未验证',
+  historicalHelper: '仅为过往证据；请独立核验当前目标和预期结果。',
+  historicalOriginal: '历史记录原文',
 } satisfies Record<RuntimeRiskLocaleKey, string>

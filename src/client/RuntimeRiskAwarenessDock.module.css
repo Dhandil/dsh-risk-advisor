@@ -26,7 +26,9 @@
 .label { color: var(--dsh-text-secondary, currentColor); font-weight: 600; }
 .muted { color: var(--dsh-text-secondary, currentColor); }
 .caveat { color: var(--dsh-warning, #b54708); font-weight: 600; }
-.historical { display: grid; gap: 3px; margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--dsh-border-subtle, rgba(127, 127, 127, 0.25)); overflow-wrap: anywhere; }
+.historical { display: grid; gap: 3px; min-width: 0; margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--dsh-border-subtle, rgba(127, 127, 127, 0.25)); overflow-wrap: anywhere; }
+.historical summary { cursor: pointer; font-weight: 650; }
+.historicalHelper { color: var(--dsh-text-secondary, currentColor); }
 .historicalHeading { font-weight: 650; }
 .details { margin-top: 2px; }
 .details summary { cursor: pointer; font-weight: 600; }

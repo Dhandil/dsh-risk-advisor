@@ -92,6 +92,46 @@
   margin: 0;
 }
 
+.riskAdvisor__operationDetails {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+}
+
+.riskAdvisor__operationRow {
+  display: grid;
+  grid-template-columns: minmax(128px, 0.38fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  min-width: 0;
+}
+
+.riskAdvisor__operationRow dt {
+  color: var(--dsw-alias-label-secondary);
+  font-weight: 600;
+}
+
+.riskAdvisor__operationRow dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.riskAdvisor__resourceList {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-inline-start: 18px;
+}
+
+.riskAdvisor__resourceList li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .riskAdvisor__analysis details > summary {
   cursor: pointer;
 }
@@ -122,5 +162,10 @@
 
   .riskAdvisor__tagText {
     max-width: 110px;
+  }
+
+  .riskAdvisor__operationRow {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
   }
 }

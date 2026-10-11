@@ -155,14 +155,20 @@ function RiskAdvisorAnalysis({ view, t }: { readonly view: RiskAdvisorView; read
       <h3>{t('operation.title')}</h3>
       <strong>{operation.title}</strong>
       <p>{operation.summary}</p>
-      <div data-testid="risk-advisor-operation-details">
-        <strong>{t('resources')}</strong>
-        {operation.resources.map(resource => <span data-testid="risk-advisor-resource" key={`${resource.kind}:${resource.label}`}>{resource.kind}: {resource.label}</span>)}
-        {operation.requestedPermission === undefined ? null : <span>{t('requestedPermission')}: {operation.requestedPermission}</span>}
-        <span>{t('workspaceContained')}: {operation.workspaceContained}</span>
-        <span>{t('sandboxCovered')}: {operation.sandboxCovered}</span>
-        <span>{t('reversible')}: {operation.reversible}</span>
-      </div>
+      <dl className={css.riskAdvisor__operationDetails} data-testid="risk-advisor-operation-details">
+        <div className={css.riskAdvisor__operationRow}>
+          <dt>{t('resources')}</dt>
+          <dd><ul className={css.riskAdvisor__resourceList}>
+            {operation.resources.map((resource, index) => <li data-testid="risk-advisor-resource" key={`${index}:${resource.kind}:${resource.label}`}>{resource.kind}: {resource.label}</li>)}
+          </ul></dd>
+        </div>
+        {operation.requestedPermission === undefined ? null : <div className={css.riskAdvisor__operationRow}>
+          <dt>{t('requestedPermission')}</dt><dd>{operation.requestedPermission}</dd>
+        </div>}
+        <div className={css.riskAdvisor__operationRow}><dt>{t('workspaceContained')}</dt><dd>{operation.workspaceContained}</dd></div>
+        <div className={css.riskAdvisor__operationRow}><dt>{t('sandboxCovered')}</dt><dd>{operation.sandboxCovered}</dd></div>
+        <div className={css.riskAdvisor__operationRow}><dt>{t('reversible')}</dt><dd>{operation.reversible}</dd></div>
+      </dl>
     </section>
     <section data-testid="risk-advisor-summary">
       <h3>{t('aggregate.title')}</h3>
