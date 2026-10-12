@@ -1,0 +1,25 @@
+# Risk Advisor local development runs and retained diagnostics
+/.dev/
+
+# Generated project dependencies and build output (repository root only)
+/node_modules/
+/lib/
+
+# Test runner output and caches
+/.vitest-cache/
+/.nyc_output/
+/coverage/
+/playwright-report/
+/test-results/
+
+# Local editor, OS, and compiler temporary files
+.DS_Store
+._*
+*.swp
+*.swo
+*~
+*.tmp
+*.temp
+*.tsbuildinfo
+npm-debug.log*
+pnpm-debug.log*
